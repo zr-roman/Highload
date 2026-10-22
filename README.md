@@ -4,14 +4,14 @@
 
 ## Этап 1: что уже работает
 
-- **Payments.Api (C#).** Приём платежа с ключом идемпотентности, решение банка (пока заглушка внутри процесса), transactional outbox.
+- **Payments.Api (C#).** Приём платежа с ключом идемпотентности, решение банка (на этапе 1 — заглушка внутри процесса, на этапе 2 — [эмулятор на Go](src/bank-emulator) по HTTP), transactional outbox.
 - **Ledger.Service (C#).** Консьюмер Kafka, двойная запись пачками, балансы продавцов, проверка инвариантов.
 - **Инфраструктура.** Kafka и дашборд телеметрии — в Docker; PostgreSQL и сервисы — нативно.
 - **Нагрузка.** Сценарий k6 с открытой моделью.
 
 ```
                 POST /payments + Idempotency-Key
-   k6 / клиент ─────────────────────► Payments.Api ───► банк (этап 1: FakeAcquirer в процессе)
+   k6 / клиент ─────────────────────► Payments.Api ───► эмулятор банка на Go (HTTP)
                                           │  1. INSERT платежа в статусе 'created'
                                           │  2. вызов банка — без открытой транзакции
                                           │  3. UPDATE 'captured' + INSERT в outbox — одной SQL-командой
@@ -30,7 +30,7 @@
 
 ## Запуск (Windows, PowerShell)
 
-Нужны Docker Desktop, .NET 10 SDK и PostgreSQL на порту 5433. Для нагрузки — k6: `winget install k6 --source winget`.
+Нужны Docker Desktop, .NET 10 SDK, Go 1.24 и PostgreSQL на порту 5433. Для нагрузки — k6: `winget install k6 --source winget`.
 
 1. **Kafka и дашборд:**
    ```powershell
@@ -47,13 +47,19 @@
    $env:PGPORT = "5433"
    psql -U postgres -f db\create-databases.sql
    ```
-4. **Сервисы** — в двух окнах:
+4. **Эмулятор банка** — в отдельном окне:
+   ```powershell
+   cd src\bank-emulator
+   go run .
+   ```
+   Payments.Api ходит в него по HTTP на порт 5300. Без эмулятора каждый платёж получит 500. Заглушка банка внутри процесса, как на этапе 1, включается переменной `$env:Acquirer__Mode = "Fake"` перед запуском Payments.Api. Задержка и отказы банка настраиваются переменными `BANK_*`, см. [README эмулятора](src/bank-emulator/README.md).
+5. **Сервисы** — в двух окнах:
    ```powershell
    dotnet run --project src\Ledger.Service
    dotnet run --project src\Payments.Api
    ```
    Таблицы и топик Kafka сервисы создают сами при старте.
-5. **Платёж:**
+6. **Платёж:**
    ```powershell
    $body = '{"merchantId": 42, "amount": 150000, "currency": "RUB"}'
    $headers = @{ "Idempotency-Key" = [guid]::NewGuid().ToString() }
@@ -62,8 +68,8 @@
    Invoke-RestMethod http://localhost:5200/invariants
    ```
    Повтори POST с теми же `$headers` — вернётся тот же платёж, второго списания не будет. С тем же ключом и другой суммой — ответ 422.
-6. **Телеметрия:** http://localhost:18888 — трейсы запросов вместе с SQL-командами, метрики `payments.*` и `ledger.*`, логи.
-7. **Нагрузка.** Для замеров запускай оба сервиса в Release и с выборкой трейсов 1% — в каждом окне:
+7. **Телеметрия:** http://localhost:18888 — трейсы запросов вместе с SQL-командами, метрики `payments.*` и `ledger.*`, логи.
+8. **Нагрузка.** Для замеров запускай оба сервиса в Release и с выборкой трейсов 1% — в каждом окне:
    ```powershell
    $env:OTEL_TRACES_SAMPLER = "parentbased_traceidratio"
    $env:OTEL_TRACES_SAMPLER_ARG = "0.01"
@@ -84,13 +90,13 @@
    ```
 
    Поднимай `RATE`, пока не вырастут p95/p99, ошибки или `dropped_iterations`, — это «колено» стенда. `dropped_iterations` — платежи, которые k6 не отправил, потому что все его виртуальные пользователи ждали ответа: больше 1% — прогон не засчитывается. После прогона `/invariants` должен вернуть `"ok": true`.
-8. **Второй экземпляр Ledger:**
+9. **Второй экземпляр Ledger:**
    ```powershell
    dotnet run --project src\Ledger.Service -- --urls http://localhost:5201
    ```
    Kafka разделит 8 партиций между экземплярами — это видно в логах по строкам `Assigned partitions`.
 
-Остановка: Ctrl+C в окнах сервисов и `docker compose down`. Данные Kafka при этом удаляются — для стенда это нормально.
+Остановка: Ctrl+C в окнах сервисов и эмулятора, затем `docker compose down`. Данные Kafka при этом удаляются — для стенда это нормально.
 
 ## Как читать код
 
