@@ -1,0 +1,3 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Messages shared by the services. No external dependencies on purpose. -->
+</Project>

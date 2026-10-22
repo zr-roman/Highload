@@ -1,0 +1,41 @@
+# Only what has to run in containers: Kafka and the telemetry dashboard.
+# Postgres runs natively on the host (port 5433), the .NET services run with `dotnet run`.
+name: payments-platform
+
+services:
+  kafka:
+    image: apache/kafka:4.0.0
+    container_name: payments-kafka
+    ports:
+      - "127.0.0.1:9092:9092"
+    environment:
+      # Single node in KRaft mode: the same process is broker and controller.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics are created by the services with the right number of partitions;
+      # an auto-created topic would get the broker default of 1 partition.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # The disk is tight: at most ~64 MB per partition, small segments so old ones can be deleted.
+      KAFKA_LOG_RETENTION_BYTES: 67108864
+      KAFKA_LOG_SEGMENT_BYTES: 16777216
+      KAFKA_LOG_RETENTION_HOURS: 1
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
+
+  dashboard:
+    # Standalone Aspire dashboard: traces, metrics and logs over OTLP, no Aspire AppHost needed.
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:9.0
+    container_name: payments-dashboard
+    ports:
+      - "127.0.0.1:18888:18888"   # UI: http://localhost:18888
+      - "127.0.0.1:4317:18889"    # OTLP gRPC endpoint the services export to
+    environment:
+      DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS: "true"

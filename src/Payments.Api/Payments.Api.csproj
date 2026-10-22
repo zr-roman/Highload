@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <ItemGroup>
+    <ProjectReference Include="..\Contracts\Contracts.csproj" />
+    <ProjectReference Include="..\Platform\Platform.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="Database\schema.sql" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,11 @@
+bin/
+obj/
+.vs/
+.idea/
+*.user
+*.swp
+# k6 HTML reports: copy the ones worth keeping into docs/
+load/reports/
+# Go build output
+src/bank-emulator/bank-emulator
+src/bank-emulator/bank-emulator.exe

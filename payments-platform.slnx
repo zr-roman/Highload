@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Contracts/Contracts.csproj" />
+    <Project Path="src/Ledger.Service/Ledger.Service.csproj" />
+    <Project Path="src/Payments.Api/Payments.Api.csproj" />
+    <Project Path="src/Platform/Platform.csproj" />
+  </Folder>
+</Solution>
