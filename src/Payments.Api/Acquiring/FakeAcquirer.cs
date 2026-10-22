@@ -17,4 +17,9 @@ public sealed class FakeAcquirer(IOptions<AcquirerOptions> options) : IAcquirer
 
         return new AcquirerDecision(Approved: Random.Shared.Next(100) >= settings.DeclineRatePercent);
     }
+
+    public Task<AcquirerDecision?> FindDecisionAsync(Guid paymentId, CancellationToken cancellationToken)
+    {
+        return Task.FromResult<AcquirerDecision?>(null);
+    }
 }

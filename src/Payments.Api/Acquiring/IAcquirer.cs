@@ -6,4 +6,5 @@ namespace Payments.Api.Acquiring;
 public interface IAcquirer
 {
     Task<AcquirerDecision> AuthorizeAsync(Payment payment, CancellationToken cancellationToken);
+    Task<AcquirerDecision?> FindDecisionAsync(Guid paymentId, CancellationToken cancellationToken);
 }

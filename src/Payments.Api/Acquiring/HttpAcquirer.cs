@@ -27,11 +27,33 @@ public sealed class HttpAcquirer(HttpClient http) : IAcquirer
         if (body is null)
             throw new InvalidOperationException($"Contract violation, paymentId = {payment.Id}");
 
+        return CreateAcquirerDecision(payment.Id, body);
+    }
+
+    public async Task<AcquirerDecision?> FindDecisionAsync(Guid paymentId, CancellationToken cancellationToken)
+    {
+        using var response = await http.GetAsync($"{AuthorizationsEndpoint}/{paymentId}", cancellationToken);
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+            return null;
+
+        response.EnsureSuccessStatusCode();
+
+        var body = await response.Content.ReadFromJsonAsync<BankAuthorizationResponse>(cancellationToken);
+
+        if (body is null)
+            throw new InvalidOperationException($"Contract violation, paymentId = {paymentId}");
+
+        return CreateAcquirerDecision(paymentId, body);
+    }
+
+    private static AcquirerDecision CreateAcquirerDecision(Guid paymentId, BankAuthorizationResponse body)
+    {
         return body.Status switch
         {
             ApprovedStatus => new AcquirerDecision(true),
             DeclinedStatus => new AcquirerDecision(false),
-            _ => throw new InvalidOperationException($"Unknown bank status '{body.Status}' for payment {payment.Id}"),
+            _ => throw new InvalidOperationException($"Unknown bank status '{body.Status}' for payment {paymentId}"),
         };
     }
 }
