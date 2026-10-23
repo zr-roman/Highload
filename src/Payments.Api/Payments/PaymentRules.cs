@@ -45,8 +45,8 @@ public static class PaymentRules
 public sealed class FeeOptions
 {
     /// <summary>Комиссия в базовых пунктах: 200 б.п. = 2 %.</summary>
-    public int FeeInBps { get; set; } = 200;
+    public int Bps { get; set; } = 200;
 
     /// <summary>Integer arithmetic in kopecks, rounded down.</summary>
-    public long Calculate(long amount) => amount * FeeInBps / 10_000;
+    public long Calculate(long amount) => amount * Bps / 10_000;
 }

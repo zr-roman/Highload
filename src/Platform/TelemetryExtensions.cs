@@ -26,7 +26,7 @@ public static class TelemetryExtensions
                 .AddSource(serviceName))        // the service's own spans
             .WithMetrics(metrics => metrics
                 .AddAspNetCoreInstrumentation()
-                .AddMeter("System.Runtime", "System.Net.Http", "Npgsql")
+                .AddMeter("System.Runtime", "System.Net.Http", "Polly", "Npgsql")
                 .AddMeter(meters))
             .WithLogging(configureBuilder: null, configureOptions: options =>
             {

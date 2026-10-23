@@ -1,4 +1,6 @@
 ﻿using Payments.Api.Payments;
+using Polly;
+using Polly.CircuitBreaker;
 using System.Net;
 
 namespace Payments.Api.Acquiring;
@@ -38,9 +40,11 @@ public sealed class HttpAcquirer(HttpClient http, ILogger<HttpAcquirer> logger) 
 
             return CreateAcquirerDecision(payment.Id, body);
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or ExecutionRejectedException && !cancellationToken.IsCancellationRequested)
         {
-            logger.LogWarning(ex, "Bank call for payment {PaymentId} failed, outcome unknown", payment.Id);
+            // While the circuit is open every payment fails this way, and Polly logs the opening itself.
+            var level = ex is BrokenCircuitException ? LogLevel.Debug : LogLevel.Warning;
+            logger.Log(level, ex, "Bank call for payment {PaymentId} failed, outcome unknown", payment.Id);
             return new AcquirerDecision(AcquirerOutcome.Unknown);
         }
     }
@@ -70,9 +74,11 @@ public sealed class HttpAcquirer(HttpClient http, ILogger<HttpAcquirer> logger) 
 
             return CreateAcquirerDecision(paymentId, body);
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or ExecutionRejectedException && !cancellationToken.IsCancellationRequested)
         {
-            logger.LogWarning(ex, "Decision lookup for payment {PaymentId} failed, outcome unknown", paymentId);
+            // While the circuit is open every payment fails this way, and Polly logs the opening itself.
+            var level = ex is BrokenCircuitException ? LogLevel.Debug : LogLevel.Warning;
+            logger.Log(level, ex, "Decision lookup for payment {PaymentId} failed, outcome unknown", paymentId);
             return new AcquirerDecision(AcquirerOutcome.Unknown);
         }
     }
