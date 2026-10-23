@@ -1,3 +1,3 @@
 ﻿namespace Payments.Api.Acquiring;
 
-public sealed record AcquirerDecision(bool Approved);
+public sealed record AcquirerDecision(AcquirerOutcome Outcome, string? AuthorizationCode = null);

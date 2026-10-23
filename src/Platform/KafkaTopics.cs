@@ -15,8 +15,7 @@ public static class KafkaTopics
         using var admin = new AdminClientBuilder(new AdminClientConfig { BootstrapServers = bootstrapServers }).Build();
         try
         {
-            await admin.CreateTopicsAsync(
-                [new TopicSpecification { Name = topic, NumPartitions = partitions, ReplicationFactor = 1 }]);
+            await admin.CreateTopicsAsync([new TopicSpecification { Name = topic, NumPartitions = partitions, ReplicationFactor = 1 }]);
             logger.LogInformation("Created Kafka topic {Topic} with {Partitions} partitions", topic, partitions);
         }
         catch (CreateTopicsException e) when (e.Results.All(r => r.Error.Code == ErrorCode.TopicAlreadyExists))

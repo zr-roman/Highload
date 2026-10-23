@@ -15,7 +15,7 @@ public sealed class FakeAcquirer(IOptions<AcquirerOptions> options) : IAcquirer
         if (settings.LatencyMs > 0)
             await Task.Delay(settings.LatencyMs, cancellationToken);
 
-        return new AcquirerDecision(Approved: Random.Shared.Next(100) >= settings.DeclineRatePercent);
+        return new AcquirerDecision(Random.Shared.Next(100) >= settings.DeclineRatePercent ? AcquirerOutcome.Approved : AcquirerOutcome.Declined);
     }
 
     public Task<AcquirerDecision?> FindDecisionAsync(Guid paymentId, CancellationToken cancellationToken)

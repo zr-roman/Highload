@@ -51,12 +51,23 @@ public static class PaymentEndpoints
         var decision = await acquirer.AuthorizeAsync(payment, CancellationToken.None);
 
         // Step 3. Record the outcome. For a captured payment the event goes to the outbox in the same statement.
-        if (!decision.Approved)
+
+        switch (decision.Outcome)
         {
-            await store.MarkDeclinedAsync(payment.Id, CancellationToken.None);
-            metrics.Declined();
-            return Results.Created($"/payments/{payment.Id}",
-                PaymentResponse.From(payment with { Status = PaymentStatus.Declined }));
+            case AcquirerOutcome.Declined:
+                await store.MarkDeclinedAsync(payment.Id, CancellationToken.None);
+                metrics.Declined();
+                return Results.Created($"/payments/{payment.Id}", PaymentResponse.From(payment with { Status = PaymentStatus.Declined }));
+
+            case AcquirerOutcome.Unknown:
+                metrics.Unknown();
+                return Results.Accepted($"/payments/{payment.Id}", PaymentResponse.From(payment));
+
+            case AcquirerOutcome.Approved:
+                break;
+
+            default:
+                throw new InvalidOperationException($"Unexpected acquirer outcome {decision.Outcome} for payment {payment.Id}");
         }
 
         var fee = fees.Value.Calculate(payment.Amount);
@@ -77,18 +88,21 @@ public static class PaymentEndpoints
     private static async Task<IResult> ReplayAsync(
         PaymentStore store, Payment attempted, PaymentsMetrics metrics, CancellationToken cancellationToken)
     {
-        var existing = await store.FindByIdempotencyKeyAsync(
-            attempted.MerchantId, attempted.IdempotencyKey, cancellationToken);
+        var existing = await store.FindByIdempotencyKeyAsync(attempted.MerchantId, attempted.IdempotencyKey, cancellationToken);
 
         if (existing is null)
             return Results.Problem("The payment for this Idempotency-Key was not found, retry the request.",
                 statusCode: StatusCodes.Status409Conflict);
+
         if (existing.RequestHash != attempted.RequestHash)
             return Results.Problem("This Idempotency-Key was already used with a different request.",
                 statusCode: StatusCodes.Status422UnprocessableEntity);
+
         if (existing.Status == PaymentStatus.Created)
-            return Results.Problem("A payment with this Idempotency-Key is still in progress.",
-                statusCode: StatusCodes.Status409Conflict);
+        {
+            metrics.Replayed();
+            return Results.Accepted($"/payments/{existing.Id}", PaymentResponse.From(existing));
+        }
 
         metrics.Replayed();
         return Results.Ok(PaymentResponse.From(existing));
