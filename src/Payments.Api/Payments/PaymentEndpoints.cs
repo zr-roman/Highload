@@ -73,15 +73,13 @@ public static class PaymentEndpoints
         var fee = fees.Value.Calculate(payment.Amount);
         var captured = new PaymentCaptured(
             payment.Id, payment.MerchantId, payment.Amount, fee, payment.Currency, DateTimeOffset.UtcNow);
+
         if (!await store.MarkCapturedAsync(captured, CancellationToken.None))
-        {
-            loggerFactory.CreateLogger("Payments")
-                .LogWarning("Payment {PaymentId} left 'created' before its capture was recorded", payment.Id);
-        }
+            loggerFactory.CreateLogger("Payments").LogWarning("Payment {PaymentId} left 'created' before its capture was recorded", payment.Id);
 
         metrics.Captured(payment.Amount);
-        return Results.Created($"/payments/{payment.Id}",
-            PaymentResponse.From(payment with { Status = PaymentStatus.Captured, Fee = fee }));
+
+        return Results.Created($"/payments/{payment.Id}", PaymentResponse.From(payment with { Status = PaymentStatus.Captured, Fee = fee }));
     }
 
     /// <summary>The same Idempotency-Key came again: answer with the existing payment instead of paying twice.</summary>

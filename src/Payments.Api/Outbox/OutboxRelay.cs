@@ -7,17 +7,6 @@ using Payments.Api.Telemetry;
 
 namespace Payments.Api.Outbox;
 
-public sealed class OutboxOptions
-{
-    public int BatchSize { get; set; } = 500;
-
-    /// <summary>Pause after the first empty poll; it doubles on every further empty poll.</summary>
-    public int IdleDelayMs { get; set; } = 20;
-
-    /// <summary>The longest pause between polls of an empty outbox.</summary>
-    public int MaxIdleDelayMs { get; set; } = 1000;
-}
-
 /// <summary>
 /// Moves rows from the outbox table to Kafka: read a batch, publish it, delete it.
 /// Delivery is at least once: if the process dies after publishing and before deleting,
@@ -44,6 +33,7 @@ public sealed class OutboxRelay(
         // advisory lock held by a dedicated connection. If the process dies, the connection closes
         // and another instance takes over. The connection is idle, not "idle in transaction".
         await using var lockConnection = await dataSource.OpenConnectionAsync(stoppingToken);
+
         while (!await TryBecomeLeaderAsync(lockConnection, stoppingToken))
             await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
 
@@ -68,6 +58,7 @@ public sealed class OutboxRelay(
                 idleDelay = idleDelay == TimeSpan.Zero
                     ? minIdleDelay
                     : TimeSpan.FromTicks(Math.Min(idleDelay.Ticks * 2, maxIdleDelay.Ticks));
+
                 await Task.Delay(idleDelay, stoppingToken);
             }
             catch (Exception e) when (e is not OperationCanceledException)
@@ -87,9 +78,7 @@ public sealed class OutboxRelay(
         // out of the dashboard's buffer.
         List<OutboxMessage> batch;
         using (SuppressInstrumentationScope.Begin())
-        {
             batch = await ReadBatchAsync(cancellationToken);
-        }
 
         if (batch.Count == 0)
             return 0;
@@ -110,7 +99,9 @@ public sealed class OutboxRelay(
             var message = new Message<string, string> { Key = batch[i].Key, Value = batch[i].Payload };
             deliveries[i] = producer.ProduceAsync(batch[i].Topic, message, cancellationToken);
         }
+
         await Task.WhenAll(deliveries);
+
         var produced = Stopwatch.GetElapsedTime(started);
 
         await DeleteAsync(batch, cancellationToken);
@@ -123,14 +114,15 @@ public sealed class OutboxRelay(
 
     private async Task<List<OutboxMessage>> ReadBatchAsync(CancellationToken cancellationToken)
     {
-        await using var command = dataSource.CreateCommand(
-            "SELECT id, topic, message_key, payload FROM outbox ORDER BY id LIMIT $1");
+        await using var command = dataSource.CreateCommand("SELECT id, topic, message_key, payload FROM outbox ORDER BY id LIMIT $1");
         command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = options.Value.BatchSize });
-
         var batch = new List<OutboxMessage>(options.Value.BatchSize);
+
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
         while (await reader.ReadAsync(cancellationToken))
             batch.Add(new OutboxMessage(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3)));
+        
         return batch;
     }
 
