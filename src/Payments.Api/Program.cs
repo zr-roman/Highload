@@ -1,6 +1,5 @@
 using Confluent.Kafka;
 using Contracts;
-using Microsoft.Extensions.Options;
 using Npgsql;
 using Payments.Api.Acquiring;
 using Payments.Api.Outbox;
@@ -29,6 +28,7 @@ builder.Services.Configure<FeeOptions>(builder.Configuration.GetSection("Fees"))
 builder.Services.Configure<AcquirerOptions>(builder.Configuration.GetSection("Acquirer"));
 builder.Services.Configure<OutboxOptions>(builder.Configuration.GetSection("Outbox"));
 builder.Services.AddSingleton<PaymentStore>();
+builder.Services.AddSingleton<PaymentCompletion>();
 builder.Services.AddSingleton<PaymentsMetrics>();
 builder.Services.AddHostedService<OutboxRelay>();
 

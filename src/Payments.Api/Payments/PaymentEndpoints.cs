@@ -1,6 +1,4 @@
-using Contracts;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Options;
 using Payments.Api.Acquiring;
 using Payments.Api.Telemetry;
 
@@ -19,10 +17,9 @@ public static class PaymentEndpoints
         CreatePaymentRequest request,
         [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         PaymentStore store,
+        PaymentCompletion paymentCompletion,
         IAcquirer acquirer,
-        IOptions<FeeOptions> fees,
         PaymentsMetrics metrics,
-        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         var errors = PaymentRules.Validate(request, idempotencyKey);
@@ -40,46 +37,37 @@ public static class PaymentEndpoints
             Status: PaymentStatus.Created,
             CreatedAt: DateTimeOffset.UtcNow);
 
-        // Step 1. A short write before talking to the bank: if the process dies later,
+        // 1. A short write before talking to the bank: if the process dies later,
         // the payment exists in 'created' and can be resolved by a recovery job.
+
         if (!await store.TryInsertAsync(payment, cancellationToken))
             return await ReplayAsync(store, payment, metrics, cancellationToken);
 
         // Step 2. The bank is called with no database transaction open (experiment 2: a waiting
         // transaction holds back vacuum). From this point on the request's cancellation token is not used:
         // if the client disconnects after the bank approved, the result must still be recorded.
+
         var decision = await acquirer.AuthorizeAsync(payment, CancellationToken.None);
 
         // Step 3. Record the outcome. For a captured payment the event goes to the outbox in the same statement.
 
         switch (decision.Outcome)
         {
+            case AcquirerOutcome.Approved:
+                var paymentCaptured = await paymentCompletion.CaptureOnBankApprovalAsync(payment, CancellationToken.None);
+                return Results.Created($"/payments/{payment.Id}", PaymentResponse.From(payment with { Status = PaymentStatus.Captured, Fee = paymentCaptured.Fee }));
+
             case AcquirerOutcome.Declined:
-                await store.MarkDeclinedAsync(payment.Id, CancellationToken.None);
-                metrics.Declined();
+                await paymentCompletion.DeclineOnBankDenialAsync(payment.Id, CancellationToken.None);
                 return Results.Created($"/payments/{payment.Id}", PaymentResponse.From(payment with { Status = PaymentStatus.Declined }));
 
             case AcquirerOutcome.Unknown:
                 metrics.Unknown();
                 return Results.Accepted($"/payments/{payment.Id}", PaymentResponse.From(payment));
 
-            case AcquirerOutcome.Approved:
-                break;
-
             default:
                 throw new InvalidOperationException($"Unexpected acquirer outcome {decision.Outcome} for payment {payment.Id}");
         }
-
-        var fee = fees.Value.Calculate(payment.Amount);
-        var captured = new PaymentCaptured(
-            payment.Id, payment.MerchantId, payment.Amount, fee, payment.Currency, DateTimeOffset.UtcNow);
-
-        if (!await store.MarkCapturedAsync(captured, CancellationToken.None))
-            loggerFactory.CreateLogger("Payments").LogWarning("Payment {PaymentId} left 'created' before its capture was recorded", payment.Id);
-
-        metrics.Captured(payment.Amount);
-
-        return Results.Created($"/payments/{payment.Id}", PaymentResponse.From(payment with { Status = PaymentStatus.Captured, Fee = fee }));
     }
 
     /// <summary>The same Idempotency-Key came again: answer with the existing payment instead of paying twice.</summary>
