@@ -1,9 +1,11 @@
 using Confluent.Kafka;
 using Contracts;
+using Microsoft.Extensions.Http.Resilience;
 using Npgsql;
 using Payments.Api.Acquiring;
 using Payments.Api.Outbox;
 using Payments.Api.Payments;
+using Payments.Api.Recovery;
 using Payments.Api.Telemetry;
 using Platform;
 
@@ -14,6 +16,18 @@ var postgres = builder.Configuration.GetConnectionString("Payments")
     ?? throw new InvalidOperationException("Connection string 'Payments' is not configured.");
 var kafka = builder.Configuration.GetConnectionString("Kafka")
     ?? throw new InvalidOperationException("Connection string 'Kafka' is not configured.");
+
+var httpStandardResilienceOptions = builder.Configuration.GetSection("Acquirer:Resilience").Get<HttpStandardResilienceOptions>() 
+    ?? new HttpStandardResilienceOptions();
+
+var msg = $"StaleAfter must be more than twice Acquirer:Resilience:TotalRequestTimeout ({httpStandardResilienceOptions.TotalRequestTimeout.Timeout})";
+
+builder.Services.AddOptions<RecoveryOptions>()
+    .Bind(builder.Configuration.GetSection("Recovery"))
+    .Validate(recoveryOptions => recoveryOptions.Interval > TimeSpan.Zero && recoveryOptions.BatchSize > 0 && recoveryOptions.MaxParallelism > 0,
+        "Recovery: Interval, BatchSize and MaxParallelism must be positive")
+    .Validate(recoveryOptions => recoveryOptions.StaleAfter > 2 * httpStandardResilienceOptions.TotalRequestTimeout.Timeout, msg)
+    .ValidateOnStart();
 
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(postgres));
 builder.Services.AddSingleton<IProducer<string, string>>(_ => new ProducerBuilder<string, string>(new ProducerConfig

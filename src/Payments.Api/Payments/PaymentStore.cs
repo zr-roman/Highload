@@ -83,14 +83,30 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
         return await ReadSingleAsync(command, cancellationToken);
     }
 
-    public async Task<Payment?> FindByIdempotencyKeyAsync(
-        long merchantId, string idempotencyKey, CancellationToken cancellationToken)
+    public async Task<Payment?> FindByIdempotencyKeyAsync(long merchantId, string idempotencyKey, CancellationToken cancellationToken)
     {
-        await using var command = dataSource.CreateCommand(
-            $"SELECT {SelectColumns} FROM payments WHERE merchant_id = $1 AND idempotency_key = $2");
+        var sql = $"SELECT {SelectColumns} FROM payments WHERE merchant_id = $1 AND idempotency_key = $2";
+        await using var command = dataSource.CreateCommand(sql);
         command.Parameters.Add(new NpgsqlParameter<long> { TypedValue = merchantId });
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = idempotencyKey });
         return await ReadSingleAsync(command, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<Payment>> FindStaleCreatedAsync(TimeSpan staleAfter, int batchSize, CancellationToken cancellationToken)
+    {
+        var sql = $"SELECT {SelectColumns} FROM payments WHERE created_at < now() - $1 AND status = 'created' ORDER BY created_at LIMIT $2";
+        await using var command = dataSource.CreateCommand(sql);
+        command.Parameters.Add(new NpgsqlParameter<TimeSpan> { TypedValue = staleAfter });
+        command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = batchSize });
+
+        List<Payment> res = [];
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        while (await reader.ReadAsync(cancellationToken))
+            res.Add(ConstructPayment(reader));
+
+        return res;
     }
 
     private static async Task<Payment?> ReadSingleAsync(NpgsqlCommand command, CancellationToken cancellationToken)
@@ -99,6 +115,11 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
         if (!await reader.ReadAsync(cancellationToken))
             return null;
 
+        return ConstructPayment(reader);
+    }
+
+    private static Payment ConstructPayment(NpgsqlDataReader reader)
+    {
         return new Payment(
             Id: reader.GetGuid(0),
             MerchantId: reader.GetInt64(1),
