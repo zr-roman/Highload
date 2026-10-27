@@ -55,11 +55,16 @@ public static class PaymentEndpoints
         {
             case AcquirerOutcome.Approved:
                 var paymentCaptured = await paymentCompletion.CaptureOnBankApprovalAsync(payment, CancellationToken.None);
-                return Results.Created($"/payments/{payment.Id}", PaymentResponse.From(payment with { Status = PaymentStatus.Captured, Fee = paymentCaptured.Fee }));
+                if (paymentCaptured is not null)
+                    return Results.Created($"/payments/{payment.Id}", PaymentResponse.From(payment with { Status = PaymentStatus.Captured, Fee = paymentCaptured.Fee }));
+
+                return await CreateResponseWithPaymentFromStoreAsync(store, payment.Id);
 
             case AcquirerOutcome.Declined:
-                await paymentCompletion.DeclineOnBankDenialAsync(payment.Id, CancellationToken.None);
-                return Results.Created($"/payments/{payment.Id}", PaymentResponse.From(payment with { Status = PaymentStatus.Declined }));
+                if (await paymentCompletion.DeclineOnBankDenialAsync(payment.Id, CancellationToken.None))
+                    return Results.Created($"/payments/{payment.Id}", PaymentResponse.From(payment with { Status = PaymentStatus.Declined }));
+
+                return await CreateResponseWithPaymentFromStoreAsync(store, payment.Id);
 
             case AcquirerOutcome.Unknown:
                 metrics.Unknown();
@@ -68,6 +73,12 @@ public static class PaymentEndpoints
             default:
                 throw new InvalidOperationException($"Unexpected acquirer outcome {decision.Outcome} for payment {payment.Id}");
         }
+    }
+
+    private static async Task<IResult> CreateResponseWithPaymentFromStoreAsync(PaymentStore store, Guid paymentId) 
+    {
+        var paymentFromStore = await store.FindByIdAsync(paymentId, CancellationToken.None);
+        return Results.Created($"/payments/{paymentId}", PaymentResponse.From(paymentFromStore ?? throw new InvalidOperationException($"Не найден платеж в базе c paymentId={paymentId}.")));
     }
 
     /// <summary>The same Idempotency-Key came again: answer with the existing payment instead of paying twice.</summary>

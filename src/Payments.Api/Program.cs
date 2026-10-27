@@ -45,6 +45,7 @@ builder.Services.AddSingleton<PaymentStore>();
 builder.Services.AddSingleton<PaymentCompletion>();
 builder.Services.AddSingleton<PaymentsMetrics>();
 builder.Services.AddHostedService<OutboxRelay>();
+builder.Services.AddHostedService<PaymentRecovery>();
 
 var acquirer = builder.Configuration.GetSection("Acquirer").Get<AcquirerOptions>() ?? new AcquirerOptions();
 if (acquirer.Mode == AcquirerMode.Http)
@@ -59,6 +60,7 @@ var app = builder.Build();
 await DatabaseSchema.ApplyAsync(
     app.Services.GetRequiredService<NpgsqlDataSource>(),
     Path.Combine(AppContext.BaseDirectory, "Database", "schema.sql"));
+
 await KafkaTopics.EnsureCreatedAsync(kafka, Topics.PaymentsCaptured, Topics.PaymentsCapturedPartitions, app.Logger);
 
 app.MapPaymentEndpoints();

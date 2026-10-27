@@ -2,8 +2,19 @@ namespace Payments.Api.Payments;
 
 public enum PaymentStatus
 {
+    /// <summary>
+    /// Создан
+    /// </summary>
     Created,
+
+    /// <summary>
+    /// Проведен
+    /// </summary>
     Captured,
+
+    /// <summary>
+    /// Отклонен
+    /// </summary>
     Declined,
 }
 

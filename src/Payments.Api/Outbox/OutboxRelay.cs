@@ -3,6 +3,7 @@ using Confluent.Kafka;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using OpenTelemetry;
+using Payments.Api.Database;
 using Payments.Api.Telemetry;
 
 namespace Payments.Api.Outbox;
@@ -19,9 +20,6 @@ public sealed class OutboxRelay(
     PaymentsMetrics metrics,
     ILogger<OutboxRelay> logger) : BackgroundService
 {
-    /// <summary>Any constant shared by all instances: the key of the PostgreSQL advisory lock.</summary>
-    private const long LeaderLockKey = 7_301_001;
-
     /// <summary>The service's own spans; the name matches AddSource(serviceName) in Platform.</summary>
     private static readonly ActivitySource ActivitySource = new("payments-api");
 
@@ -29,15 +27,8 @@ public sealed class OutboxRelay(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // Only one relay works at a time, even with several Payments.Api instances: a session-level
-        // advisory lock held by a dedicated connection. If the process dies, the connection closes
-        // and another instance takes over. The connection is idle, not "idle in transaction".
-        await using var lockConnection = await dataSource.OpenConnectionAsync(stoppingToken);
+        await using var _ = await AdvisoryLeaderLock.AcquireAsync(dataSource, AdvisoryLockKeys.OutboxRelay, "Outbox Relay", logger, stoppingToken);
 
-        while (!await TryBecomeLeaderAsync(lockConnection, stoppingToken))
-            await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
-
-        logger.LogInformation("Outbox relay is the leader");
         var minIdleDelay = TimeSpan.FromMilliseconds(options.Value.IdleDelayMs);
         var maxIdleDelay = TimeSpan.FromMilliseconds(options.Value.MaxIdleDelayMs);
         var idleDelay = TimeSpan.Zero;
@@ -131,12 +122,5 @@ public sealed class OutboxRelay(
         await using var command = dataSource.CreateCommand("DELETE FROM outbox WHERE id = ANY($1)");
         command.Parameters.Add(new NpgsqlParameter<long[]> { TypedValue = batch.Select(m => m.Id).ToArray() });
         await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    private static async Task<bool> TryBecomeLeaderAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
-    {
-        await using var command = new NpgsqlCommand("SELECT pg_try_advisory_lock($1)", connection);
-        command.Parameters.Add(new NpgsqlParameter<long> { TypedValue = LeaderLockKey });
-        return (bool)(await command.ExecuteScalarAsync(cancellationToken))!;
     }
 }
