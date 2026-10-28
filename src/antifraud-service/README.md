@@ -40,7 +40,7 @@ winget install --id=astral-sh.uv -e
 Redis поднимается вместе с Kafka: `docker compose up -d` в корне репозитория.
 
 ```powershell
-cd src\antifraud
+cd src\antifraud-service
 uv sync
 uv run uvicorn antifraud.main:app --host 127.0.0.1 --port 5400 --workers 4
 ```

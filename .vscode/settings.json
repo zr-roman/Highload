@@ -1,5 +1,5 @@
 {
-  "python.defaultInterpreterPath": "${workspaceFolder}/src/antifraud/.venv/Scripts/python.exe",
+  "python.defaultInterpreterPath": "${workspaceFolder}/src/antifraud-service/.venv/Scripts/python.exe",
   "[python]": {
     "editor.defaultFormatter": "charliermarsh.ruff",
     "editor.formatOnSave": true,
