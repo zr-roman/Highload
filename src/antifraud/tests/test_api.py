@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from antifraud.main import app
@@ -30,9 +31,25 @@ def test_check_answers_in_camel_case() -> None:
     assert "modelVersion" in body
 
 
-def test_invalid_request_is_rejected() -> None:
+@pytest.mark.parametrize(
+    ("body", "field"),
+    [
+        ({**REQUEST, "amount": 0}, "amount"),
+        ({**REQUEST, "currency": "RU"}, "currency"),
+        ({key: value for key, value in REQUEST.items() if key != "merchantId"}, "merchantId"),
+    ],
+)
+def test_invalid_field_is_rejected_with_400(body: dict, field: str) -> None:
     with TestClient(app) as client:
-        response = client.post("/v1/checks", json={**REQUEST, "amount": 0})
+        response = client.post("/v1/checks", json=body)
 
-    # TODO: the contract says 400; FastAPI answers 422 by default. Decide and make them agree.
-    assert response.status_code in (400, 422)
+    assert response.status_code == 400
+    assert response.json()["error"].startswith(f"{field}: ")
+
+
+def test_malformed_json_is_rejected_with_400() -> None:
+    with TestClient(app) as client:
+        response = client.post("/v1/checks", content=b'{"paymentId": ', headers={"content-type": "application/json"})
+
+    assert response.status_code == 400
+    assert response.json()["error"].startswith("invalid JSON")
