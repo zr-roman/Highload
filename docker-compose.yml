@@ -1,4 +1,4 @@
-# Only what has to run in containers: Kafka and the telemetry dashboard.
+# Only what has to run in containers: Kafka, Redis and the telemetry dashboard.
 # Postgres runs natively on the host (port 5433), the .NET services run with `dotnet run`.
 name: payments-platform
 
@@ -39,3 +39,12 @@ services:
       - "127.0.0.1:4317:18889"    # OTLP gRPC endpoint the services export to
     environment:
       DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS: "true"
+
+  redis:
+    # Counters and stored decisions of the antifraud service. No persistence: on the stand
+    # losing them on restart only resets the velocity windows and forgets old decisions.
+    image: redis:7.4-alpine
+    container_name: payments-redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]

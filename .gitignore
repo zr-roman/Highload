@@ -9,3 +9,8 @@ load/reports/
 # Go build output
 src/bank-emulator/bank-emulator
 src/bank-emulator/bank-emulator.exe
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
