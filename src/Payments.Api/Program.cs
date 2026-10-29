@@ -8,9 +8,11 @@ using Payments.Api.Payments;
 using Payments.Api.Recovery;
 using Payments.Api.Telemetry;
 using Platform;
+using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.AddPlatformTelemetry("payments-api", PaymentsMetrics.MeterName);
+builder.AddPlatformRedis(keyPrefix: "payments:");
 
 var postgres = builder.Configuration.GetConnectionString("Payments")
     ?? throw new InvalidOperationException("Connection string 'Payments' is not configured.");
@@ -62,6 +64,9 @@ await DatabaseSchema.ApplyAsync(
     Path.Combine(AppContext.BaseDirectory, "Database", "schema.sql"));
 
 await KafkaTopics.EnsureCreatedAsync(kafka, Topics.PaymentsCaptured, Topics.PaymentsCapturedPartitions, app.Logger);
+
+// Connect at startup, not on the first request that needs Redis: the first attempt may take up to connectTimeout.
+app.Services.GetRequiredService<IConnectionMultiplexer>();
 
 app.MapPaymentEndpoints();
 app.MapHealthChecks("/health");
