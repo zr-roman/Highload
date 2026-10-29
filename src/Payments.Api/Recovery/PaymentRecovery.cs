@@ -14,75 +14,82 @@ public sealed class PaymentRecovery(
     NpgsqlDataSource dataSource, 
     PaymentCompletion paymentCompletion, 
     IServiceScopeFactory serviceScopeFactory, 
-    IOptions<RecoveryOptions> options, 
+    IOptions<RecoveryOptions> options,
     ILogger<PaymentRecovery> logger) : BackgroundService
 {
+    private const string RecoveredTemplate = "Payment {PaymentId} recovered as {Status}: {Reason}";
+    private readonly RecoveryOptions settings = options.Value;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await using var _ = await AdvisoryLeaderLock.AcquireAsync(dataSource, AdvisoryLockKeys.PaymentRecovery, "Payment Recovery", logger, stoppingToken);
+        await using var _ = await AdvisoryLeaderLock
+            .AcquireAsync(dataSource, AdvisoryLockKeys.PaymentRecovery, "Payment Recovery", logger, stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                await ProcessBatchAsync(stoppingToken);
+                var batch = await FindStaleBatchAsync(stoppingToken);
+                var pass = await RecoverBatchAsync(batch, stoppingToken);
+
+                if (pass.BankUnavailable)
+                {
+                    logger.LogWarning("Bank unavailable, recovery paused for {Interval}", settings.Interval);
+                    await Task.Delay(settings.Interval, stoppingToken);
+                }
+                else if (batch.Count < settings.BatchSize || !pass.MadeProgress)
+                {
+                    // Take the next batch at once only if this one was full and moved something:
+                    // a full batch of payments that fail every time would otherwise spin with no pause.
+                    await Task.Delay(settings.Interval, stoppingToken);
+                }
             }
-            catch (Exception e) when (e is not OperationCanceledException)
+            catch (Exception e) when (!stoppingToken.IsCancellationRequested)
             {
-                logger.LogError(e, "Разбор батча сломался, ретрай через {Interval}.", options.Value.Interval);
-                await Task.Delay(options.Value.Interval, stoppingToken);
+                logger.LogError(e, "Разбор батча сломался, ретрай через {Interval}.", settings.Interval);
+                await Task.Delay(settings.Interval, stoppingToken);
             }
         }
     }
 
-    private async Task ProcessBatchAsync(CancellationToken stoppingToken)
+    private async Task<IReadOnlyList<Payment>> FindStaleBatchAsync(CancellationToken stoppingToken)
+    {
+        // The poll runs every Interval and is usually empty: without this, every poll is a separate one-span trace.
+        using (SuppressInstrumentationScope.Begin())
+            return await store.FindStaleCreatedAsync(settings.StaleAfter, settings.BatchSize, stoppingToken);
+    }
+
+    private async Task<RecoveryPass> RecoverBatchAsync(IReadOnlyList<Payment> batch, CancellationToken stoppingToken)
     {
         var pass = new RecoveryPass();
 
-        // Получить батч через FindStaleCreatedAsync.
-        // The poll runs every Interval and is usually empty: without this, every poll is a separate one-span trace.
-        IReadOnlyList<Payment> batch;
-        using (SuppressInstrumentationScope.Begin())
-            batch = await store.FindStaleCreatedAsync(options.Value.StaleAfter, options.Value.BatchSize, stoppingToken);
+        if (batch.Count == 0)
+            return pass;
 
-        if (batch.Count > 0)
-        {
-            // Разобрать платежи параллельно, с ограничением MaxParallelism.
-            var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = options.Value.MaxParallelism, CancellationToken = stoppingToken };
-            using var scope = serviceScopeFactory.CreateScope();
-            var acquirer = scope.ServiceProvider.GetRequiredService<IAcquirer>();
+        var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = settings.MaxParallelism, CancellationToken = stoppingToken };
+        using var scope = serviceScopeFactory.CreateScope();
+        var acquirer = scope.ServiceProvider.GetRequiredService<IAcquirer>();
 
-            // One trace per non-empty pass: bank lookups and status updates become its children.
-            using Activity? activity = PaymentsTelemetry.ActivitySource.StartActivity("payment recovery");
-            activity?.SetTag("recovery.batch.size", batch.Count);
+        // One trace per non-empty pass: bank lookups and status updates become its children.
+        using Activity? activity = PaymentsTelemetry.ActivitySource.StartActivity("payment recovery");
+        activity?.SetTag("recovery.batch.size", batch.Count);
 
-            await Parallel.ForEachAsync(batch, parallelOptions, async (payment, ct)
-                => await RecoverAsync(payment, acquirer, pass, ct));
-
-            if (pass.BankUnavailable)
-                activity?.SetStatus(ActivityStatusCode.Error, "bank unavailable");
-
-            activity?.SetTag("recovery.captured", pass.Captured);
-            activity?.SetTag("recovery.declined", pass.Declined);
-            activity?.SetTag("recovery.skipped", pass.Skipped);
-            activity?.SetTag("recovery.previously_resolved", pass.PreviouslyResolved);
-
-            logger.LogInformation("Всего платежей: проведено={Captured}, отклонено={Declined}, " +
-                "пропущено={Skipped}, обработаны ранее={PreviouslyResolved}.", 
-                    pass.Captured, pass.Declined, pass.Skipped, pass.PreviouslyResolved);
-        }
+        await Parallel.ForEachAsync(batch, parallelOptions, async (payment, ct)
+            => await RecoverAsync(payment, acquirer, pass, ct));
 
         if (pass.BankUnavailable)
-        {
-            logger.LogWarning("Bank unavailable, recovery paused for {Interval}", options.Value.Interval);
-            await Task.Delay(options.Value.Interval, stoppingToken);
-        }
-        else
-        {
-            // Если батч был неполный, подождать Interval.
-            if (batch.Count < options.Value.BatchSize)
-                await Task.Delay(options.Value.Interval, stoppingToken);
-        }
+            activity?.SetStatus(ActivityStatusCode.Error, "bank unavailable");
+
+        activity?.SetTag("recovery.captured", pass.Captured);
+        activity?.SetTag("recovery.declined", pass.Declined);
+        activity?.SetTag("recovery.skipped", pass.Skipped);
+        activity?.SetTag("recovery.previously_resolved", pass.PreviouslyResolved);
+
+        logger.LogInformation("Всего платежей: проведено={Captured}, отклонено={Declined}, " +
+            "пропущено={Skipped}, обработаны ранее={PreviouslyResolved}.", 
+                pass.Captured, pass.Declined, pass.Skipped, pass.PreviouslyResolved);
+
+        return pass;
     }
 
     private async Task RecoverAsync(Payment payment, IAcquirer acquirer, RecoveryPass pass, CancellationToken cancellationToken)
@@ -93,56 +100,22 @@ public sealed class PaymentRecovery(
             return;
         }
 
-        void MarkPreviouslyResolved()
-        {
-            Interlocked.Increment(ref pass.PreviouslyResolved);
-            logger.LogInformation("Payment {PaymentId} was previously resolved", payment.Id); 
-        }
-
         try
         {
             var decision = await acquirer.FindDecisionAsync(payment.Id, cancellationToken);
 
-            if (decision is null)
-            {
-                if (await paymentCompletion.DeclineOnBankDenialAsync(payment.Id, cancellationToken))
-                {
-                    Interlocked.Increment(ref pass.Declined);
-                    logger.LogInformation("Payment {PaymentId} recovered as Declined: the bank has no decision", payment.Id);
-                }
-                else
-                {
-                    MarkPreviouslyResolved();
-                }
-                return;
-            }
-
-            const string infoMsg = "Payment {PaymentId} recovered as {Outcome}.";
-
-            switch (decision.Outcome)
+            switch (decision?.Outcome)
             {
                 case AcquirerOutcome.Approved:
-                    if (await paymentCompletion.CaptureOnBankApprovalAsync(payment, cancellationToken) is not null)
-                    {
-                        Interlocked.Increment(ref pass.Captured);
-                        logger.LogInformation(infoMsg, payment.Id, decision.Outcome);
-                    }
-                    else
-                    {
-                        MarkPreviouslyResolved();
-                    }
+                    await CaptureAsync(payment, pass, cancellationToken);
+                    break;
+
+                case null:
+                    await DeclineAsync(payment, pass, "the bank has no decision", cancellationToken);
                     break;
 
                 case AcquirerOutcome.Declined:
-                    if (await paymentCompletion.DeclineOnBankDenialAsync(payment.Id, cancellationToken))
-                    {
-                        Interlocked.Increment(ref pass.Declined);
-                        logger.LogInformation(infoMsg, payment.Id, decision.Outcome);
-                    }
-                    else
-                    {
-                        MarkPreviouslyResolved();
-                    }
+                    await DeclineAsync(payment, pass, "the bank declined it", cancellationToken);
                     break;
 
                 case AcquirerOutcome.Unknown:
@@ -161,12 +134,50 @@ public sealed class PaymentRecovery(
         }
     }
 
+    private async Task CaptureAsync(Payment payment, RecoveryPass pass, CancellationToken cancellationToken)
+    {
+        if (await paymentCompletion.CaptureOnBankApprovalAsync(payment, cancellationToken) is not null)
+        {
+            Interlocked.Increment(ref pass.Captured);
+            logger.LogInformation(RecoveredTemplate, payment.Id, PaymentStatus.Captured, "the bank approved it");
+        }
+        else
+        {
+            MarkPreviouslyResolved(payment, pass);
+        }
+    }
+
+    private async Task DeclineAsync(Payment payment, RecoveryPass pass, string reason, CancellationToken cancellationToken)
+    {
+        if (await paymentCompletion.DeclineOnBankDenialAsync(payment.Id, cancellationToken))
+        {
+            Interlocked.Increment(ref pass.Declined);
+            logger.LogInformation(RecoveredTemplate, payment.Id, PaymentStatus.Declined, reason);
+        }
+        else
+        {
+            MarkPreviouslyResolved(payment, pass);
+        }
+    }
+
+    private void MarkPreviouslyResolved(Payment payment, RecoveryPass pass)
+    {
+        Interlocked.Increment(ref pass.PreviouslyResolved);
+        logger.LogInformation("Payment {PaymentId} was previously resolved", payment.Id);
+    }
+
     /// <summary>
-    /// What happened during one recovery pass. Written concurrently by the workers of Parallel.ForEachAsync.
+    /// What happened during one recovery pass. 
+    /// Written concurrently by the workers of Parallel.ForEachAsync.
     /// </summary>
     private sealed class RecoveryPass
     {
         public int Captured, Declined, Skipped, PreviouslyResolved;
         public bool BankUnavailable;
+
+        /// <summary>
+        /// At least one payment left 'created', so the next batch is not the same one.
+        /// </summary>
+        public bool MadeProgress => Captured + Declined + PreviouslyResolved > 0;
     }
 }
