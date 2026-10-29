@@ -104,6 +104,7 @@ public sealed class OutboxRelay(
     {
         await using var command = dataSource.CreateCommand("SELECT id, topic, message_key, payload FROM outbox ORDER BY id LIMIT $1");
         command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = options.Value.BatchSize });
+
         var batch = new List<OutboxMessage>(options.Value.BatchSize);
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);

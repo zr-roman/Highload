@@ -34,10 +34,7 @@ public sealed class MerchantRateLimitFilter(
         try
         {
             decision = await redisTokenBucket
-                .TryTakeAsync(
-                    request.MerchantId.ToString(CultureInfo.InvariantCulture), 
-                    settings.TokensPerSecond, 
-                    settings.Burst)
+                .TryTakeAsync(request.MerchantId.ToString(CultureInfo.InvariantCulture), settings.TokensPerSecond, settings.Burst)
                 .WaitAsync(LimiterTimeout);
         }
         catch (Exception e) when (e is RedisConnectionException or TimeoutException)
