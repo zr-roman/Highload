@@ -20,9 +20,6 @@ public sealed class OutboxRelay(
     PaymentsMetrics metrics,
     ILogger<OutboxRelay> logger) : BackgroundService
 {
-    /// <summary>The service's own spans; the name matches AddSource(serviceName) in Platform.</summary>
-    private static readonly ActivitySource ActivitySource = new("payments-api");
-
     private sealed record OutboxMessage(long Id, string Topic, string Key, string Payload);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -77,7 +74,7 @@ public sealed class OutboxRelay(
         var read = Stopwatch.GetElapsedTime(started);
 
         // A publish that actually moves messages is one span; the DELETE below becomes its child.
-        using var activity = ActivitySource.StartActivity("outbox publish");
+        using var activity = PaymentsTelemetry.ActivitySource.StartActivity("outbox publish");
         activity?.SetTag("messaging.destination.name", batch[0].Topic);
         activity?.SetTag("messaging.batch.message_count", batch.Count);
 
