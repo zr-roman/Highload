@@ -5,6 +5,7 @@ using Npgsql;
 using Payments.Api.Acquiring;
 using Payments.Api.Outbox;
 using Payments.Api.Payments;
+using Payments.Api.RateLimiting;
 using Payments.Api.Recovery;
 using Payments.Api.Telemetry;
 using Platform;
@@ -26,9 +27,14 @@ var msg = $"StaleAfter must be more than twice Acquirer:Resilience:TotalRequestT
 
 builder.Services.AddOptions<RecoveryOptions>()
     .Bind(builder.Configuration.GetSection("Recovery"))
-    .Validate(recoveryOptions => recoveryOptions.Interval > TimeSpan.Zero && recoveryOptions.BatchSize > 0 && recoveryOptions.MaxParallelism > 0,
+    .Validate(o => o.Interval > TimeSpan.Zero && o.BatchSize > 0 && o.MaxParallelism > 0,
         "Recovery: Interval, BatchSize and MaxParallelism must be positive")
     .Validate(recoveryOptions => recoveryOptions.StaleAfter > 2 * httpStandardResilienceOptions.TotalRequestTimeout.Timeout, msg)
+    .ValidateOnStart();
+
+builder.Services.AddOptions<MerchantRateLimitOptions>()
+    .Bind(builder.Configuration.GetSection("RateLimiting:Merchant"))
+    .Validate(o => o.TokensPerSecond > 0 && o.Burst > 0, "RateLimiting: TokensPerSecond and Burst must be positive")
     .ValidateOnStart();
 
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(postgres));
@@ -46,6 +52,8 @@ builder.Services.Configure<OutboxOptions>(builder.Configuration.GetSection("Outb
 builder.Services.AddSingleton<PaymentStore>();
 builder.Services.AddSingleton<PaymentCompletion>();
 builder.Services.AddSingleton<PaymentsMetrics>();
+builder.Services.AddSingleton<RedisTokenBucket>();
+builder.Services.AddSingleton<RedisCircuitBreaker>();
 builder.Services.AddHostedService<OutboxRelay>();
 builder.Services.AddHostedService<PaymentRecovery>();
 

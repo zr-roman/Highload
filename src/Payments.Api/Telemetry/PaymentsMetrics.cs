@@ -14,6 +14,9 @@ public sealed class PaymentsMetrics
     private readonly Counter<long> _outboxPublished;
     private readonly Histogram<int> _outboxBatchSize;
     private readonly Histogram<double> _outboxStageDuration;
+    private readonly Counter<long> _rateLimited;
+
+    private readonly Counter<long> _rateLimitBypassed;
 
     public PaymentsMetrics(IMeterFactory meterFactory)
     {
@@ -40,6 +43,12 @@ public sealed class PaymentsMetrics
         // Milliseconds: the SDK's default histogram buckets (0 to 10 000) are made for them.
         _outboxStageDuration = meter.CreateHistogram<double>("payments.outbox.stage.duration", unit: "ms",
             description: "One stage of a relay cycle: read the batch, produce it to Kafka, delete it");
+
+        _rateLimited = meter.CreateCounter<long>("payments.rate_limited",
+            description: "Requests rejected by the merchant rate limit");
+
+        _rateLimitBypassed = meter.CreateCounter<long>("payments.rate_limit.bypassed",
+            description: "Requests let through because Redis was unavailable");
     }
 
     public void Captured(long amount)
@@ -53,6 +62,10 @@ public sealed class PaymentsMetrics
     public void Replayed() => _replayed.Add(1);
 
     public void Unknown() => _unknown.Add(1);
+
+    public void RateLimited() => _rateLimited.Add(1);
+
+    public void RateLimitBypassed() => _rateLimitBypassed.Add(1);
 
     /// <summary>One relay cycle: how many messages it moved and how long each stage took.</summary>
     public void OutboxBatch(int count, TimeSpan read, TimeSpan produce, TimeSpan delete)

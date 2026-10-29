@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Payments.Api.Acquiring;
+using Payments.Api.RateLimiting;
 using Payments.Api.Telemetry;
 
 namespace Payments.Api.Payments;
@@ -8,7 +9,7 @@ public static class PaymentEndpoints
 {
     public static IEndpointRouteBuilder MapPaymentEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/payments", CreatePaymentAsync);
+        app.MapPost("/payments", CreatePaymentAsync).AddEndpointFilter<MerchantRateLimitFilter>();
         app.MapGet("/payments/{id:guid}", GetPaymentAsync);
         return app;
     }

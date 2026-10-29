@@ -22,6 +22,10 @@ public static class RedisExtensions
             ?? throw new InvalidOperationException("Connection string 'Redis' is not configured."));
 
         options.AbortOnConnectFail = false;   // in code, not in config: it must not be forgotten
+        
+        // Without a connection, fail at once instead of queueing the command until the timeout:
+        // Redis holds nothing a payment must wait for.
+        options.BacklogPolicy = BacklogPolicy.FailFast;
 
         builder.Services.AddSingleton<IConnectionMultiplexer>(services =>
         {
