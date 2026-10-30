@@ -15,7 +15,8 @@ internal sealed class AdvisoryLeaderLock : IAsyncDisposable
     private AdvisoryLeaderLock(NpgsqlConnection connection) => this.connection = connection;
     private static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(5);
 
-    internal static async Task<AdvisoryLeaderLock> AcquireAsync(NpgsqlDataSource dataSource, long lockKey, string jobName, ILogger logger, CancellationToken cancellationToken)
+    internal static async Task<AdvisoryLeaderLock> AcquireAsync(
+        NpgsqlDataSource dataSource, long lockKey, string jobName, ILogger logger, CancellationToken cancellationToken)
     {
         var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         try
@@ -27,7 +28,8 @@ internal sealed class AdvisoryLeaderLock : IAsyncDisposable
             while (!await TryBecomeLeaderAsync(lockKey, connection, cancellationToken))
                 await Task.Delay(RetryInterval, cancellationToken);
 
-            logger.LogInformation("{JobName} is the leader on {MachineName}, process {ProcessId}. Became the leader after {WaitTime}", jobName, Environment.MachineName, Environment.ProcessId, Stopwatch.GetElapsedTime(started));
+            logger.LogInformation("{JobName} is the leader on {MachineName}, process {ProcessId}. Became the leader after {WaitTime}",
+                jobName, Environment.MachineName, Environment.ProcessId, Stopwatch.GetElapsedTime(started));
 
             return new AdvisoryLeaderLock(connection);
         }

@@ -5,7 +5,5 @@
     <Project Path="src/Payments.Api/Payments.Api.csproj" />
     <Project Path="src/Platform/Platform.csproj" />
   </Folder>
-  <Folder Name="/tests/">
-    <Project Path="tests/Payments.Api.Tests/Payments.Api.Tests.csproj" />
-  </Folder>
+  <Project Path="tests/Payments.Api.Tests/Payments.Api.Tests.csproj" />
 </Solution>

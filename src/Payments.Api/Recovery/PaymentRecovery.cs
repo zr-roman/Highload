@@ -15,6 +15,7 @@ public sealed class PaymentRecovery(
     PaymentCompletion paymentCompletion, 
     IServiceScopeFactory serviceScopeFactory, 
     IOptions<RecoveryOptions> options,
+    TimeProvider timeProvider,
     ILogger<PaymentRecovery> logger) : BackgroundService
 {
     private const string RecoveredTemplate = "Payment {PaymentId} recovered as {Status}: {Reason}";
@@ -35,19 +36,19 @@ public sealed class PaymentRecovery(
                 if (pass.BankUnavailable)
                 {
                     logger.LogWarning("Bank unavailable, recovery paused for {Interval}", settings.Interval);
-                    await Task.Delay(settings.Interval, stoppingToken);
+                    await Task.Delay(settings.Interval, timeProvider, stoppingToken);
                 }
                 else if (batch.Count < settings.BatchSize || !pass.MadeProgress)
                 {
                     // Take the next batch at once only if this one was full and moved something:
                     // a full batch of payments that fail every time would otherwise spin with no pause.
-                    await Task.Delay(settings.Interval, stoppingToken);
+                    await Task.Delay(settings.Interval, timeProvider, stoppingToken);
                 }
             }
             catch (Exception e) when (!stoppingToken.IsCancellationRequested)
             {
                 logger.LogError(e, "Разбор батча сломался, ретрай через {Interval}.", settings.Interval);
-                await Task.Delay(settings.Interval, stoppingToken);
+                await Task.Delay(settings.Interval, timeProvider, stoppingToken);
             }
         }
     }
