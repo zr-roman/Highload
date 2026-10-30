@@ -62,9 +62,7 @@ builder.Services.AddHostedService<PaymentRecovery>();
 
 var acquirer = builder.Configuration.GetSection("Acquirer").Get<AcquirerOptions>() ?? new AcquirerOptions();
 if (acquirer.Mode == AcquirerMode.Http)
-    builder.Services.AddHttpClient<IAcquirer, HttpAcquirer>(client => client.BaseAddress = acquirer.BaseAddress)
-        // Retrying POST is safe here only because the bank is idempotent by paymentId.
-        .AddStandardResilienceHandler(builder.Configuration.GetSection("Acquirer:Resilience"));
+    builder.Services.AddHttpAcquirer(builder.Configuration.GetSection("Acquirer"));
 else
     builder.Services.AddSingleton<IAcquirer, FakeAcquirer>();
 
