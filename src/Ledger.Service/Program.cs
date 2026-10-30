@@ -22,9 +22,11 @@ builder.Services.AddHostedService<PaymentsConsumer>();
 
 var app = builder.Build();
 
+// From the content root, like appsettings.json. Not from AppContext.BaseDirectory: when the end-to-end tests host
+// both services in one process, that is the tests' folder, and both services' schema.sql would land on one path there.
 await DatabaseSchema.ApplyAsync(
     app.Services.GetRequiredService<NpgsqlDataSource>(),
-    Path.Combine(AppContext.BaseDirectory, "Database", "schema.sql"));
+    Path.Combine(app.Environment.ContentRootPath, "Database", "schema.sql"));
 await KafkaTopics.EnsureCreatedAsync(kafka, Topics.PaymentsCaptured, Topics.PaymentsCapturedPartitions, app.Logger);
 
 app.MapGet("/balances/merchants/{merchantId:long}", async (long merchantId, LedgerQueries queries, CancellationToken ct) =>
