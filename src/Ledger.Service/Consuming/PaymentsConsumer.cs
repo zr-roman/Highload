@@ -1,10 +1,10 @@
-using System.Diagnostics;
-using System.Text.Json;
 using Confluent.Kafka;
 using Contracts;
 using Ledger.Service.Ledger;
 using Ledger.Service.Telemetry;
 using Microsoft.Extensions.Options;
+using System.Diagnostics;
+using System.Text.Json;
 
 namespace Ledger.Service.Consuming;
 
@@ -165,13 +165,19 @@ public sealed class PaymentsConsumer(
                 ? 0
                 : await writer.WriteBatchAsync(batch.Partition, batch.Payments, cancellationToken);
 
+            // How long the payments took to get here. A batch with repeats in it is left out: the ledger does not say
+            // which payments were repeats, and the delay of a repeat is its age, not its way to the ledger. Repeats come
+            // only after a failure, so under normal load every payment is counted.
+            if (applied == batch.Payments.Count)
+                metrics.PaymentsWritten(batch.Partition, batch.Payments, DateTimeOffset.UtcNow);
+
             // The offset is committed only after the batch is in the database. A crash in between means the
             // batch is read again, and processed_payments turns the repeat into a no-op: at-least-once delivery
             // plus idempotent processing gives an effectively-once result.
             var last = batch.LastOffset!;
             consumer.Commit([new TopicPartitionOffset(last.TopicPartition, last.Offset + 1)]);
 
-            metrics.BatchWritten(batch.Payments.Count, applied, Stopwatch.GetElapsedTime(started));
+            metrics.BatchWritten(batch.Partition, batch.Payments.Count, applied, Stopwatch.GetElapsedTime(started));
             return true;
         }
         catch (Exception e) when (e is not OperationCanceledException)
