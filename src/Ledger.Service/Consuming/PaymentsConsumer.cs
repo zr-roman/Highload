@@ -165,6 +165,12 @@ public sealed class PaymentsConsumer(
                 ? 0
                 : await writer.WriteBatchAsync(batch.Partition, batch.Payments, cancellationToken);
 
+            // How long the payments took to get here. A batch with repeats in it is left out: the ledger does not say
+            // which payments were repeats, and the delay of a repeat is its age, not its way to the ledger. Repeats come
+            // only after a failure, so under normal load every payment is counted.
+            if (applied == batch.Payments.Count)
+                metrics.PaymentsWritten(batch.Partition, batch.Payments, DateTimeOffset.UtcNow);
+
             // The offset is committed only after the batch is in the database. A crash in between means the
             // batch is read again, and processed_payments turns the repeat into a no-op: at-least-once delivery
             // plus idempotent processing gives an effectively-once result.
