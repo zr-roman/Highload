@@ -28,8 +28,12 @@ public sealed class PaymentsConsumer(
     LedgerMetrics metrics,
     ILogger<PaymentsConsumer> logger) : BackgroundService
 {
+    // How often the consume loop reports the lag of its partitions; metrics are exported far less often anyway.
+    private static readonly TimeSpan LagInterval = TimeSpan.FromSeconds(1);
+
     // Accessed only from the consume loop; Kafka rebalance callbacks run inside Consume() on the same thread.
     private readonly Dictionary<int, PartitionBatch> _batches = new();
+    private long _lagRecordedAt;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -49,6 +53,7 @@ public sealed class PaymentsConsumer(
                     Add(result);
 
                 await FlushDueBatchesAsync(consumer, settings, stoppingToken);
+                RecordLag(consumer);
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -83,6 +88,7 @@ public sealed class PaymentsConsumer(
                 // that was already applied.
                 foreach (var partition in partitions)
                     _batches.Remove(partition.Partition.Value);
+                metrics.PartitionsRevoked(partitions.Select(p => p.Partition.Value));
 
                 logger.LogInformation("Revoked partitions: {Partitions}",
                     string.Join(", ", partitions.Select(p => p.Partition.Value)));
@@ -109,7 +115,7 @@ public sealed class PaymentsConsumer(
     {
         var partition = result.Partition.Value;
         if (!_batches.TryGetValue(partition, out var batch))
-            _batches[partition] = batch = new PartitionBatch(partition);
+            _batches[partition] = batch = new PartitionBatch(partition, result.Offset);
 
         batch.LastOffset = result.TopicPartitionOffset;
         try
@@ -117,8 +123,10 @@ public sealed class PaymentsConsumer(
             var payment = result.Message.Value is { } json
                 ? JsonSerializer.Deserialize(json, ContractsJson.Default.PaymentCaptured)
                 : null;
+
             if (payment is null)
                 throw new JsonException("Empty message");
+
             batch.Payments.Add(payment);
         }
         catch (JsonException e)
@@ -170,16 +178,46 @@ public sealed class PaymentsConsumer(
         {
             logger.LogError(e, "Failed to write a batch of {Count} payments for partition {Partition}, retrying",
                 batch.Payments.Count, batch.Partition);
+
             await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
             return false;
         }
     }
 
-    private sealed class PartitionBatch(int partition)
+    /// <summary>
+    /// Reports the lag of every assigned partition: its messages that are not in the ledger yet. They run from the start
+    /// of the pending batch, or from the read position when nothing is pending, to the end of the partition. The consumer
+    /// knows both ends from its fetch responses, so this asks the broker nothing. Counted this way, the lag is what
+    /// kafka-consumer-groups.sh shows from the committed offsets: a batch is committed right after it is written.
+    /// </summary>
+    private void RecordLag(IConsumer<string, string> consumer)
+    {
+        if (Stopwatch.GetElapsedTime(_lagRecordedAt) < LagInterval)
+            return;
+
+        _lagRecordedAt = Stopwatch.GetTimestamp();
+
+        foreach (var partition in consumer.Assignment)
+        {
+            var end = consumer.GetWatermarkOffsets(partition).High;
+            var firstUnwritten = _batches.TryGetValue(partition.Partition.Value, out var batch)
+                ? batch.FirstOffset
+                : consumer.Position(partition);
+
+            // Nothing fetched from the partition since it was assigned: its end and position are not known yet.
+            if (end.IsSpecial || firstUnwritten.IsSpecial)
+                continue;
+
+            metrics.ConsumerLag(partition.Partition.Value, Math.Max(0, end.Value - firstUnwritten.Value));
+        }
+    }
+
+    private sealed class PartitionBatch(int partition, Offset firstOffset)
     {
         private readonly long _startedAt = Stopwatch.GetTimestamp();
 
         public int Partition { get; } = partition;
+        public Offset FirstOffset { get; } = firstOffset;
         public List<PaymentCaptured> Payments { get; } = [];
         public TopicPartitionOffset? LastOffset { get; set; }
         public TimeSpan Age => Stopwatch.GetElapsedTime(_startedAt);
