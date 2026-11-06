@@ -20,7 +20,7 @@ public sealed class OutboxRelay(
     PaymentsMetrics metrics,
     ILogger<OutboxRelay> logger) : BackgroundService
 {
-    private sealed record OutboxMessage(long Id, string Topic, string Key, string Payload);
+    private sealed record OutboxMessage(long Id, string Topic, string Key, string Payload, DateTimeOffset CreatedAt);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -68,6 +68,9 @@ public sealed class OutboxRelay(
         using (SuppressInstrumentationScope.Begin())
             batch = await ReadBatchAsync(cancellationToken);
 
+        // The batch is in id order, so its first row has waited the longest. An empty batch: nothing is waiting.
+        metrics.OutboxOldest(batch.Count > 0 ? batch[0].CreatedAt : null);
+
         if (batch.Count == 0)
             return 0;
 
@@ -102,7 +105,7 @@ public sealed class OutboxRelay(
 
     private async Task<List<OutboxMessage>> ReadBatchAsync(CancellationToken cancellationToken)
     {
-        await using var command = dataSource.CreateCommand("SELECT id, topic, message_key, payload FROM outbox ORDER BY id LIMIT $1");
+        await using var command = dataSource.CreateCommand("SELECT id, topic, message_key, payload, created_at FROM outbox ORDER BY id LIMIT $1");
         command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = options.Value.BatchSize });
 
         var batch = new List<OutboxMessage>(options.Value.BatchSize);
@@ -110,7 +113,8 @@ public sealed class OutboxRelay(
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
         while (await reader.ReadAsync(cancellationToken))
-            batch.Add(new OutboxMessage(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3)));
+            batch.Add(new OutboxMessage(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3),
+                reader.GetFieldValue<DateTimeOffset>(4)));
         
         return batch;
     }

@@ -18,8 +18,16 @@ public sealed class PaymentsMetrics
 
     private readonly Counter<long> _rateLimitBypassed;
 
-    public PaymentsMetrics(IMeterFactory meterFactory)
+    private readonly TimeProvider _timeProvider;
+
+    // When the oldest outbox row was written, in UTC ticks, as of the relay's last read; 0 if the outbox was empty.
+    // The relay writes it and the metrics exporter reads it on its own thread, hence Volatile: it reads and writes
+    // a long in one piece, which plain access guarantees only up to 32 bits.
+    private long _outboxOldestTicks;
+
+    public PaymentsMetrics(IMeterFactory meterFactory, TimeProvider timeProvider)
     {
+        _timeProvider = timeProvider;
         var meter = meterFactory.Create(MeterName);
 
         _captured = meter.CreateCounter<long>("payments.captured", description: "Payments approved by the bank");
@@ -49,6 +57,11 @@ public sealed class PaymentsMetrics
 
         _rateLimitBypassed = meter.CreateCounter<long>("payments.rate_limit.bypassed",
             description: "Requests let through because Redis was unavailable");
+
+        // The age is counted when the exporter asks for it, not when the relay reads: if the relay is stuck on a batch
+        // (Kafka is down, the producer keeps retrying), the age keeps growing instead of freezing at its last value.
+        meter.CreateObservableGauge("payments.outbox.oldest_age", ObserveOutboxOldestAge, unit: "s",
+            description: "How long the oldest message in the outbox has been waiting for the relay");
     }
 
     public void Captured(long amount)
@@ -75,5 +88,20 @@ public sealed class PaymentsMetrics
         _outboxStageDuration.Record(read.TotalMilliseconds, new KeyValuePair<string, object?>("stage", "read"));
         _outboxStageDuration.Record(produce.TotalMilliseconds, new KeyValuePair<string, object?>("stage", "produce"));
         _outboxStageDuration.Record(delete.TotalMilliseconds, new KeyValuePair<string, object?>("stage", "delete"));
+    }
+
+    /// <summary>
+    /// The relay has read the outbox: <paramref name="createdAt"/> is when its oldest row was written, null if it was empty.
+    /// Only the instance that holds the relay lock reads the outbox; the others report 0, so across instances take the maximum.
+    /// </summary>
+    public void OutboxOldest(DateTimeOffset? createdAt) => Volatile.Write(ref _outboxOldestTicks, createdAt?.UtcTicks ?? 0);
+
+    // created_at comes from the database's clock, the current time from ours. On the stand both are one machine's clock;
+    // across machines the age is off by their difference, and the floor at zero keeps a database clock that runs ahead
+    // from making it negative.
+    private double ObserveOutboxOldestAge()
+    {
+        var oldest = Volatile.Read(ref _outboxOldestTicks);
+        return oldest == 0 ? 0 : Math.Max(0, TimeSpan.FromTicks(_timeProvider.GetUtcNow().UtcTicks - oldest).TotalSeconds);
     }
 }
