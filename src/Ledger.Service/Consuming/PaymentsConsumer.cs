@@ -138,13 +138,13 @@ public sealed class PaymentsConsumer(
         }
     }
 
-    private async Task FlushDueBatchesAsync(
-        IConsumer<string, string> consumer, ConsumerOptions settings, CancellationToken cancellationToken)
+    private async Task FlushDueBatchesAsync(IConsumer<string, string> consumer, ConsumerOptions settings, CancellationToken cancellationToken)
     {
         if (_batches.Count == 0)
             return;
 
         var maxDelay = TimeSpan.FromMilliseconds(settings.MaxBatchDelayMs);
+
         foreach (var batch in _batches.Values.ToList())
         {
             if (batch.Payments.Count < settings.BatchSize && batch.Age < maxDelay)
@@ -165,19 +165,13 @@ public sealed class PaymentsConsumer(
                 ? 0
                 : await writer.WriteBatchAsync(batch.Partition, batch.Payments, cancellationToken);
 
-            // How long the payments took to get here. A batch with repeats in it is left out: the ledger does not say
-            // which payments were repeats, and the delay of a repeat is its age, not its way to the ledger. Repeats come
-            // only after a failure, so under normal load every payment is counted.
-            if (applied == batch.Payments.Count)
-                metrics.PaymentsWritten(batch.Partition, batch.Payments, DateTimeOffset.UtcNow);
-
             // The offset is committed only after the batch is in the database. A crash in between means the
             // batch is read again, and processed_payments turns the repeat into a no-op: at-least-once delivery
             // plus idempotent processing gives an effectively-once result.
             var last = batch.LastOffset!;
             consumer.Commit([new TopicPartitionOffset(last.TopicPartition, last.Offset + 1)]);
 
-            metrics.BatchWritten(batch.Partition, batch.Payments.Count, applied, Stopwatch.GetElapsedTime(started));
+            metrics.BatchWritten(batch.Payments.Count, applied, Stopwatch.GetElapsedTime(started));
             return true;
         }
         catch (Exception e) when (e is not OperationCanceledException)
