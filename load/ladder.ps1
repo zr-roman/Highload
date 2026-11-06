@@ -38,7 +38,8 @@ if ($Warmup -notin @("", "0", "0s")) {
     Write-Host "Warm-up: RATE=$warmupRate for $Warmup, not measured"
     $env:K6_WEB_DASHBOARD = "false"
     # The summary goes to stdout and is discarded; the progress bar is on stderr and stays visible.
-    k6 run -e RATE=$warmupRate -e DURATION=$Warmup @mix $testScript | Out-Null
+    # No thresholds: an unmeasured run has nothing to pass, and k6 would print their failure to stderr.
+    k6 run --no-thresholds -e RATE=$warmupRate -e DURATION=$Warmup @mix $testScript | Out-Null
 }
 
 # k6 web dashboard: the charts of every step are saved to an HTML report. The live page is off (port -1):

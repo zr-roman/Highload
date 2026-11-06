@@ -27,11 +27,13 @@ if (HOT_SHARE !== null && !(HOT_SHARE >= 0 && HOT_SHARE <= 1)) {
 }
 
 // Busy VUs = rate x response time (Little's law). A request is sent only if a VU is free at the moment it is due;
-// otherwise k6 skips it and counts a dropped iteration. The pre-allocated pool rides out a 100 ms slowdown
-// from the first second. The cap keeps k6 from eating the laptop's memory when the service is overloaded:
-// the overload then shows up as dropped iterations, which the threshold below catches.
+// otherwise k6 skips it and counts a dropped iteration. A VU that k6 creates during the run comes too late
+// for the spike that needed it, so the pool is created up front, big enough for answers of up to 250 ms:
+// RATE / 4 VUs (the bank emulator alone answers in 50 +/- 20 ms). The cap keeps k6 from eating the laptop's
+// memory when the service is overloaded: the overload then shows up as dropped iterations, which the threshold
+// below catches.
 const MAX_VUS = 500;
-const PRE_ALLOCATED_VUS = Math.min(MAX_VUS, Math.max(50, Math.ceil(RATE / 10)));
+const PRE_ALLOCATED_VUS = Math.min(MAX_VUS, Math.max(50, Math.ceil(RATE / 4)));
 
 // 429 from the merchant rate limit is an answer the service is meant to give, not a failure. By default k6 counts
 // every status outside 200-399 as failed, and the limiter alone would fail the http_req_failed threshold.
