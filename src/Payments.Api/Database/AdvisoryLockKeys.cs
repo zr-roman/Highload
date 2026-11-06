@@ -3,6 +3,7 @@
 /// <summary>
 /// Keys of PostgreSQL advisory locks in the payments database; each background job needs its own
 /// </summary>
+/// <remarks>7_300_001 is taken: Platform.DatabaseSchema holds it while it applies the schema.</remarks>
 internal static class AdvisoryLockKeys
 {
     internal const long OutboxRelay = 7_301_001;
