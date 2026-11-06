@@ -177,7 +177,7 @@ public sealed class PaymentsConsumer(
             var last = batch.LastOffset!;
             consumer.Commit([new TopicPartitionOffset(last.TopicPartition, last.Offset + 1)]);
 
-            metrics.BatchWritten(batch.Payments.Count, applied, Stopwatch.GetElapsedTime(started));
+            metrics.BatchWritten(batch.Partition, batch.Payments.Count, applied, Stopwatch.GetElapsedTime(started));
             return true;
         }
         catch (Exception e) when (e is not OperationCanceledException)

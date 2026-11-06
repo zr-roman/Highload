@@ -33,10 +33,15 @@ public sealed class LedgerMetrics
             description: "Messages of a partition that are not in the ledger yet");
     }
 
-    public void BatchWritten(int size, int applied, TimeSpan duration)
+    /// <summary>
+    /// A batch of one partition is in the ledger. The partition tag shows skew: batches of the partition with a hot merchant
+    /// grow while the rest stay small, and in the totals they are lost among the others.
+    /// </summary>
+    public void BatchWritten(int partition, int size, int applied, TimeSpan duration)
     {
-        _batchSize.Record(size);
-        _batchDuration.Record(duration.TotalMilliseconds);
+        var tag = new KeyValuePair<string, object?>("partition", partition);
+        _batchSize.Record(size, tag);
+        _batchDuration.Record(duration.TotalMilliseconds, tag);
         _applied.Add(applied);
         _duplicates.Add(size - applied);
     }
