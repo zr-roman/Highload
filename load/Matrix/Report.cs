@@ -1,0 +1,160 @@
+﻿using System.Globalization;
+using System.Text;
+
+namespace Matrix;
+
+/// <summary>
+/// table.md for docs/load-testing.md: the median of the repeats of every run, every repeat, and the time windows
+/// of the repeats for the dashboard. Written anew after each repeat, so a matrix stopped halfway keeps what it measured.
+/// </summary>
+public sealed class Report(string path, StandInfo stand, StandSettings settings, MatrixOptions options)
+{
+    // The style of docs/load-testing.md: a decimal comma, thousands split by a space.
+    private static readonly NumberFormatInfo Numbers = new() { NumberDecimalSeparator = ",", NumberGroupSeparator = " " };
+
+    private static readonly string[] RunHeaders = ["Платежей/с", "Доля hot", "Лимитер"];
+
+    private readonly DateTimeOffset started = DateTimeOffset.Now;
+
+    public string Path => path;
+
+    public void Write(IReadOnlyList<RunResult> results)
+    {
+        var columns = Columns(settings);
+        var text = new StringBuilder();
+
+        text.Append("# Матрица этапа 3\n\n");
+        text.Append($"{started:dd.MM.yyyy}, {started:HH:mm}–{DateTimeOffset.Now:HH:mm}. ");
+        text.Append(stand.Commit is { } commit ? $"Коммит `{commit}`{(stand.UncommittedChanges ? " и незакоммиченные изменения" : "")}. " : "Коммит неизвестен. ");
+        text.Append($"Прогоны {string.Join(", ", options.Runs.Order())}; повторов — {options.Repeats}, по {options.DurationSeconds} с нагрузки; ");
+        text.Append(options.WarmupSeconds > 0 ? $"прогрев — {options.WarmupSeconds} с после каждого запуска Payments.Api.\n\n" : "без прогрева.\n\n");
+        text.Append("Стенд запущен матрицей: сервисы в Release, выборка трейсов 1 %, метрики раз в секунду; эмулятор банка с настройками по умолчанию. ");
+        text.Append($"{K6.Merchants} продавцов, горячий — продавец {K6.HotMerchant}. Лимит продавца — {settings.TokensPerSecond} в секунду, всплеск {settings.Burst}. ");
+        text.Append($"{stand.K6Version}. Приоритет процесса Docker — {stand.DockerPriority ?? "не проверен"}.\n\n");
+
+        text.Append("## Медиана повторов\n\n");
+        Table(text, ["Прогон", .. RunHeaders, .. columns.Select(column => column.Header), "Пороги", "`/invariants`"],
+            results.GroupBy(result => result.Run.Id).OrderBy(repeats => repeats.Key).Select(MedianRow));
+
+        text.Append("## Все повторы\n\n");
+        Table(text, ["Повтор", .. RunHeaders, .. columns.Select(column => column.Header), "Пороги", "`/invariants`"],
+            results.Select(RepeatRow));
+
+        text.Append("## Окна повторов\n\n");
+        text.Append("Для `ledger.payment.delay` и `ledger.batch.size` с фильтром `partition` в дашборде: эти гистограммы есть только там.\n\n");
+        Table(text, ["Повтор", "Время", "Горячая партиция", "Сообщений в секунду: горячая / прочие в среднем"],
+            results.Select(WindowRow));
+
+        text.Append("## Столбцы\n\n");
+        text.Append("- **p99** — из итога k6; **hot 201** — только платежи горячего продавца с решением банка, без быстрых ответов 429.\n");
+        text.Append("- **429 у hot** — доля ответов 429 у горячего продавца; **hot прошло** — его платежи, которые сервис принял (201 и 202), в секунду.\n");
+        text.Append("- **Сверх лимита** — на сколько принятых платежей горячего продавца больше, чем пропускает его корзина токенов за прогон: ");
+        text.Append($"всплеск и лимит за каждую секунду, {Count(settings.Burst)} + {Count(settings.TokensPerSecond)} × {options.DurationSeconds} = ");
+        text.Append($"{Count(settings.Burst + (double)settings.TokensPerSecond * options.DurationSeconds)}.\n");
+        text.Append("- **Отключений лимитера** — строк `Redis did not answer` в логе Payments.Api за прогон: после каждой лимит не действует для всех продавцов 5 секунд или дольше.\n");
+        text.Append("- **Не отправлено** — `dropped_iterations` от числа запланированных платежей.\n");
+        text.Append("- **Outbox** — возраст самой старой строки outbox, **lag** — сообщения партиции, ещё не закоммиченные Ledger; максимум замеров раз в секунду. ");
+        text.Append("Горячая партиция — та, в которую за прогон пришло больше всего сообщений.\n");
+        text.Append("- **Догнал за** — сколько после конца нагрузки outbox пустел, а lag всех партиций становился 0. Замер раз в секунду, поэтому «≤ 1» — догнал сразу.\n\n");
+        text.Append("Рядом с таблицей: `run-<повтор>.json` и `.txt` — итог и вывод k6, `.html` — его графики, `-backlog.csv` — замеры раз в секунду, ");
+        text.Append("`-invariants.json` — ответ `/invariants`; логи сервисов и сборки.\n");
+
+        File.WriteAllText(path, text.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+        string[] MedianRow(IGrouping<int, RunResult> repeats) =>
+        [
+            repeats.Key.ToString(),
+            .. RunCells(repeats.First().Run),
+            .. columns.Select(column => column.Format(Median(repeats.Select(column.Value)))),
+            Agreed(repeats.Select(result => result.K6.CrossedThresholds.Count == 0).ToList(), "не прошли"),
+            Agreed(repeats.Select(result => result.InvariantsOk).ToList(), "нарушены"),
+        ];
+
+        string[] RepeatRow(RunResult result) =>
+        [
+            result.Label,
+            .. RunCells(result.Run),
+            .. columns.Select(column => column.Format(column.Value(result))),
+            result.K6.CrossedThresholds.Count == 0 ? "ok" : string.Join(", ", result.K6.CrossedThresholds.Select(threshold => $"`{threshold}`")),
+            result.InvariantsOk ? "ok" : "нарушены",
+        ];
+    }
+
+    /// <summary>A number of the tables: its header, its value in a repeat (null: does not apply to the run), how to print it.</summary>
+    private sealed record Column(string Header, Func<RunResult, double?> Value, Func<double?, string> Format);
+
+    private static Column[] Columns(StandSettings settings) =>
+    [
+        new("p99 other, мс", r => r.K6.P99Other, Milliseconds),
+        new("p99 hot, мс", r => r.Run.HasHotMerchant ? r.K6.P99Hot : null, Milliseconds),
+        new("p99 hot 201, мс", r => r.Run.HasHotMerchant ? r.K6.P99Hot201 : null, Milliseconds),
+        new("429 у hot", r => r.Run.HasHotMerchant ? (double)r.K6.HotRateLimited / r.K6.HotRequests : null, Percent),
+        new("hot прошло, /с", r => r.Run.HasHotMerchant ? (double)r.HotAccepted / r.DurationSeconds : null, Count),
+        new("Сверх лимита", r => r.Run.HasHotMerchant && r.Run.Limiter ? r.OverLimit(settings) : null, Count),
+        new("Отключений лимитера", r => r.Run.Limiter ? r.LimiterOutages : null, Count),
+        new("Не отправлено", r => (double)r.K6.Dropped / ((long)r.Run.Rate * r.DurationSeconds), Percent),
+        new("Outbox, макс. возраст, с", r => r.Backlog.OutboxMaxAgeSeconds, Seconds),
+        new("Lag горячей партиции, макс.", r => r.HotPartitionLagMax, Count),
+        new("Lag прочих партиций, макс.", r => r.OtherPartitionsLagMax, Count),
+        new("Догнал за, с", r => r.Backlog.CaughtUpSeconds, CatchUp),
+    ];
+
+    private static string[] RunCells(MatrixRun run) =>
+        [Count(run.Rate), run.HotShare.ToString("0.##", Numbers), run.Limiter ? "вкл." : "выкл."];
+
+    private static string[] WindowRow(RunResult result) =>
+    [
+        result.Label,
+        $"{result.K6.Started:HH:mm:ss}–{result.K6.Finished:HH:mm:ss}",
+        result.HotPartition?.ToString() ?? "—",
+        $"{Count(result.HotPartitionMessagesPerSecond)} / {Count(result.OtherPartitionsMessagesPerSecond)}",
+    ];
+
+    private static void Table(StringBuilder text, IReadOnlyList<string> header, IEnumerable<string[]> rows)
+    {
+        text.Append("| ").AppendJoin(" | ", header).Append(" |\n");
+        text.Append('|').AppendJoin('|', header.Select(_ => "---")).Append("|\n");
+        foreach (var row in rows)
+            text.Append("| ").AppendJoin(" | ", row).Append(" |\n");
+        text.Append('\n');
+    }
+
+    private static double? Median(IEnumerable<double?> values)
+    {
+        var sorted = values.OfType<double>().Order().ToList();
+        if (sorted.Count == 0)
+            return null;
+
+        var middle = sorted.Count / 2;
+        return sorted.Count % 2 == 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+    }
+
+    // A check in the median line: ok if every repeat passed it, otherwise in how many it did not.
+    private static string Agreed(IReadOnlyList<bool> passed, string failed) =>
+        passed.All(ok => ok) ? "ok" : $"{failed} в {passed.Count(ok => !ok)} из {passed.Count}";
+
+    // "—": the number does not apply to the run. Thousands are split from five digits on, as in docs/load-testing.md:
+    // 1500, but 24 400. A small median of two repeats keeps its half: 0,5 outages, not 1.
+    private static string Count(double? value) =>
+        value is { } v ? v.ToString(Math.Abs(v) >= 10_000 ? "#,0" : Math.Abs(v) < 10 ? "0.#" : "0", Numbers) : "—";
+
+    // A decimal below 10 ms, as in docs/load-testing.md: 3,3 but 48.
+    private static string Milliseconds(double? value) =>
+        value is { } v && v < 10 ? v.ToString("0.0", Numbers) : Count(value);
+
+    private static string Seconds(double? value) =>
+        value is { } v ? v.ToString("0.0", Numbers) : "—";
+
+    // The backlog is sampled once a second, so "caught up by the first sample after the load" is all a second or less says.
+    private static string CatchUp(double? value) =>
+        value is <= 1 ? "≤ 1" : Count(value);
+
+    private static string Percent(double? share)
+    {
+        if (share is not { } value)
+            return "—";
+
+        var percent = value * 100;
+        return percent.ToString(percent < 1 ? "0.##" : percent < 10 ? "0.#" : "0", Numbers) + " %";
+    }
+}

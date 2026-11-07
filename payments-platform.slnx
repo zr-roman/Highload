@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/load/">
+    <Project Path="load/Matrix/Matrix.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/Contracts/Contracts.csproj" />
     <Project Path="src/Ledger.Service/Ledger.Service.csproj" />
