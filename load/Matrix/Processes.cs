@@ -55,7 +55,11 @@ public static class Processes
     }
 
     /// <summary>The output of a short command, or null if it is not installed or fails.</summary>
-    public static async Task<string?> ReadAsync(string file, params string[] arguments)
+    public static async Task<string?> ReadAsync(string file, params string[] arguments) =>
+        await RunCommandAsync(file, arguments) is { ExitCode: 0 } result ? result.Output : null;
+
+    /// <summary>A short command run to the end, with what it wrote; null if it is not installed.</summary>
+    public static async Task<CommandResult?> RunCommandAsync(string file, params string[] arguments)
     {
         try
         {
@@ -64,7 +68,7 @@ public static class Processes
             var output = process.StandardOutput.ReadToEndAsync();
             var errors = process.StandardError.ReadToEndAsync();
             await Task.WhenAll(output, errors, process.WaitForExitAsync());
-            return process.ExitCode == 0 ? output.Result.Trim() : null;
+            return new CommandResult(process.ExitCode, output.Result.Trim(), errors.Result.Trim());
         }
         catch (Win32Exception)
         {
@@ -72,6 +76,9 @@ public static class Processes
         }
     }
 }
+
+/// <summary>What a short command wrote, and how it exited.</summary>
+public sealed record CommandResult(int ExitCode, string Output, string Errors);
 
 /// <summary>A process whose output, both streams, goes line by line to a log file. Dispose kills it with its children.</summary>
 public sealed class LoggedProcess : IDisposable

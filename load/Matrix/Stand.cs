@@ -64,8 +64,9 @@ public sealed class Stand(string repository, string reports) : IDisposable
     }
 
     /// <summary>
-    /// How many times in the window Payments.Api logged that Redis did not answer: after each, the limit is off
-    /// for every merchant for 5 s or more (RedisCircuitBreaker).
+    /// How many times in the window Payments.Api logged that Redis did not answer: each time the limit went off for every
+    /// merchant, for milliseconds or for the whole 5-second break of RedisCircuitBreaker. How long cannot be told from the log:
+    /// when the breaker flaps, its "off" and "on" lines may come in the wrong order.
     /// </summary>
     public int RedisTimeouts(DateTimeOffset from, DateTimeOffset to)
     {

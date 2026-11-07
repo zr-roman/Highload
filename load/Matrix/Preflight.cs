@@ -67,19 +67,25 @@ public static class Preflight
         if (!OperatingSystem.IsWindows())
             return null;
 
-        // A line "name=priority" for every process that listens on the port. The priority is empty
-        // if Windows does not show it, as for a process of another user.
-        var output = await Processes.ReadAsync("powershell", "-NoProfile", "-Command",
+        // A line "name=priority" for every process that listens on the port. Process 0 is left out: it is the System
+        // Idle Process, which Windows names as the owner of a socket it does not attribute to a process, and it has no
+        // priority. The priority is read by Select-Object, as in the command of README: where Windows does not let it be
+        // read, as for a process of another user, Select-Object leaves it empty instead of failing.
+        var result = await Processes.RunCommandAsync("powershell", "-NoProfile", "-Command",
             $"Get-NetTCPConnection -LocalPort {kafkaPort} -State Listen -ErrorAction SilentlyContinue" +
             " | Select-Object -ExpandProperty OwningProcess -Unique" +
-            " | ForEach-Object { $p = Get-Process -Id $_ -ErrorAction SilentlyContinue; $p.ProcessName + '=' + $p.PriorityClass }");
-        if (output is null)
+            " | Where-Object { $_ -ne 0 }" +
+            " | ForEach-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue }" +
+            " | Select-Object ProcessName, PriorityClass" +
+            " | ForEach-Object { $_.ProcessName + '=' + $_.PriorityClass }");
+        if (result is not { ExitCode: 0 })
         {
-            Console.WriteLine("Warning: PowerShell failed, so the priority of Docker's process is not checked (README, step 8).");
+            var why = result?.Errors.Split('\n')[0].Trim() ?? "powershell not found";
+            Console.WriteLine($"Warning: PowerShell failed, so the priority of Docker's process is not checked (README, step 8): {why}");
             return null;
         }
 
-        var listeners = output.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+        var listeners = result.Output.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
             .Select(line => line.Split('=', 2))
             .Where(parts => parts.Length == 2 && parts[0].Length > 0) // a process that exited in between has no name
             .Select(parts => (Name: parts[0], Priority: parts[1]))
@@ -95,8 +101,9 @@ public static class Preflight
             throw new MatrixException(
                 $"Port {kafkaPort} is served by {shown}, not Normal: under load the relay nearly stops (README, step 8). " +
                 "Turn off efficiency mode for it in Task Manager and start again.");
-        if (listeners.Any(listener => listener.Priority.Length == 0))
-            Console.WriteLine($"Warning: Windows does not show the priority of {shown} on port {kafkaPort} (README, step 8).");
+        var hidden = listeners.Where(listener => listener.Priority.Length == 0).Select(listener => listener.Name).ToList();
+        if (hidden.Count > 0)
+            Console.WriteLine($"Warning: Windows does not show the priority of {string.Join(", ", hidden)} on port {kafkaPort} (README, step 8).");
         return shown;
     }
 

@@ -51,7 +51,8 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         text.Append("- **Сверх лимита** — на сколько принятых платежей горячего продавца больше, чем пропускает его корзина токенов за прогон: ");
         text.Append($"всплеск и лимит за каждую секунду, {Count(settings.Burst)} + {Count(settings.TokensPerSecond)} × {options.DurationSeconds} = ");
         text.Append($"{Count(settings.Burst + (double)settings.TokensPerSecond * options.DurationSeconds)}.\n");
-        text.Append("- **Отключений лимитера** — строк `Redis did not answer` в логе Payments.Api за прогон: столько раз Redis не ответил лимитеру за 100 мс и лимит переставал действовать для всех продавцов. Сколько платежей горячего продавца от этого прошло, видно по «Сверх лимита».\n");
+        text.Append("- **Отключений лимитера** — строк `Redis did not answer` в логе Payments.Api за прогон: столько раз Redis не ответил лимитеру за 100 мс и лимит переставал действовать для всех продавцов — ");
+        text.Append("на миллисекунды или на весь перерыв RedisCircuitBreaker, 5 секунд. Сколько платежей горячего продавца прошло без лимита, видно по «Сверх лимита».\n");
         text.Append("- **Не отправлено** — `dropped_iterations` от числа запланированных платежей.\n");
         text.Append("- **Outbox** — возраст самой старой строки outbox, **lag** — сообщения партиции, ещё не закоммиченные Ledger; максимум замеров раз в секунду. ");
         text.Append("Горячая партиция — та, в которую за прогон пришло больше всего сообщений.\n");
