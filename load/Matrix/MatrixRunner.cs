@@ -21,7 +21,9 @@ public static class MatrixRunner
             .GroupBy(run => run.Limiter)
             .OrderByDescending(group => group.Key)
             .ToList();
+
         var repeats = groups.Sum(group => group.Count()) * options.Repeats;
+
         // A repeat takes its load and about 15 s more: k6 starting and stopping, the catch-up, /invariants.
         var minutes = (repeats * (options.DurationSeconds + 15) + groups.Count * (options.WarmupSeconds + 30)) / 60.0;
         Console.WriteLine($"{repeats} repeat{(repeats == 1 ? "" : "s")} of {options.DurationSeconds} s, about {Math.Ceiling(minutes)} min. Report: {reports}");
@@ -75,14 +77,14 @@ public static class MatrixRunner
             Console.WriteLine($"Run {label}: {run.Rate}/s, hot share {run.HotShare}, limiter {(run.Limiter ? "on" : "off")}, {options.DurationSeconds} s");
 
             // Every run starts from a stand that has caught up with the load before it.
-            await backlog.WaitCaughtUpAsync(ct);
+            var start = await backlog.WaitCaughtUpAsync(ct);
 
             using var stopLoad = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var load = k6.RunAsync(run, label, options.DurationSeconds, stopLoad.Token);
             IReadOnlyList<BacklogSample> samples;
             try
             {
-                samples = await backlog.RecordAsync(load, Path.Combine(reports, $"run-{label}-backlog.csv"), ct);
+                samples = await backlog.RecordAsync(load, Path.Combine(reports, $"run-{label}-backlog.csv"), start, ct);
             }
             catch
             {
@@ -112,6 +114,7 @@ public static class MatrixRunner
                 throw new MatrixException($"/invariants of the ledger failed after run {label}: {e.Message}");
             }
             await File.WriteAllTextAsync(Path.Combine(reports, $"run-{label}-invariants.json"), invariants, ct);
+
             using var answer = JsonDocument.Parse(invariants);
 
             var result = new RunResult(

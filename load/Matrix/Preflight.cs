@@ -1,4 +1,5 @@
-﻿using System.Net.Sockets;
+﻿using System.Net;
+using System.Net.Sockets;
 using Confluent.Kafka;
 using Npgsql;
 
@@ -47,50 +48,88 @@ public static class Preflight
         if (!await ListensAsync("localhost", 4317, ct))
             Console.WriteLine("Warning: the dashboard does not answer on port 4317, so ledger.payment.delay and ledger.batch.size of the runs will be lost.");
 
-        // "k6 v1.1.0 (commit/..., go1.24.4, windows/amd64)": the version is enough.
+        // "k6 v1.1.0 (commit/..., go1.24.4, windows/amd64)", on Windows "k6.exe v2.2.0 (...)": the version is enough.
         var k6 = await Processes.ReadAsync("k6", "version") ?? throw new MatrixException("k6 not found: winget install k6 --source winget");
 
         var head = await Processes.ReadAsync("git", "-C", repository, "rev-parse", "--short", "HEAD");
         var changes = await Processes.ReadAsync("git", "-C", repository, "status", "--porcelain");
 
-        return new StandInfo(head, changes is { Length: > 0 }, k6.Split(" (")[0], await CheckDockerPriorityAsync(settings.KafkaPort));
+        return new StandInfo(head, changes is { Length: > 0 }, k6.Split(" (")[0].Replace("k6.exe", "k6"), await CheckDockerPriorityAsync(settings.KafkaPort));
     }
 
     /// <summary>
     /// In efficiency mode Windows runs Docker's relay of the Kafka port at Idle priority, and under load the relay nearly stops
-    /// (docs/load-testing.md, "Асинхронная часть"). The command is the one from README, step 8. Null: nothing was checked.
+    /// (docs/load-testing.md, "Асинхронная часть"); README, step 8, checks it by hand. Returns what the report shows:
+    /// the processes that listen on the port, with their priorities. Null: nothing was checked.
     /// </summary>
     private static async Task<string?> CheckDockerPriorityAsync(int kafkaPort)
     {
         if (!OperatingSystem.IsWindows())
             return null;
 
+        // A line "name=priority" for every process that listens on the port. The priority is empty
+        // if Windows does not show it, as for a process of another user.
         var output = await Processes.ReadAsync("powershell", "-NoProfile", "-Command",
-            $"(Get-Process -Id (Get-NetTCPConnection -LocalPort {kafkaPort} -State Listen).OwningProcess).PriorityClass");
-        // One line per listening socket, IPv4 and IPv6 may both be there.
-        var priorities = output?.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Distinct().ToList() ?? [];
-        if (priorities.Count == 0)
+            $"Get-NetTCPConnection -LocalPort {kafkaPort} -State Listen -ErrorAction SilentlyContinue" +
+            " | Select-Object -ExpandProperty OwningProcess -Unique" +
+            " | ForEach-Object { $p = Get-Process -Id $_ -ErrorAction SilentlyContinue; $p.ProcessName + '=' + $p.PriorityClass }");
+        if (output is null)
         {
-            Console.WriteLine("Warning: could not check the priority of Docker's process (README, step 8).");
+            Console.WriteLine("Warning: PowerShell failed, so the priority of Docker's process is not checked (README, step 8).");
             return null;
         }
 
-        var priority = string.Join(", ", priorities);
-        if (priority != "Normal")
+        var listeners = output.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Split('=', 2))
+            .Where(parts => parts.Length == 2 && parts[0].Length > 0) // a process that exited in between has no name
+            .Select(parts => (Name: parts[0], Priority: parts[1]))
+            .ToList();
+        var shown = string.Join(", ", listeners.Select(listener => $"{listener.Name}: {(listener.Priority.Length > 0 ? listener.Priority : "?")}"));
+
+        if (listeners.Count == 0)
+        {
+            Console.WriteLine($"Warning: no Windows process listens on port {kafkaPort}, so there is no priority to check (README, step 8).");
+            return null;
+        }
+        if (listeners.Any(listener => listener.Priority.Length > 0 && listener.Priority != "Normal"))
             throw new MatrixException(
-                $"The process that listens on port {kafkaPort} for Docker runs at priority {priority}, not Normal: under load it nearly " +
-                "stops relaying Kafka (README, step 8). Turn off efficiency mode for Docker in Task Manager and start again.");
-        return priority;
+                $"Port {kafkaPort} is served by {shown}, not Normal: under load the relay nearly stops (README, step 8). " +
+                "Turn off efficiency mode for it in Task Manager and start again.");
+        if (listeners.Any(listener => listener.Priority.Length == 0))
+            Console.WriteLine($"Warning: Windows does not show the priority of {shown} on port {kafkaPort} (README, step 8).");
+        return shown;
     }
 
+    // Every address of the host at once, and the first that connects settles it. "localhost" is ::1 first, Docker publishes
+    // its ports on 127.0.0.1 only, and on Windows a refused connection takes about 2 s: one address after another,
+    // the right one comes too late.
     private static async Task<bool> ListensAsync(string host, int port, CancellationToken ct)
     {
-        using var client = new TcpClient();
+        using var settled = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var attempts = (await Dns.GetHostAddressesAsync(host, ct))
+            .Select(address => ConnectsAsync(address, port, settled.Token))
+            .ToList();
+        while (attempts.Count > 0)
+        {
+            var attempt = await Task.WhenAny(attempts);
+            if (await attempt)
+            {
+                settled.Cancel(); // the other attempts are not needed any more
+                return true;
+            }
+            attempts.Remove(attempt);
+        }
+        return false;
+    }
+
+    private static async Task<bool> ConnectsAsync(IPAddress address, int port, CancellationToken ct)
+    {
+        using var client = new TcpClient(address.AddressFamily);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(2));
+        timeout.CancelAfter(TimeSpan.FromSeconds(3));
         try
         {
-            await client.ConnectAsync(host, port, timeout.Token);
+            await client.ConnectAsync(address, port, timeout.Token);
             return true;
         }
         catch (Exception e) when (e is SocketException || (e is OperationCanceledException && !ct.IsCancellationRequested))

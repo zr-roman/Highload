@@ -24,10 +24,13 @@ public static class Processes
         };
         foreach (var argument in arguments)
             info.ArgumentList.Add(argument);
+
         foreach (var name in info.Environment.Keys.Where(IsStandSetting).ToList())
             info.Environment.Remove(name);
+
         foreach (var (name, value) in settings ?? new Dictionary<string, string>())
             info.Environment[name] = value;
+
         return info;
     }
 
@@ -141,6 +144,7 @@ public sealed class LoggedProcess : IDisposable
         {
             if (closed)
                 return;
+
             log.WriteLine(line.Data);
         }
         onLine?.Invoke(line.Data);

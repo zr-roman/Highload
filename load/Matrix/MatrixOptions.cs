@@ -19,12 +19,17 @@ public sealed record MatrixOptions(IReadOnlyList<int> Runs, int Repeats, int Dur
 
     public static MatrixOptions Parse(string[] args)
     {
-        var options = new MatrixOptions(MatrixRun.All.Select(run => run.Id).ToList(), Repeats: 2, DurationSeconds: 120, WarmupSeconds: 20);
+        var options = new MatrixOptions(
+            MatrixRun.All.Select(run => run.Id).ToList(), 
+            Repeats: 2, 
+            DurationSeconds: 120, 
+            WarmupSeconds: 20);
 
         for (var i = 0; i < args.Length; i += 2)
         {
             var name = args[i];
             var value = i + 1 < args.Length ? args[i + 1] : throw Error($"{name} needs a value");
+
             options = name switch
             {
                 "--runs" => options with { Runs = ParseRuns(value) },

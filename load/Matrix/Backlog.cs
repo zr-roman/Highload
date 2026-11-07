@@ -23,24 +23,43 @@ public sealed class Backlog(NpgsqlDataSource payments, IAdminClient kafka, strin
 
     private static readonly TimeSpan KafkaTimeout = TimeSpan.FromSeconds(5);
 
-    /// <summary>Waits until the stand has caught up with the load before: a run starts with an empty outbox and no lag.</summary>
-    public async Task WaitCaughtUpAsync(CancellationToken ct) => await RecordAsync(Task.CompletedTask, csvPath: null, ct);
+    // A sample that takes longer leaves a gap in the record, which the console then reports.
+    private static readonly TimeSpan SlowSample = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Waits until the stand has caught up with the load before: a run starts with an empty outbox and no lag.
+    /// Returns the sample that showed it, the starting point of the next record.
+    /// </summary>
+    public async Task<BacklogSample> WaitCaughtUpAsync(CancellationToken ct) =>
+        (await RecordAsync(Task.CompletedTask, csvPath: null, start: null, ct))[^1];
 
     /// <summary>
     /// Samples while the load runs and then until the stand has caught up with it: the outbox is empty and the ledger
-    /// has committed everything in Kafka. Returns at once if the load fails; the caller gets the error from its task.
+    /// has committed everything in Kafka. The record begins with <paramref name="start"/>, taken before the load,
+    /// so that it holds the start even if the first sample under load is late. Returns at once if the load fails;
+    /// the caller gets the error from its task.
     /// </summary>
-    public async Task<IReadOnlyList<BacklogSample>> RecordAsync(Task load, string? csvPath, CancellationToken ct)
+    public async Task<IReadOnlyList<BacklogSample>> RecordAsync(Task load, string? csvPath, BacklogSample? start, CancellationToken ct)
     {
         await using var csv = csvPath is null ? null : File.CreateText(csvPath);
 
         if (csv is not null)
-            await csv.WriteLineAsync("time,outbox_rows,outbox_age_s," + string.Join(",", Partitions.Select(p => $"lag_{p.Partition.Value}")));
+            await csv.WriteLineAsync("time,outbox_rows,outbox_age_s," + string.Join(",", Partitions.Select(p => $"lag_{p.Partition.Value}")) + ",postgres_ms,kafka_ms");
+
+        var samples = new List<BacklogSample>();
+
+        async Task AddAsync(BacklogSample sample)
+        {
+            samples.Add(sample);
+            if (csv is not null)
+                await csv.WriteLineAsync(sample.ToCsv());
+        }
+
+        if (start is not null)
+            await AddAsync(start);
 
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
         Stopwatch? sinceLoad = null;
-
-        var samples = new List<BacklogSample>();
 
         do
         {
@@ -56,9 +75,9 @@ public sealed class Backlog(NpgsqlDataSource payments, IAdminClient kafka, strin
 
             if (await TrySampleAsync(ct) is { } sample)
             {
-                samples.Add(sample);
-                if (csv is not null)
-                    await csv.WriteLineAsync(sample.ToCsv());
+                await AddAsync(sample);
+                if (sample.Postgres > SlowSample || sample.Kafka > SlowSample)
+                    Console.WriteLine($"  Slow sample, a gap in the record: Postgres {sample.Postgres.TotalSeconds:0.0} s, Kafka {sample.Kafka.TotalSeconds:0.0} s");
 
                 if (samples.Count % 10 == 0)
                     Console.WriteLine($"  {sample}");
@@ -90,14 +109,32 @@ public sealed class Backlog(NpgsqlDataSource payments, IAdminClient kafka, strin
         }
     }
 
+    // Postgres and Kafka at once: one that is slow to answer does not hold up the other's reading.
     private async Task<BacklogSample> SampleAsync(CancellationToken ct)
     {
+        var at = DateTimeOffset.Now;
+        var outbox = ReadOutboxAsync(ct);
+        var lag = ReadLagAsync(ct);
+        await Task.WhenAll(outbox, lag);
+
+        var (rows, age, postgres) = outbox.Result;
+        var (ends, lags, kafkaTook) = lag.Result;
+        return new BacklogSample(at, rows, age, ends, lags, postgres, kafkaTook);
+    }
+
+    private async Task<(long Rows, double AgeSeconds, TimeSpan Took)> ReadOutboxAsync(CancellationToken ct)
+    {
+        var took = Stopwatch.StartNew();
         await using var command = payments.CreateCommand(
             "SELECT count(*), coalesce(extract(epoch FROM now() - min(created_at)), 0)::float8 FROM outbox");
         await using var reader = await command.ExecuteReaderAsync(ct);
         await reader.ReadAsync(ct);
-        var outboxRows = reader.GetInt64(0);
-        var outboxAge = reader.GetDouble(1);
+        return (reader.GetInt64(0), reader.GetDouble(1), took.Elapsed);
+    }
+
+    private async Task<(long[] EndOffsets, long[] Lag, TimeSpan Took)> ReadLagAsync(CancellationToken ct)
+    {
+        var took = Stopwatch.StartNew();
 
         // The commits first, then the ends: an end read later is never below a commit read earlier, so the lag is never
         // negative. At worst it counts the few messages that came in between the two calls.
@@ -117,21 +154,24 @@ public sealed class Backlog(NpgsqlDataSource payments, IAdminClient kafka, strin
             info => info.TopicPartitionOffsetError.Partition.Value,
             info => info.TopicPartitionOffsetError.Offset.Value);
 
-        return new BacklogSample(
-            DateTimeOffset.Now,
-            outboxRows,
-            outboxAge,
+        return (
             Partitions.Select(p => end[p.Partition.Value]).ToArray(),
-            Partitions.Select(p => end[p.Partition.Value] - committed[p.Partition.Value]).ToArray());
+            Partitions.Select(p => end[p.Partition.Value] - committed[p.Partition.Value]).ToArray(),
+            took.Elapsed);
     }
 }
 
-/// <summary>One second of the backlog: rows in the outbox and the age of the oldest, the end offset and the lag of every partition.</summary>
-public sealed record BacklogSample(DateTimeOffset At, long OutboxRows, double OutboxAgeSeconds, long[] EndOffsets, long[] Lag)
+/// <summary>
+/// One second of the backlog: rows in the outbox and the age of the oldest, the end offset and the lag of every partition,
+/// and how long Postgres and Kafka took to tell.
+/// </summary>
+public sealed record BacklogSample(
+    DateTimeOffset At, long OutboxRows, double OutboxAgeSeconds, long[] EndOffsets, long[] Lag, TimeSpan Postgres, TimeSpan Kafka)
 {
     public bool CaughtUp => OutboxRows == 0 && Lag.All(lag => lag == 0);
 
-    public string ToCsv() => $"{At:HH:mm:ss},{OutboxRows},{OutboxAgeSeconds:0.000},{string.Join(",", Lag)}";
+    public string ToCsv() =>
+        $"{At:HH:mm:ss},{OutboxRows},{OutboxAgeSeconds:0.000},{string.Join(",", Lag)},{Postgres.TotalMilliseconds:0},{Kafka.TotalMilliseconds:0}";
 
     public override string ToString() =>
         $"{At:HH:mm:ss}  outbox {OutboxRows} rows, the oldest {OutboxAgeSeconds:0.0} s;  lag by partition {string.Join(" ", Lag)}";

@@ -18,13 +18,17 @@ public sealed class Stand(string repository, string reports) : IDisposable
 
     private static readonly HttpClient Http = new();
 
-    // 1% of traces: a trace of every request is thousands of spans a second for the dashboard on the same laptop.
-    // Metrics every second instead of every minute: the backlog gauges get a point a second on the dashboard.
-    private static readonly Dictionary<string, string> Telemetry = new()
+    private static readonly Dictionary<string, string> ServiceSettings = new()
     {
+        // 1% of traces: a trace of every request is thousands of spans a second for the dashboard on the same laptop.
         ["OTEL_TRACES_SAMPLER"] = "parentbased_traceidratio",
         ["OTEL_TRACES_SAMPLER_ARG"] = "0.01",
+        // Metrics every second instead of every minute: the backlog gauges get a point a second on the dashboard.
         ["OTEL_METRIC_EXPORT_INTERVAL"] = "1000",
+        // A time on every line of the logs, to match them with the windows of the repeats in the table. The formatter is named
+        // on purpose: without a name the console logger reads the obsolete options and skips FormatterOptions.
+        ["Logging__Console__FormatterName"] = "simple",
+        ["Logging__Console__FormatterOptions__TimestampFormat"] = "HH:mm:ss.fff ",
     };
 
     private readonly List<DateTimeOffset> redisTimeouts = [];
@@ -49,7 +53,7 @@ public sealed class Stand(string repository, string reports) : IDisposable
     public async Task StartAsync(bool limiter, CancellationToken ct)
     {
         bank ??= new LoggedProcess("Bank emulator", Processes.Info("go", ["run", "."], Path.Combine(repository, "src", "bank-emulator")), Log("bank-emulator.log"));
-        ledger ??= DotnetRun("Ledger.Service", Telemetry, "ledger.log");
+        ledger ??= DotnetRun("Ledger.Service", ServiceSettings, "ledger.log");
         paymentsApi?.Dispose();
         paymentsApi = StartPaymentsApi(limiter);
 
@@ -87,7 +91,7 @@ public sealed class Stand(string repository, string reports) : IDisposable
     private LoggedProcess StartPaymentsApi(bool limiter)
     {
         // Set either way: a value left in the shell is not passed on (Processes.IsStandSetting).
-        var settings = new Dictionary<string, string>(Telemetry) { ["RateLimiting__Merchant__Enabled"] = limiter ? "true" : "false" };
+        var settings = new Dictionary<string, string>(ServiceSettings) { ["RateLimiting__Merchant__Enabled"] = limiter ? "true" : "false" };
         return DotnetRun("Payments.Api", settings, $"payments-api-limiter-{(limiter ? "on" : "off")}.log", line =>
         {
             if (line.Contains("Redis did not answer", StringComparison.Ordinal))
@@ -107,12 +111,15 @@ public sealed class Stand(string repository, string reports) : IDisposable
     private static async Task WaitHealthyAsync(LoggedProcess process, string url, CancellationToken ct)
     {
         var waited = Stopwatch.StartNew();
+
         while (!await IsHealthyAsync(url, ct))
         {
             if (process.HasExited)
                 throw new MatrixException($"{process.Name} exited on start, see {process.LogPath}");
+
             if (waited.Elapsed > StartTimeout)
                 throw new MatrixException($"{process.Name} did not answer at {url} in {StartTimeout.TotalMinutes:0} min, see {process.LogPath}");
+
             await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
         }
     }

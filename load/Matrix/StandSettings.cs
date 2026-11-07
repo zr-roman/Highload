@@ -44,6 +44,7 @@ public sealed record StandSettings(string PaymentsDatabase, string Kafka, string
         using var document = JsonDocument.Parse(
             File.ReadAllText(Path.Combine(repository, "src", project, "appsettings.json")),
             new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+
         return document.RootElement.Clone();
     }
 }
