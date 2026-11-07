@@ -13,7 +13,7 @@ namespace EndToEnd.Tests;
 /// The README's guarantees, checked through the whole platform under concurrent load: no payment is charged twice,
 /// no captured payment is lost or booked twice on its way through the outbox and Kafka, and the money in
 /// Payments.Api and in Ledger.Service adds up. Also when the ledger stops in the middle of the load,
-/// and when it reads again the payments it has already booked.
+/// when it reads again the payments it has already booked, and when one merchant gets most of the payments.
 /// </summary>
 /// <remarks>
 /// The tests share one platform and leave their payments in it, so the checks cover everything in the databases
@@ -22,6 +22,7 @@ namespace EndToEnd.Tests;
 public sealed class MoneyAddsUpTests(PlatformFixture platform, ITestOutputHelper output) : IClassFixture<PlatformFixture>
 {
     private const int Merchants = 50;
+    private const int HotMerchant = 1;
     private const int DuplicatedOrders = 20;
     private const int CopiesOfDuplicate = 5;
     private const int Concurrency = 16;
@@ -39,6 +40,33 @@ public sealed class MoneyAddsUpTests(PlatformFixture platform, ITestOutputHelper
         var captured = await AssertMoneyAddsUpAsync();
 
         output.WriteLine($"{answers.Count} requests, {orders.Count} payments, {captured} captured and booked by the ledger");
+    }
+
+    [Fact]
+    public async Task Money_Adds_Up_When_One_Merchant_Gets_Most_Payments()
+    {
+        // 90% of the orders go to one merchant. Its key sends all of them to one partition and so to one writer,
+        // and its account row changes in every batch of that partition.
+        var orders = NewOrders(new Random(2029), singles: 2000, hotShare: 0.9);
+
+        // The load is skewed indeed: if the share got lost on the way, the test would check an even load and pass.
+        // Counted on the orders, not on captured payments: those of the other tests are in the same databases.
+        var hotOrders = orders.Count(order => order.MerchantId == HotMerchant);
+        Assert.InRange((double)hotOrders / orders.Count, 0.85, 0.95);
+
+        var answers = await PayAllAsync(orders);
+
+        await AssertNoDoubleChargeAsync(orders, answers);
+        var captured = await AssertMoneyAddsUpAsync();
+
+        // The hot merchant on its own, through the ledger's API: what the merchant sees. AssertMoneyAddsUpAsync compares
+        // account rows one to one; if a merchant's money is ever kept in several rows, this answer must stay their sum.
+        var balance = await platform.Ledger.GetFromJsonAsync<MerchantBalance>($"/balances/merchants/{HotMerchant}", Ct);
+        Assert.NotNull(balance);
+        Assert.Equal(await OwedToMerchantAsync(HotMerchant), balance.Balance);
+
+        output.WriteLine($"{answers.Count} requests, {orders.Count} payments, {hotOrders} of them to merchant {HotMerchant}, " +
+            $"{captured} captured and booked by the ledger; its balance {balance.Balance}");
     }
 
     [Fact]
@@ -221,6 +249,15 @@ public sealed class MoneyAddsUpTests(PlatformFixture platform, ITestOutputHelper
     private Task<SortedDictionary<string, long>> AccountsAsync() =>
         BalancesAsync(platform.LedgerDb, "SELECT id, balance FROM accounts");
 
+    /// <summary>What the ledger owes a merchant for its captured payments: <c>amount − fee</c> of each.</summary>
+    private async Task<long> OwedToMerchantAsync(long merchantId)
+    {
+        await using var command = platform.PaymentsDb.CreateCommand(
+            "SELECT coalesce(sum(amount - fee), 0)::bigint FROM payments WHERE status = 'captured' AND merchant_id = $1");
+        command.Parameters.Add(new NpgsqlParameter<long> { TypedValue = merchantId });
+        return (long)(await command.ExecuteScalarAsync(Ct))!;
+    }
+
     private async Task<long> PaymentsWithKeysAsync(string[] keys)
     {
         await using var command = platform.PaymentsDb.CreateCommand("SELECT count(*) FROM payments WHERE idempotency_key = ANY($1)");
@@ -237,26 +274,52 @@ public sealed class MoneyAddsUpTests(PlatformFixture platform, ITestOutputHelper
     private static async Task<SortedDictionary<string, long>> BalancesAsync(NpgsqlDataSource database, string sql)
     {
         var balances = new SortedDictionary<string, long>(StringComparer.Ordinal);
+
         await using var command = database.CreateCommand(sql);
         await using var reader = await command.ExecuteReaderAsync(Ct);
+
         while (await reader.ReadAsync(Ct))
             balances.Add(reader.GetString(0), reader.GetInt64(1));
+
         return balances;
     }
 
-    /// <summary>The orders of a test, shuffled: single ones, and 20 more that the client sends five times each.</summary>
-    private static List<Order> NewOrders(Random random, int singles) =>
-        Enumerable.Range(0, singles).Select(_ => NewOrder(random, copies: 1))
-            .Concat(Enumerable.Range(0, DuplicatedOrders).Select(_ => NewOrder(random, copies: CopiesOfDuplicate)))
+    /// <summary>
+    /// The orders of a test, shuffled: single ones, and 20 more that the client sends five times each.
+    /// <paramref name="hotShare"/> of them go to <see cref="HotMerchant"/> and the rest to the other merchants equally;
+    /// without it, all merchants are equal.
+    /// </summary>
+    private static List<Order> NewOrders(Random random, int singles, double hotShare = 0) =>
+        Enumerable.Range(0, singles).Select(_ => NewOrder(random, copies: 1, hotShare))
+            .Concat(Enumerable.Range(0, DuplicatedOrders).Select(_ => NewOrder(random, copies: CopiesOfDuplicate, hotShare)))
             .OrderBy(_ => random.Next())
             .ToList();
 
-    private static Order NewOrder(Random random, int copies) =>
-        new(Guid.NewGuid().ToString(), MerchantId: 1 + random.Next(Merchants), Amount: 1_000 + random.Next(99_001), copies);
+    private static Order NewOrder(Random random, int copies, double hotShare) =>
+        new(Guid.NewGuid().ToString(), MerchantId: PickMerchant(random, hotShare), Amount: 1_000 + random.Next(99_001), copies);
+
+    // Without a hot merchant: one draw, as before, so the other tests keep the orders their seeds have always given.
+    // With one: the others are drawn from 1 to Merchants - 1, and those at or above the hot merchant move up by one,
+    // which skips it without a second draw.
+    private static int PickMerchant(Random random, double hotShare)
+    {
+        if (hotShare == 0)
+            return 1 + random.Next(Merchants);
+
+        if (random.NextDouble() < hotShare)
+            return HotMerchant;
+
+        var other = 1 + random.Next(Merchants - 1);
+
+        return other >= HotMerchant ? other + 1 : other;
+    }
 
     /// <summary>One payment a client wants made: a key, a body, and how many times the client sends it.</summary>
     private sealed record Order(string Key, long MerchantId, long Amount, int Copies);
 
     /// <summary>What the client got back for one copy of an order.</summary>
     private sealed record Answer(Order Order, HttpStatusCode Status, PaymentResponse Payment);
+
+    /// <summary>The answer of <c>GET /balances/merchants/{id}</c>.</summary>
+    private sealed record MerchantBalance(long MerchantId, long Balance);
 }
