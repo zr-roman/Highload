@@ -48,6 +48,7 @@ public sealed record MatrixOptions(IReadOnlyList<int> Runs, int Repeats, int Dur
         var runs = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(run => int.TryParse(run, out var id) && MatrixRun.All.Any(r => r.Id == id) ? id : throw Error($"No run {run} in the matrix"))
             .ToList();
+
         return runs.Count > 0 ? runs : throw Error("--runs names no run");
     }
 

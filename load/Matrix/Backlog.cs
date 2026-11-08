@@ -23,8 +23,50 @@ public sealed class Backlog(NpgsqlDataSource payments, IAdminClient kafka, strin
 
     private static readonly TimeSpan KafkaTimeout = TimeSpan.FromSeconds(5);
 
-    // A sample that takes longer leaves a gap in the record, which the console then reports.
-    private static readonly TimeSpan SlowSample = TimeSpan.FromSeconds(2);
+    // A ledger gets its partitions a fraction of a second after it starts.
+    private static readonly TimeSpan AssignmentTimeout = TimeSpan.FromMinutes(1);
+
+    /// <summary>A sample that takes longer is left out of the record (TrySampleAsync).</summary>
+    public static readonly TimeSpan SlowSample = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Waits until the ledger's group holds every partition of payments.captured. A ledger left without them consumes
+    /// nothing, and the wait for a catch-up would only end after 10 min: so it went when the group coordinator of Kafka
+    /// stopped answering, and the ledger lost its partitions and never got them back.
+    /// </summary>
+    public async Task WaitLedgerAssignedAsync(CancellationToken ct)
+    {
+        var waited = Stopwatch.StartNew();
+        while (true)
+        {
+            ensureStand();
+
+            string state;
+            try
+            {
+                var group = (await kafka.DescribeConsumerGroupsAsync(
+                    [ledgerGroup], new DescribeConsumerGroupsOptions { RequestTimeout = KafkaTimeout })).ConsumerGroupDescriptions.Single();
+                var assigned = group.Members
+                    .SelectMany(member => member.Assignment.TopicPartitions)
+                    .Count(partition => partition.Topic == Topics.PaymentsCaptured);
+                if (group.State == ConsumerGroupState.Stable && assigned == Partitions.Count)
+                    return;
+
+                state = $"the group is {group.State}, {group.Members.Count} member(s), {assigned} of {Partitions.Count} partitions assigned";
+            }
+            catch (KafkaException e)
+            {
+                state = e.Message;
+            }
+
+            if (waited.Elapsed > AssignmentTimeout)
+                throw new MatrixException(
+                    $"The ledger has not got the partitions of {Topics.PaymentsCaptured} in {AssignmentTimeout.TotalMinutes:0} min ({state}). " +
+                    "Restart Kafka, docker restart payments-kafka, and start again.");
+
+            await Task.Delay(TimeSpan.FromSeconds(1), ct);
+        }
+    }
 
     /// <summary>
     /// Waits until the stand has caught up with the load before: a run starts with an empty outbox and no lag.
@@ -76,9 +118,6 @@ public sealed class Backlog(NpgsqlDataSource payments, IAdminClient kafka, strin
             if (await TrySampleAsync(ct) is { } sample)
             {
                 await AddAsync(sample);
-                if (sample.Postgres > SlowSample || sample.Kafka > SlowSample)
-                    Console.WriteLine($"  Slow sample, a gap in the record: Postgres {sample.Postgres.TotalSeconds:0.0} s, Kafka {sample.Kafka.TotalSeconds:0.0} s");
-
                 if (samples.Count % 10 == 0)
                     Console.WriteLine($"  {sample}");
 
@@ -95,30 +134,41 @@ public sealed class Backlog(NpgsqlDataSource payments, IAdminClient kafka, strin
     }
 
     // A sample that fails, say Kafka slow to answer under load, is skipped: a second missing from the record
-    // is better than a run thrown away.
+    // is better than a run thrown away. So is a slow one: it read the ends of the partitions long after the commits,
+    // so its lag counts every message that came in meanwhile (16 063 in a sample of 66 s).
     private async Task<BacklogSample?> TrySampleAsync(CancellationToken ct)
     {
+        BacklogSample sample;
         try
         {
-            return await SampleAsync(ct);
+            sample = await SampleAsync(ct);
         }
         catch (Exception e) when (e is KafkaException or NpgsqlException)
         {
             Console.WriteLine($"  Backlog sample failed: {e.Message}");
             return null;
         }
+
+        if (sample.Postgres <= SlowSample && sample.Kafka <= SlowSample)
+            return sample;
+
+        Console.WriteLine($"  Slow sample left out: Postgres {sample.Postgres.TotalSeconds:0.0} s, Kafka {sample.Kafka.TotalSeconds:0.0} s");
+        return null;
     }
 
     // Postgres and Kafka at once: one that is slow to answer does not hold up the other's reading.
     private async Task<BacklogSample> SampleAsync(CancellationToken ct)
     {
         var at = DateTimeOffset.Now;
+
         var outbox = ReadOutboxAsync(ct);
         var lag = ReadLagAsync(ct);
+
         await Task.WhenAll(outbox, lag);
 
         var (rows, age, postgres) = outbox.Result;
         var (ends, lags, kafkaTook) = lag.Result;
+
         return new BacklogSample(at, rows, age, ends, lags, postgres, kafkaTook);
     }
 
@@ -178,7 +228,7 @@ public sealed record BacklogSample(
 }
 
 /// <summary>The backlog of one run, from its samples.</summary>
-public sealed record BacklogSummary(double OutboxMaxAgeSeconds, long[] LagMax, long[] Messages, double CaughtUpSeconds)
+public sealed record BacklogSummary(double OutboxMaxAgeSeconds, long[] LagMax, long[] Messages, double CaughtUpSeconds, double LongestGapSeconds)
 {
     public static BacklogSummary Of(IReadOnlyList<BacklogSample> samples, DateTimeOffset loadFinished)
     {
@@ -189,6 +239,8 @@ public sealed record BacklogSummary(double OutboxMaxAgeSeconds, long[] LagMax, l
             // What came into each partition from the first sample to the last: its end offset moved by that much.
             Messages: partitions.Select(p => samples[^1].EndOffsets[p] - samples[0].EndOffsets[p]).ToArray(),
             // The record ends with the first sample that has caught up after the load.
-            CaughtUpSeconds: Math.Max(0, (samples[^1].At - loadFinished).TotalSeconds));
+            CaughtUpSeconds: Math.Max(0, (samples[^1].At - loadFinished).TotalSeconds),
+            // A second between samples, or longer where one failed or was slow: in that time the maxima above were not looked at.
+            LongestGapSeconds: samples.Zip(samples.Skip(1), (before, after) => (after.At - before.At).TotalSeconds).DefaultIfEmpty(0).Max());
     }
 }

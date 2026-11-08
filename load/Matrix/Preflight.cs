@@ -71,17 +71,20 @@ public static class Preflight
         // Idle Process, which Windows names as the owner of a socket it does not attribute to a process, and it has no
         // priority. The priority is read by Select-Object, as in the command of README: where Windows does not let it be
         // read, as for a process of another user, Select-Object leaves it empty instead of failing.
+        // The exit code is not looked at: an error that SilentlyContinue hides, as for a process that has exited in between,
+        // still makes Windows PowerShell exit with 1, and the lines of the other processes are all there. The hidden errors
+        // go to the error stream at the end, for the warning when no line comes out.
         var result = await Processes.RunCommandAsync("powershell", "-NoProfile", "-Command",
             $"Get-NetTCPConnection -LocalPort {kafkaPort} -State Listen -ErrorAction SilentlyContinue" +
             " | Select-Object -ExpandProperty OwningProcess -Unique" +
             " | Where-Object { $_ -ne 0 }" +
             " | ForEach-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue }" +
             " | Select-Object ProcessName, PriorityClass" +
-            " | ForEach-Object { $_.ProcessName + '=' + $_.PriorityClass }");
-        if (result is not { ExitCode: 0 })
+            " | ForEach-Object { $_.ProcessName + '=' + $_.PriorityClass }" +
+            "; $Error | ForEach-Object { [Console]::Error.WriteLine($_) }");
+        if (result is null)
         {
-            var why = result?.Errors.Split('\n')[0].Trim() ?? "powershell not found";
-            Console.WriteLine($"Warning: PowerShell failed, so the priority of Docker's process is not checked (README, step 8): {why}");
+            Console.WriteLine("Warning: powershell not found, so the priority of Docker's process is not checked (README, step 8).");
             return null;
         }
 
@@ -94,7 +97,9 @@ public static class Preflight
 
         if (listeners.Count == 0)
         {
-            Console.WriteLine($"Warning: no Windows process listens on port {kafkaPort}, so there is no priority to check (README, step 8).");
+            Console.WriteLine(result.Errors.Length > 0
+                ? $"Warning: PowerShell did not tell the priority of Docker's process (README, step 8): {result.Errors.Split('\n')[0].Trim()}"
+                : $"Warning: no Windows process listens on port {kafkaPort}, so there is no priority to check (README, step 8).");
             return null;
         }
         if (listeners.Any(listener => listener.Priority.Length > 0 && listener.Priority != "Normal"))

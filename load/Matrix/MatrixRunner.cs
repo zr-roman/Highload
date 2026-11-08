@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+﻿using System.Diagnostics;
 using Confluent.Kafka;
 using Npgsql;
 
@@ -55,6 +55,7 @@ public static class MatrixRunner
         {
             Console.WriteLine($"{(group == groups[0] ? "Starting the stand" : "Restarting Payments.Api")}, limiter {(group.Key ? "on" : "off")}");
             await stand.StartAsync(limiter: group.Key, ct);
+            await backlog.WaitLedgerAssignedAsync(ct);
 
             if (options.WarmupSeconds > 0)
             {
@@ -102,20 +103,7 @@ public static class MatrixRunner
                 throw;
             }
             var k6Result = await load;
-
-            // The stand has caught up: every payment captured during the run is in the ledger by now.
-            string invariants;
-            try
-            {
-                invariants = await ledger.GetStringAsync("/invariants", ct);
-            }
-            catch (Exception e) when (e is HttpRequestException || (e is TaskCanceledException && !ct.IsCancellationRequested))
-            {
-                throw new MatrixException($"/invariants of the ledger failed after run {label}: {e.Message}");
-            }
-            await File.WriteAllTextAsync(Path.Combine(reports, $"run-{label}-invariants.json"), invariants, ct);
-
-            using var answer = JsonDocument.Parse(invariants);
+            var check = await CheckLedgerAsync(label);
 
             var result = new RunResult(
                 run,
@@ -124,9 +112,27 @@ public static class MatrixRunner
                 k6Result,
                 BacklogSummary.Of(samples, k6Result.Finished),
                 LimiterOutages: stand.RedisTimeouts(k6Result.Started, k6Result.Finished),
-                InvariantsOk: answer.RootElement.GetProperty("ok").GetBoolean());
+                Ledger: check);
             Console.WriteLine(Describe(result, settings));
             return result;
+        }
+
+        // The stand has caught up: every payment captured during the run is in the ledger by now. A check that fails
+        // leaves its repeat without it, not the matrix without the repeats after it.
+        async Task<LedgerCheck?> CheckLedgerAsync(string label)
+        {
+            var took = Stopwatch.StartNew();
+            try
+            {
+                var invariants = await ledger.GetStringAsync("/invariants", ct);
+                await File.WriteAllTextAsync(Path.Combine(reports, $"run-{label}-invariants.json"), invariants, ct);
+                return LedgerCheck.Read(invariants, took.Elapsed);
+            }
+            catch (Exception e) when (e is HttpRequestException || (e is TaskCanceledException && !ct.IsCancellationRequested))
+            {
+                Console.WriteLine($"  /invariants of the ledger failed after {took.Elapsed.TotalSeconds:0} s: {e.Message}");
+                return null;
+            }
         }
     }
 
@@ -142,8 +148,9 @@ public static class MatrixRunner
 
         return line +
             $"; dropped {result.K6.Dropped}; outbox max {result.Backlog.OutboxMaxAgeSeconds:0.0} s; lag max {result.Backlog.LagMax.Max()}" +
-            $"; caught up in {result.Backlog.CaughtUpSeconds:0} s; thresholds {(result.K6.CrossedThresholds.Count == 0 ? "ok" : "CROSSED")}" +
-            $"; invariants {(result.InvariantsOk ? "ok" : "BROKEN")}";
+            $"; caught up in {result.Backlog.CaughtUpSeconds:0} s; samples at most {result.Backlog.LongestGapSeconds:0} s apart" +
+            $"; thresholds {(result.K6.CrossedThresholds.Count == 0 ? "ok" : "CROSSED")}" +
+            (result.Ledger is { } check ? $"; invariants {(check.Ok ? "ok" : "BROKEN")} in {check.Took.TotalSeconds:0} s" : "; invariants not checked");
     }
 
     // dotnet run starts the matrix from load/Matrix/bin/<configuration>/net10.0; the repository is above, with the solution.

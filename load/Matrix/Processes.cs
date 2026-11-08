@@ -64,7 +64,8 @@ public static class Processes
         try
         {
             using var process = Process.Start(Info(file, arguments))!;
-            // Both streams are read: a command that fills the pipe of an unread one would never exit.
+            // Both streams are read: a command that fills the pipe of an unread one would never exit. On Windows each
+            // read holds a thread of the pool (LoggedProcess), which for a short command before the stand starts is not missed.
             var output = process.StandardOutput.ReadToEndAsync();
             var errors = process.StandardError.ReadToEndAsync();
             await Task.WhenAll(output, errors, process.WaitForExitAsync());
@@ -86,6 +87,7 @@ public sealed class LoggedProcess : IDisposable
     private readonly Process process;
     private readonly StreamWriter log;
     private readonly Action<string>? onLine;
+    private readonly Thread[] readers;
     private bool closed;
 
     public LoggedProcess(string name, ProcessStartInfo info, string logPath, Action<string>? onLine = null)
@@ -95,8 +97,6 @@ public sealed class LoggedProcess : IDisposable
         this.onLine = onLine;
         log = new StreamWriter(logPath) { AutoFlush = true };
         process = new Process { StartInfo = info };
-        process.OutputDataReceived += Copy;
-        process.ErrorDataReceived += Copy;
         try
         {
             process.Start();
@@ -107,8 +107,12 @@ public sealed class LoggedProcess : IDisposable
             process.Dispose();
             throw new MatrixException($"Cannot start {info.FileName} ({e.Message}): is it installed and on PATH?");
         }
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
+
+        // Not BeginOutputReadLine: before .NET 11, on Windows it reads each redirected stream by blocking a thread of
+        // the pool until the process writes. With k6 the stand has eight streams, and the pool starts with a thread per
+        // logical processor, eight on a 4-core laptop: the timers and awaits of the matrix found no thread free, and its
+        // samples of the backlog came up to 90 s late. A thread of its own per stream holds up nothing else.
+        readers = [Read(process.StandardOutput), Read(process.StandardError)];
     }
 
     public string Name { get; }
@@ -133,6 +137,12 @@ public sealed class LoggedProcess : IDisposable
             // It has exited already.
         }
         process.WaitForExit(TimeSpan.FromSeconds(10));
+
+        // The last lines may still be in the pipes after the exit. A stream that a child left alive still holds open
+        // does not end at all: that is what the timeout is for.
+        foreach (var reader in readers)
+            reader.Join(TimeSpan.FromSeconds(5));
+
         lock (log)
         {
             closed = true;
@@ -141,19 +151,37 @@ public sealed class LoggedProcess : IDisposable
         process.Dispose();
     }
 
-    // Called on two threads, one per stream. After Dispose the lines have nowhere to go.
-    private void Copy(object sender, DataReceivedEventArgs line)
+    private Thread Read(StreamReader stream)
     {
-        if (line.Data is null)
-            return; // the end of the stream
+        var reader = new Thread(() =>
+        {
+            try
+            {
+                while (stream.ReadLine() is { } line)
+                    Copy(line);
+            }
+            catch (Exception e) when (e is IOException or ObjectDisposedException)
+            {
+                // Dispose has closed a stream that had not ended.
+            }
+        })
+        {
+            IsBackground = true, // a stream that does not end does not keep the matrix from exiting
+        };
+        reader.Start();
+        return reader;
+    }
 
+    // Called on two threads, one per stream. After Dispose the lines have nowhere to go.
+    private void Copy(string line)
+    {
         lock (log)
         {
             if (closed)
                 return;
 
-            log.WriteLine(line.Data);
+            log.WriteLine(line);
         }
-        onLine?.Invoke(line.Data);
+        onLine?.Invoke(line);
     }
 }

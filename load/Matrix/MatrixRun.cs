@@ -1,4 +1,6 @@
-﻿namespace Matrix;
+﻿using System.Text.Json;
+
+namespace Matrix;
 
 /// <summary>
 /// One load of the stage 3 matrix: payments per second, the hot merchant's share of them and whether the merchant
@@ -21,7 +23,7 @@ public sealed record MatrixRun(int Id, int Rate, double HotShare, bool Limiter)
     public bool HasHotMerchant => HotShare > 0;
 }
 
-/// <summary>What one repeat of a run measured. The label is the run and the repeat: 3a, 3b.</summary>
+/// <summary>What one repeat of a run measured. The label is the run and the repeat: 3a, 3b. Ledger is null if /invariants did not answer.</summary>
 public sealed record RunResult(
     MatrixRun Run,
     string Label,
@@ -29,7 +31,7 @@ public sealed record RunResult(
     K6Result K6,
     BacklogSummary Backlog,
     int LimiterOutages,
-    bool InvariantsOk)
+    LedgerCheck? Ledger)
 {
     /// <summary>Payments of the hot merchant the service took, 201 and 202: all its requests but 429 and failures.</summary>
     public long HotAccepted => K6.HotRequests - K6.HotRateLimited - K6.HotFailed;
@@ -51,4 +53,14 @@ public sealed record RunResult(
     public double? HotPartitionMessagesPerSecond => HotPartition is { } partition ? (double)Backlog.Messages[partition] / DurationSeconds : null;
 
     public double OtherPartitionsMessagesPerSecond => Backlog.Messages.Where((_, partition) => partition != HotPartition).Average() / DurationSeconds;
+}
+
+/// <summary>The answer of /invariants of the ledger: whether they hold, how many payments the ledger has, how long it took.</summary>
+public sealed record LedgerCheck(bool Ok, long Payments, TimeSpan Took)
+{
+    public static LedgerCheck Read(string json, TimeSpan took)
+    {
+        using var answer = JsonDocument.Parse(json);
+        return new LedgerCheck(answer.RootElement.GetProperty("ok").GetBoolean(), answer.RootElement.GetProperty("payments").GetInt64(), took);
+    }
 }

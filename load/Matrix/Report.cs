@@ -41,8 +41,9 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
             results.Select(RepeatRow));
 
         text.Append("## Окна повторов\n\n");
-        text.Append("Для `ledger.payment.delay` и `ledger.batch.size` с фильтром `partition` в дашборде: эти гистограммы есть только там.\n\n");
-        Table(text, ["Повтор", "Время", "Горячая партиция", "Сообщений в секунду: горячая / прочие в среднем"],
+        text.Append("Время — для `ledger.payment.delay` и `ledger.batch.size` с фильтром `partition` в дашборде: эти гистограммы есть только там.\n\n");
+        Table(text,
+            ["Повтор", "Время", "Горячая партиция", "Сообщений в секунду: горячая / прочие в среднем", "Самый долгий промежуток между замерами, с", "Платежей в журнале"],
             results.Select(WindowRow));
 
         text.Append("## Столбцы\n\n");
@@ -56,7 +57,12 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         text.Append("- **Не отправлено** — `dropped_iterations` от числа запланированных платежей.\n");
         text.Append("- **Outbox** — возраст самой старой строки outbox, **lag** — сообщения партиции, ещё не закоммиченные Ledger; максимум замеров раз в секунду. ");
         text.Append("Горячая партиция — та, в которую за прогон пришло больше всего сообщений.\n");
-        text.Append("- **Догнал за** — сколько после конца нагрузки outbox пустел, а lag всех партиций становился 0. Замер раз в секунду, поэтому «≤ 1» — догнал сразу.\n\n");
+        text.Append("- **Догнал за** — сколько после конца нагрузки outbox пустел, а lag всех партиций становился 0. Замер раз в секунду, поэтому «≤ 1» — догнал сразу.\n");
+        text.Append("- **`/invariants`** — проверка журнала после повтора: двойная запись, балансы равны проводкам, сумма всех балансов — ноль. ");
+        text.Append("«нет ответа» — Ledger не ответил, и у повтора проверки нет.\n");
+        text.Append($"- **Самый долгий промежуток между замерами** — обычно секунда. Дольше — замер не удался или отброшен: Postgres или Kafka отвечали дольше {Count(Backlog.SlowSample.TotalSeconds)} с, ");
+        text.Append("и lag в нём был бы завышен. За такой промежуток максимумы outbox и lag не видны.\n");
+        text.Append("- **Платежей в журнале** — `payments` из ответа `/invariants`: журнал растёт от повтора к повтору, и проверка вместе с ним.\n\n");
         text.Append("Рядом с таблицей: `run-<повтор>.json` и `.txt` — итог и вывод k6, `.html` — его графики, `-backlog.csv` — замеры раз в секунду (первый — перед нагрузкой; в последних столбцах — сколько отвечали Postgres и Kafka), ");
         text.Append("`-invariants.json` — ответ `/invariants`; логи сервисов и сборки.\n");
 
@@ -67,8 +73,8 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
             repeats.Key.ToString(),
             .. RunCells(repeats.First().Run),
             .. columns.Select(column => column.Format(Median(repeats.Select(column.Value)))),
-            Agreed(repeats.Select(result => result.K6.CrossedThresholds.Count == 0).ToList(), "не прошли"),
-            Agreed(repeats.Select(result => result.InvariantsOk).ToList(), "нарушены"),
+            Agreed(repeats.Select(result => (bool?)(result.K6.CrossedThresholds.Count == 0)).ToList(), "не прошли"),
+            Agreed(repeats.Select(result => result.Ledger?.Ok).ToList(), "нарушены"),
         ];
 
         string[] RepeatRow(RunResult result) =>
@@ -77,7 +83,7 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
             .. RunCells(result.Run),
             .. columns.Select(column => column.Format(column.Value(result))),
             result.K6.CrossedThresholds.Count == 0 ? "ok" : string.Join(", ", result.K6.CrossedThresholds.Select(threshold => $"`{threshold}`")),
-            result.InvariantsOk ? "ok" : "нарушены",
+            result.Ledger switch { null => "нет ответа", { Ok: true } => "ok", _ => "нарушены" },
         ];
     }
 
@@ -109,6 +115,8 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         $"{result.K6.Started:HH:mm:ss}–{result.K6.Finished:HH:mm:ss}",
         result.HotPartition?.ToString() ?? "—",
         $"{Count(result.HotPartitionMessagesPerSecond)} / {Count(result.OtherPartitionsMessagesPerSecond)}",
+        Count(result.Backlog.LongestGapSeconds),
+        Count(result.Ledger?.Payments),
     ];
 
     private static void Table(StringBuilder text, IReadOnlyList<string> header, IEnumerable<string[]> rows)
@@ -130,9 +138,22 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         return sorted.Count % 2 == 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
     }
 
-    // A check in the median line: ok if every repeat passed it, otherwise in how many it did not.
-    private static string Agreed(IReadOnlyList<bool> passed, string failed) =>
-        passed.All(ok => ok) ? "ok" : $"{failed} в {passed.Count(ok => !ok)} из {passed.Count}";
+    // A check in the median line: ok if every repeat passed it, otherwise in how many it did not
+    // and in how many there was no answer (null).
+    private static string Agreed(IReadOnlyList<bool?> passed, string failed)
+    {
+        var notPassed = passed.Count(ok => ok == false);
+        var unanswered = passed.Count(ok => ok is null);
+        if (notPassed == 0 && unanswered == 0)
+            return "ok";
+
+        var notes = new List<string>();
+        if (notPassed > 0)
+            notes.Add($"{failed} в {notPassed} из {passed.Count}");
+        if (unanswered > 0)
+            notes.Add($"нет ответа в {unanswered} из {passed.Count}");
+        return string.Join(", ", notes);
+    }
 
     // "—": the number does not apply to the run. Thousands are split from five digits on, as in docs/load-testing.md:
     // 1500, but 24 400. A small median of two repeats keeps its half: 0,5 outages, not 1.

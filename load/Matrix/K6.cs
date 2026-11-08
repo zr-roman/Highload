@@ -41,6 +41,7 @@ public sealed class K6(string script, string reports)
         // 105: k6 was stopped from outside, as by a Ctrl+C, which reaches k6 as well as the matrix.
         if (exitCode == 105)
             throw new OperationCanceledException($"k6 was stopped in run {label}");
+
         // 99: a threshold was crossed. That is a result of the run, and the summary is there all the same.
         if (exitCode is not (0 or 99) || !File.Exists(summary))
             throw new MatrixException($"k6 failed in run {label} with exit code {exitCode}, see {log}");
