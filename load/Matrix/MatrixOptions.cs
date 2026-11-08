@@ -1,7 +1,7 @@
 ﻿namespace Matrix;
 
 /// <summary>The command line of the matrix.</summary>
-public sealed record MatrixOptions(IReadOnlyList<int> Runs, int Repeats, int DurationSeconds, int WarmupSeconds)
+public sealed record MatrixOptions(IReadOnlyList<int> Runs, int Repeats, int DurationSeconds, int WarmupSeconds, bool Fresh)
 {
     public const string Usage = """
         Stage 3 load matrix: starts the bank emulator and both services, runs the loads one by one
@@ -10,11 +10,14 @@ public sealed record MatrixOptions(IReadOnlyList<int> Runs, int Repeats, int Dur
         From the repository root, with docker compose up -d and Postgres running:
           dotnet run --project load\Matrix -c Release
           dotnet run --project load\Matrix -c Release -- --runs 3,6 --repeats 1 --duration 60
+          dotnet run --project load\Matrix -c Release -- --fresh --repeats 3
 
           --runs 1,2,...  the runs of the matrix to do (default: all six)
           --repeats N     how many times each run is repeated (default: 2)
           --duration S    seconds of load in a run (default: 120)
-          --warmup S      seconds of unmeasured load after each start of Payments.Api (default: 20; 0: none)
+          --warmup S      seconds of unmeasured load after each start of Payments.Api (default: 60; 0: none)
+          --fresh         empty the databases payments and ledger, delete the topic payments.captured and
+                          the consumer group of the ledger first: every matrix then starts from the same stand
         """;
 
     public static MatrixOptions Parse(string[] args)
@@ -23,19 +26,22 @@ public sealed record MatrixOptions(IReadOnlyList<int> Runs, int Repeats, int Dur
             MatrixRun.All.Select(run => run.Id).ToList(), 
             Repeats: 2, 
             DurationSeconds: 120, 
-            WarmupSeconds: 20);
+            // 20 s were not enough: the repeats got faster one after another for half an hour.
+            WarmupSeconds: 60,
+            Fresh: false);
 
-        for (var i = 0; i < args.Length; i += 2)
+        for (var i = 0; i < args.Length; i++)
         {
             var name = args[i];
-            var value = i + 1 < args.Length ? args[i + 1] : throw Error($"{name} needs a value");
+            string Value() => ++i < args.Length ? args[i] : throw Error($"{name} needs a value");
 
             options = name switch
             {
-                "--runs" => options with { Runs = ParseRuns(value) },
-                "--repeats" => options with { Repeats = ParseNumber(name, value, min: 1) },
-                "--duration" => options with { DurationSeconds = ParseNumber(name, value, min: 10) },
-                "--warmup" => options with { WarmupSeconds = ParseNumber(name, value, min: 0) },
+                "--fresh" => options with { Fresh = true },
+                "--runs" => options with { Runs = ParseRuns(Value()) },
+                "--repeats" => options with { Repeats = ParseNumber(name, Value(), min: 1) },
+                "--duration" => options with { DurationSeconds = ParseNumber(name, Value(), min: 10) },
+                "--warmup" => options with { WarmupSeconds = ParseNumber(name, Value(), min: 0) },
                 _ => throw Error($"Unknown option {name}"),
             };
         }

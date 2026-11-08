@@ -6,7 +6,8 @@ namespace Matrix;
 /// The stand as the services see it, from their appsettings.json: the matrix watches the same Postgres and Kafka
 /// and holds the hot merchant against the same limit.
 /// </summary>
-public sealed record StandSettings(string PaymentsDatabase, string Kafka, string Redis, string LedgerGroup, int TokensPerSecond, int Burst)
+public sealed record StandSettings(
+    string PaymentsDatabase, string LedgerDatabase, string Kafka, string Redis, string LedgerGroup, int TokensPerSecond, int Burst)
 {
     public static StandSettings Read(string repository)
     {
@@ -17,6 +18,7 @@ public sealed record StandSettings(string PaymentsDatabase, string Kafka, string
 
         return new StandSettings(
             PaymentsDatabase: connections.GetProperty("Payments").GetString()!,
+            LedgerDatabase: ledger.GetProperty("ConnectionStrings").GetProperty("Ledger").GetString()!,
             Kafka: connections.GetProperty("Kafka").GetString()!,
             Redis: connections.GetProperty("Redis").GetString()!,
             LedgerGroup: ledger.GetProperty("Consumer").GetProperty("GroupId").GetString()!,

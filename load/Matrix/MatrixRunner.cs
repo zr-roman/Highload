@@ -24,8 +24,9 @@ public static class MatrixRunner
 
         var repeats = groups.Sum(group => group.Count()) * options.Repeats;
 
-        // A repeat takes its load and about 15 s more: k6 starting and stopping, the catch-up, /invariants.
-        var minutes = (repeats * (options.DurationSeconds + 15) + groups.Count * (options.WarmupSeconds + 30)) / 60.0;
+        // A repeat takes its load and about 40 s more: k6 starting and stopping, the catch-up and /invariants, which reads
+        // the whole ledger: 20-60 s with millions of payments in it.
+        var minutes = (repeats * (options.DurationSeconds + 40) + groups.Count * (options.WarmupSeconds + 30)) / 60.0;
         Console.WriteLine($"{repeats} repeat{(repeats == 1 ? "" : "s")} of {options.DurationSeconds} s, about {Math.Ceiling(minutes)} min. Report: {reports}");
 
         var ignored = Environment.GetEnvironmentVariables().Keys.Cast<string>().Where(Processes.IsStandSetting).Order().ToList();
@@ -33,12 +34,24 @@ public static class MatrixRunner
             Console.WriteLine($"Not passed on to the stand from this shell: {string.Join(", ", ignored)}");
 
         await using var payments = NpgsqlDataSource.Create(settings.PaymentsDatabase);
-        using var kafka = new AdminClientBuilder(new AdminClientConfig { BootstrapServers = settings.Kafka })
-            .SetLogHandler((_, _) => { }) // librdkafka's own log is noise here: a call that fails throws anyway
-            .Build();
 
         Console.WriteLine("Checking the stand");
-        var info = await Preflight.CheckAsync(repository, settings, payments, kafka, ct);
+        StandInfo info;
+        using (var checks = KafkaClient(settings))
+        {
+            info = await Preflight.CheckAsync(repository, settings, payments, checks, ct);
+
+            // After the checks: the services are not running, so nothing holds the tables, the topic or the group.
+            if (options.Fresh)
+            {
+                Console.WriteLine("Emptying the stand (--fresh)");
+                await FreshStart.EmptyAsync(settings, checks, ct);
+            }
+        }
+
+        // A client of its own for the samples: the one that saw the topic deleted keeps that in its metadata,
+        // and for the topic the services create anew it found "No leaders" sample after sample.
+        using var kafka = KafkaClient(settings);
 
         using var stand = new Stand(repository, reports);
         Console.WriteLine("Building the services in Release");
@@ -152,6 +165,11 @@ public static class MatrixRunner
             $"; thresholds {(result.K6.CrossedThresholds.Count == 0 ? "ok" : "CROSSED")}" +
             (result.Ledger is { } check ? $"; invariants {(check.Ok ? "ok" : "BROKEN")} in {check.Took.TotalSeconds:0} s" : "; invariants not checked");
     }
+
+    private static IAdminClient KafkaClient(StandSettings settings) =>
+        new AdminClientBuilder(new AdminClientConfig { BootstrapServers = settings.Kafka })
+            .SetLogHandler((_, _) => { }) // librdkafka's own log is noise here: a call that fails throws anyway
+            .Build();
 
     // dotnet run starts the matrix from load/Matrix/bin/<configuration>/net10.0; the repository is above, with the solution.
     private static string FindRepository()
