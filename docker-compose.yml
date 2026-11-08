@@ -4,7 +4,9 @@ name: payments-platform
 
 services:
   kafka:
-    image: apache/kafka:4.0.0
+    # Not 4.0.0: its group coordinator stops writing to __consumer_offsets after the clock steps back, as in the VM
+    # of Docker, and the consumers of the group never get their partitions again (KAFKA-19888, fixed in 4.1.2 and later).
+    image: apache/kafka:4.3.2
     container_name: payments-kafka
     ports:
       - "127.0.0.1:9092:9092"
