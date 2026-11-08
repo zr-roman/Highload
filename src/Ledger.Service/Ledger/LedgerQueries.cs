@@ -53,6 +53,11 @@ public sealed class LedgerQueries(NpgsqlDataSource dataSource)
                 (SELECT coalesce(sum(balance), 0)::bigint FROM accounts),
                 (SELECT count(*) FROM processed_payments)
             """, connection, transaction);
+
+        // The client has a limit of its own: Npgsql gives up after CommandTimeout, 30 s by default, whatever
+        // statement_timeout says. A little over the 2 min above, so that the server's limit is the one that acts.
+        command.CommandTimeout = 130;
+
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         await reader.ReadAsync(cancellationToken);
 
