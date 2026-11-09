@@ -161,6 +161,25 @@ public sealed class HttpAcquirerTests : IDisposable
     }
 
     [Fact]
+    public async Task Open_Circuit_Of_A_Large_Merchant_Leaves_The_Others_Calling_The_Bank()
+    {
+        // The bank fails the large merchant, as BANK_ERROR_MERCHANT of the emulator does, until its circuit opens.
+        bank.Status(HttpStatusCode.InternalServerError);
+        var calls = host.CircuitMinimumThroughput / host.Attempts + 1;
+        for (var i = 0; i < calls; i++)
+            Assert.Equal(AcquirerOutcome.Unknown, (await host.Acquirer.AuthorizeAsync(NewPayment(AcquirerHost.LargeMerchant), Ct)).Outcome);
+
+        // From here the bank approves, but the circuit of the large merchant is open: its payment does not reach the bank.
+        bank.Decide("approved");
+        Assert.Equal(AcquirerOutcome.Unknown, (await host.Acquirer.AuthorizeAsync(NewPayment(AcquirerHost.LargeMerchant), Ct)).Outcome);
+        Assert.Equal(host.CircuitMinimumThroughput, bank.Requests.Count);
+
+        // The other merchants share a pipeline whose circuit saw none of those failures.
+        Assert.Equal(AcquirerOutcome.Approved, (await host.Acquirer.AuthorizeAsync(NewPayment(), Ct)).Outcome);
+        Assert.Equal(host.CircuitMinimumThroughput + 1, bank.Requests.Count);
+    }
+
+    [Fact]
     public async Task Decision_Lookup_Returns_The_Stored_Decision()
     {
         var paymentId = Guid.NewGuid();
@@ -195,8 +214,8 @@ public sealed class HttpAcquirerTests : IDisposable
         Assert.Equal(host.Attempts, bank.Requests.Count);
     }
 
-    private static Payment NewPayment() =>
-        new(Guid.NewGuid(), 42, "key", "hash", 150000, "RUB", Fee: null, PaymentStatus.Created, DateTimeOffset.UtcNow);
+    private static Payment NewPayment(long merchantId = 42) =>
+        new(Guid.NewGuid(), merchantId, "key", "hash", 150000, "RUB", Fee: null, PaymentStatus.Created, DateTimeOffset.UtcNow);
 
     private static Guid PaymentIdOf(BankRequest request)
     {

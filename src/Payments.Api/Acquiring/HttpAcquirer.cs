@@ -1,11 +1,12 @@
 ﻿using Payments.Api.Payments;
+using Payments.Api.RateLimiting;
 using Polly;
 using Polly.CircuitBreaker;
 using System.Net;
 
 namespace Payments.Api.Acquiring;
 
-public sealed class HttpAcquirer(HttpClient http, ILogger<HttpAcquirer> logger) : IAcquirer
+public sealed class HttpAcquirer(HttpClient http, MerchantQuotas quotas, ILogger<HttpAcquirer> logger) : IAcquirer
 {
     private const string ApprovedStatus = "approved";
     private const string DeclinedStatus = "declined";
@@ -16,7 +17,10 @@ public sealed class HttpAcquirer(HttpClient http, ILogger<HttpAcquirer> logger) 
         try
         {
             var authRequest = new BankAuthorizationRequest(payment.Id, payment.MerchantId, payment.Amount, payment.Currency);
-            using var response = await http.PostAsJsonAsync(AuthorizationsEndpoint, authRequest, cancellationToken);
+            using var request = new HttpRequestMessage(HttpMethod.Post, AuthorizationsEndpoint) { Content = JsonContent.Create(authRequest) };
+            request.Options.Set(BankPipeline.Key, BankPipeline.Of(payment.MerchantId, quotas.Of(payment.MerchantId)));
+
+            using var response = await http.SendAsync(request, cancellationToken);
 
             if (response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Conflict)
             {
@@ -49,6 +53,10 @@ public sealed class HttpAcquirer(HttpClient http, ILogger<HttpAcquirer> logger) 
         }
     }
 
+    // Lookups go through the shared pipeline, whoever the merchant (BankPipeline). Only recovery makes them, and it stops
+    // a pass at the first lookup without an answer, so failed lookups are a small share of the shared calls. When the
+    // bank fails a large merchant, that merchant's breaker is open, and a lookup through it would not reach the bank;
+    // through the shared one it gets its 404, and recovery declines the payment.
     public async Task<AcquirerDecision?> FindDecisionAsync(Guid paymentId, CancellationToken cancellationToken)
     {
         try
