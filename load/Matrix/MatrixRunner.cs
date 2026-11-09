@@ -96,11 +96,12 @@ public static class MatrixRunner
 
         async Task<RunResult> MeasureAsync(MatrixRun run, string label)
         {
-            Console.WriteLine($"Run {label}: {run.Rate}/s, hot share {run.HotShare}, limiter {(run.Limiter ? "on" : "off")}, {options.DurationSeconds} s");
-
-            // Every run starts from a stand that has caught up with the load before it.
+            // Every run starts from a stand that has caught up with the load before it: the warm-up or the run before.
+            Console.WriteLine($"Waiting for the stand to catch up before run {label}");
             var start = await backlog.WaitCaughtUpAsync(ct);
             var ledgerMembers = await backlog.ReadLedgerAssignmentAsync(ct);
+
+            Console.WriteLine($"Run {label}: {run.Rate}/s, hot share {run.HotShare}, limiter {(run.Limiter ? "on" : "off")}, {options.DurationSeconds} s");
 
             using var stopLoad = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var load = k6.RunAsync(run, label, options.DurationSeconds, stopLoad.Token);

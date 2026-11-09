@@ -150,10 +150,13 @@ public sealed class Backlog(NpgsqlDataSource payments, IAdminClient kafka, strin
             if (await TrySampleAsync(ct) is { } sample)
             {
                 await AddAsync(sample);
-                if (samples.Count % 10 == 0)
+
+                // Every tenth sample, and the one that ends the wait: the console shows where the stand caught up.
+                var caughtUp = loadOver && sample.CaughtUp;
+                if (samples.Count % 10 == 0 || caughtUp)
                     Console.WriteLine($"  {sample}");
 
-                if (loadOver && sample.CaughtUp)
+                if (caughtUp)
                     break;
             }
 
