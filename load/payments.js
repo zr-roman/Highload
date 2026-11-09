@@ -1,13 +1,16 @@
 // k6 load test for Payments.Api.
 // Run: k6 run -e RATE=300 -e DURATION=60s load/payments.js
 // With a hot merchant (stage 3): k6 run -e RATE=1000 -e HOT_SHARE=0.5 -e MERCHANTS=50 load/payments.js
+// Two instances of Payments.Api: -e BASE_URL=http://localhost:5100,http://localhost:5101
 import http from 'k6/http';
+import exec from 'k6/execution';
 import { check } from 'k6';
 import { Counter } from 'k6/metrics';
 
 const RATE = Number(__ENV.RATE || 200);
 const DURATION = __ENV.DURATION || '60s';
-const BASE_URL = __ENV.BASE_URL || 'http://localhost:5100';
+// One instance or several, separated by commas: the requests go round the list in turn, as from a load balancer.
+const BASE_URLS = (__ENV.BASE_URL || 'http://localhost:5100').split(',').map((url) => url.trim());
 const MERCHANTS = Number(__ENV.MERCHANTS || 10000);
 
 // Stage 3: HOT_SHARE of the payments (0 to 1) go to HOT_MERCHANT, the rest to the other merchants equally.
@@ -112,7 +115,8 @@ export default function () {
     currency: 'RUB',
   });
 
-  const response = http.post(`${BASE_URL}/payments`, body, {
+  const baseUrl = BASE_URLS[exec.scenario.iterationInTest % BASE_URLS.length];
+  const response = http.post(`${baseUrl}/payments`, body, {
     headers: {
       'Content-Type': 'application/json',
       'Idempotency-Key': `${__VU}-${__ITER}-${Date.now()}`,

@@ -39,7 +39,7 @@ public static class MatrixRunner
         StandInfo info;
         using (var checks = KafkaClient(settings))
         {
-            info = await Preflight.CheckAsync(repository, settings, payments, checks, ct);
+            info = await Preflight.CheckAsync(repository, settings, payments, checks, Stand.PaymentsApiUrlsOf(options.Instances), ct);
 
             // After the checks: the services are not running, so nothing holds the tables, the topic or the group.
             if (options.Fresh)
@@ -53,12 +53,15 @@ public static class MatrixRunner
         // and for the topic the services create anew it found "No leaders" sample after sample.
         using var kafka = KafkaClient(settings);
 
-        using var stand = new Stand(repository, reports);
+        using var stand = new Stand(repository, reports, options.Instances);
+        if (options.RedisPauseSeconds > 0)
+            await stand.EnsureRedisCanPauseAsync(ct);
+
         Console.WriteLine("Building the services in Release");
         await stand.BuildAsync(ct);
 
         var backlog = new Backlog(payments, kafka, settings.LedgerGroup, stand.EnsureRunning);
-        var k6 = new K6(Path.Combine(repository, "load", "payments.js"), reports);
+        var k6 = new K6(Path.Combine(repository, "load", "payments.js"), reports, stand.PaymentsApiUrls);
         // /invariants reads every posting of the ledger, which takes a while on a big one.
         using var ledger = new HttpClient { BaseAddress = new Uri(Stand.LedgerUrl), Timeout = TimeSpan.FromMinutes(3) };
         var report = new Report(Path.Combine(reports, "table.md"), info, settings, options);
@@ -66,7 +69,8 @@ public static class MatrixRunner
 
         foreach (var group in groups)
         {
-            Console.WriteLine($"{(group == groups[0] ? "Starting the stand" : "Restarting Payments.Api")}, limiter {(group.Key ? "on" : "off")}");
+            Console.WriteLine($"{(group == groups[0] ? "Starting the stand" : "Restarting Payments.Api")}, limiter {(group.Key ? "on" : "off")}" +
+                (options.Instances > 1 ? $", {options.Instances} instances of Payments.Api" : ""));
             await stand.StartAsync(limiter: group.Key, ct);
             await backlog.WaitLedgerAssignedAsync(ct);
 
@@ -95,6 +99,15 @@ public static class MatrixRunner
 
             using var stopLoad = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var load = k6.RunAsync(run, label, options.DurationSeconds, stopLoad.Token);
+
+            // --redis-pause: in the middle of the load, so that there is load before the outage and after it.
+            var pause = options.RedisPauseSeconds > 0
+                ? stand.PauseRedisAsync(
+                    after: TimeSpan.FromSeconds((options.DurationSeconds - options.RedisPauseSeconds) / 2.0),
+                    duration: TimeSpan.FromSeconds(options.RedisPauseSeconds),
+                    stopLoad.Token)
+                : Task.CompletedTask;
+
             IReadOnlyList<BacklogSample> samples;
             try
             {
@@ -107,7 +120,7 @@ public static class MatrixRunner
                 stopLoad.Cancel();
                 try
                 {
-                    await load;
+                    await Task.WhenAll(load, pause);
                 }
                 catch
                 {
@@ -116,6 +129,7 @@ public static class MatrixRunner
                 throw;
             }
             var k6Result = await load;
+            await pause;
             var check = await CheckLedgerAsync(label);
 
             var result = new RunResult(

@@ -34,6 +34,12 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         text.Append("Стенд запущен матрицей: сервисы в Release, выборка трейсов 1 %, метрики раз в секунду; эмулятор банка с настройками по умолчанию. ");
         text.Append($"{K6.Merchants} продавцов, горячий — продавец {K6.HotMerchant}. Лимит продавца — {settings.TokensPerSecond} в секунду, всплеск {settings.Burst}. ");
         text.Append($"{stand.K6Version}. Приоритет процесса Docker — {stand.DockerPriority ?? "не проверен"}.\n\n");
+        if (options.Instances > 1)
+            text.Append($"Экземпляров Payments.Api — {options.Instances}, k6 шлёт им запросы по очереди. ");
+        if (options.RedisPauseSeconds > 0)
+            text.Append($"В середине каждого повтора Redis на паузе {options.RedisPauseSeconds} с (`CLIENT PAUSE`): все команды к нему ждут, как у зависшего Redis. ");
+        if (options.Instances > 1 || options.RedisPauseSeconds > 0)
+            text.Append("\n\n");
 
         text.Append("## Медиана повторов\n\n");
         Table(text, ["Прогон", .. RunHeaders, .. columns.Select(column => column.Header), "Пороги", "`/invariants`"],
@@ -55,7 +61,7 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         text.Append("- **Сверх лимита** — на сколько принятых платежей горячего продавца больше, чем пропускает его корзина токенов за прогон: ");
         text.Append($"всплеск и лимит за каждую секунду, {Count(settings.Burst)} + {Count(settings.TokensPerSecond)} × {options.DurationSeconds} = ");
         text.Append($"{Count(settings.Burst + (double)settings.TokensPerSecond * options.DurationSeconds)}.\n");
-        text.Append("- **Сбоев Redis** — строк `Redis did not answer` в логе Payments.Api за прогон: столько раз Redis не ответил лимитеру за 100 мс. ");
+        text.Append("- **Сбоев Redis** — строк `Redis did not answer` в логах Payments.Api, всех экземпляров, за прогон: столько раз Redis не ответил лимитеру за 100 мс. ");
         text.Append("Одна строка — один сбой: лимит на это время у каждого экземпляра Payments.Api свой, в памяти, пока пробный запрос не получит ответ Redis. ");
         text.Append("До шага 5 этапа 3 лимит в такие моменты не действовал совсем, а breaker мерцал, и строк на один сбой было много. Сколько платежей прошло сверх лимита, видно по «Сверх лимита».\n");
         text.Append("- **Не отправлено** — `dropped_iterations` от числа запланированных платежей.\n");

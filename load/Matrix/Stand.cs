@@ -4,14 +4,17 @@ namespace Matrix;
 
 /// <summary>
 /// The processes of the stand, started as README, step 8, says for load runs: the bank emulator with its defaults
-/// and both services from the Release build with 1% of traces. Kafka, Redis, the dashboard and Postgres it only uses.
+/// and both services from the Release build with 1% of traces, Payments.Api in one instance or several.
+/// Kafka, Redis, the dashboard and Postgres it only uses.
 /// </summary>
-public sealed class Stand(string repository, string reports) : IDisposable
+public sealed class Stand(string repository, string reports, int instances) : IDisposable
 {
     // The launch profiles of the services and the emulator's default BANK_ADDR.
-    public const string PaymentsApiUrl = "http://localhost:5100";
     public const string LedgerUrl = "http://localhost:5200";
     public const string BankUrl = "http://localhost:5300";
+
+    // The container of docker-compose.yml.
+    private const string RedisContainer = "payments-redis";
 
     // go run compiles the emulator before it starts.
     private static readonly TimeSpan StartTimeout = TimeSpan.FromMinutes(3);
@@ -32,7 +35,18 @@ public sealed class Stand(string repository, string reports) : IDisposable
     };
 
     private readonly List<DateTimeOffset> redisTimeouts = [];
-    private LoggedProcess? bank, ledger, paymentsApi;
+    private LoggedProcess? bank, ledger;
+    private List<LoggedProcess> paymentsApis = [];
+
+    public IReadOnlyList<string> PaymentsApiUrls { get; } = PaymentsApiUrlsOf(instances);
+
+    /// <summary>
+    /// The first instance of Payments.Api on the port of its launch profile, 5100, the others on the ports after it.
+    /// One leader lock per job lets only one of them relay the outbox and recover payments (AdvisoryLeaderLock);
+    /// the others take payments.
+    /// </summary>
+    public static IReadOnlyList<string> PaymentsApiUrlsOf(int instances) =>
+        Enumerable.Range(0, instances).Select(instance => $"http://localhost:{5100 + instance}").ToList();
 
     /// <summary>Release builds of both services, so that dotnet run --no-build starts them together without building twice.</summary>
     public async Task BuildAsync(CancellationToken ct)
@@ -54,19 +68,46 @@ public sealed class Stand(string repository, string reports) : IDisposable
     {
         bank ??= new LoggedProcess("Bank emulator", Processes.Info("go", ["run", "."], Path.Combine(repository, "src", "bank-emulator")), Log("bank-emulator.log"));
         ledger ??= DotnetRun("Ledger.Service", ServiceSettings, "ledger.log");
-        paymentsApi?.Dispose();
-        paymentsApi = StartPaymentsApi(limiter);
+        foreach (var instance in paymentsApis)
+            instance.Dispose();
+        paymentsApis = PaymentsApiUrls.Select((url, instance) => StartPaymentsApi(limiter, instance, url)).ToList();
 
-        await Task.WhenAll(
+        await Task.WhenAll([
             WaitHealthyAsync(bank, $"{BankUrl}/healthz", ct),
             WaitHealthyAsync(ledger, $"{LedgerUrl}/health", ct),
-            WaitHealthyAsync(paymentsApi, $"{PaymentsApiUrl}/health", ct));
+            .. paymentsApis.Select((instance, i) => WaitHealthyAsync(instance, $"{PaymentsApiUrls[i]}/health", ct)),
+        ]);
+    }
+
+    /// <summary>Before the matrix, not in the middle of its first repeat: --redis-pause needs docker and the container.</summary>
+    public async Task EnsureRedisCanPauseAsync(CancellationToken ct)
+    {
+        var ping = Processes.Info("docker", ["exec", RedisContainer, "redis-cli", "PING"]);
+        var log = Log("redis-pause.log");
+        if (await Processes.RunAsync(ping, log, ct) != 0)
+            throw new MatrixException($"--redis-pause: docker exec {RedisContainer} redis-cli failed, see {log}");
     }
 
     /// <summary>
-    /// How many times in the window Payments.Api logged that Redis did not answer: a line per outage, for which every
-    /// instance limits merchants on its own (LocalMerchantLimiter). Before step 5 of stage 3 the limit went off instead,
-    /// and the breaker flapped, with many lines per outage, sometimes out of order.
+    /// Holds every command to Redis for <paramref name="duration"/>, as a Redis that hangs: CLIENT PAUSE, after
+    /// <paramref name="after"/>. The limiter of each instance times out and limits merchants on its own until a probe
+    /// gets an answer.
+    /// </summary>
+    public async Task PauseRedisAsync(TimeSpan after, TimeSpan duration, CancellationToken ct)
+    {
+        await Task.Delay(after, ct);
+        var pause = Processes.Info("docker", ["exec", RedisContainer, "redis-cli", "CLIENT", "PAUSE", $"{(long)duration.TotalMilliseconds}"]);
+        var log = Log("redis-pause.log");
+        if (await Processes.RunAsync(pause, log, ct) != 0)
+            throw new MatrixException($"Redis could not be paused, see {log}");
+
+        Console.WriteLine($"  {DateTime.Now:HH:mm:ss}  Redis paused for {duration.TotalSeconds:0} s");
+    }
+
+    /// <summary>
+    /// How many times in the window Payments.Api logged that Redis did not answer: a line per outage and instance; for
+    /// that time each instance limits merchants on its own (LocalMerchantLimiter). Before step 5 of stage 3 the limit
+    /// went off instead, and the breaker flapped, with many lines per outage, sometimes out of order.
     /// </summary>
     public int RedisTimeouts(DateTimeOffset from, DateTimeOffset to)
     {
@@ -77,35 +118,49 @@ public sealed class Stand(string repository, string reports) : IDisposable
     /// <summary>A process of the stand that has died would leave every run after it meaningless.</summary>
     public void EnsureRunning()
     {
-        foreach (var process in new[] { bank, ledger, paymentsApi })
+        LoggedProcess?[] processes = [bank, ledger, .. paymentsApis];
+        foreach (var process in processes)
             if (process is { HasExited: true })
                 throw new MatrixException($"{process.Name} has exited, see {process.LogPath}");
     }
 
     public void Dispose()
     {
-        paymentsApi?.Dispose();
+        foreach (var instance in paymentsApis)
+            instance.Dispose();
         ledger?.Dispose();
         bank?.Dispose();
     }
 
-    private LoggedProcess StartPaymentsApi(bool limiter)
+    private LoggedProcess StartPaymentsApi(bool limiter, int instance, string url)
     {
         // Set either way: a value left in the shell is not passed on (Processes.IsStandSetting).
         var settings = new Dictionary<string, string>(ServiceSettings) { ["RateLimiting__Merchant__Enabled"] = limiter ? "true" : "false" };
-        return DotnetRun("Payments.Api", settings, $"payments-api-limiter-{(limiter ? "on" : "off")}.log", line =>
+
+        // The first instance keeps the names it had when there was only one.
+        var number = instance == 0 ? "" : $" {instance + 1}";
+        var log = $"payments-api{number.Replace(' ', '-')}-limiter-{(limiter ? "on" : "off")}.log";
+
+        // --urls on the command line wins over the address of the launch profile.
+        return DotnetRun("Payments.Api", settings, log, line =>
         {
             if (line.Contains("Redis did not answer", StringComparison.Ordinal))
                 lock (redisTimeouts)
                     redisTimeouts.Add(DateTimeOffset.Now);
-        });
+        }, name: $"Payments.Api{number}", arguments: ["--urls", url]);
     }
 
-    private LoggedProcess DotnetRun(string project, IReadOnlyDictionary<string, string> settings, string log, Action<string>? onLine = null) =>
-        new(project,
-            Processes.Info("dotnet", ["run", "--no-build", "-c", "Release", "--project", Path.Combine("src", project), "--launch-profile", "http"], repository, settings),
+    private LoggedProcess DotnetRun(
+        string project, IReadOnlyDictionary<string, string> settings, string log, Action<string>? onLine = null,
+        string? name = null, string[]? arguments = null)
+    {
+        // After --, the arguments go to the program, not to dotnet run.
+        string[] program = arguments is null ? [] : ["--", .. arguments];
+        return new(name ?? project,
+            Processes.Info("dotnet", ["run", "--no-build", "-c", "Release", "--project", Path.Combine("src", project), "--launch-profile", "http", .. program], repository, settings),
             Log(log),
             onLine);
+    }
 
     private string Log(string name) => Path.Combine(reports, name);
 

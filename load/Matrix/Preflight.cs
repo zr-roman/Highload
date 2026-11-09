@@ -12,10 +12,11 @@ public sealed record StandInfo(string? Commit, bool UncommittedChanges, string K
 public static class Preflight
 {
     public static async Task<StandInfo> CheckAsync(
-        string repository, StandSettings settings, NpgsqlDataSource payments, IAdminClient kafka, CancellationToken ct)
+        string repository, StandSettings settings, NpgsqlDataSource payments, IAdminClient kafka, IReadOnlyList<string> paymentsApiUrls,
+        CancellationToken ct)
     {
         // A service left from a manual run, maybe a Debug build, would take the load instead of the matrix's own.
-        foreach (var url in new[] { Stand.PaymentsApiUrl, Stand.LedgerUrl, Stand.BankUrl })
+        foreach (var url in (string[])[.. paymentsApiUrls, Stand.LedgerUrl, Stand.BankUrl])
         {
             var uri = new Uri(url);
             if (await ListensAsync(uri.Host, uri.Port, ct))

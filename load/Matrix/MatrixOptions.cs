@@ -1,7 +1,8 @@
 ﻿namespace Matrix;
 
 /// <summary>The command line of the matrix.</summary>
-public sealed record MatrixOptions(IReadOnlyList<int> Runs, int Repeats, int DurationSeconds, int WarmupSeconds, bool Fresh)
+public sealed record MatrixOptions(
+    IReadOnlyList<int> Runs, int Repeats, int DurationSeconds, int WarmupSeconds, bool Fresh, int Instances, int RedisPauseSeconds)
 {
     public const string Usage = """
         Stage 3 load matrix: starts the bank emulator and both services, runs the loads one by one
@@ -11,6 +12,7 @@ public sealed record MatrixOptions(IReadOnlyList<int> Runs, int Repeats, int Dur
           dotnet run --project load\Matrix -c Release
           dotnet run --project load\Matrix -c Release -- --runs 3,6 --repeats 1 --duration 60
           dotnet run --project load\Matrix -c Release -- --fresh --repeats 3
+          dotnet run --project load\Matrix -c Release -- --runs 2,5 --repeats 3 --instances 2 --redis-pause 10
 
           --runs 1,2,...  the runs of the matrix to do (default: all six)
           --repeats N     how many times each run is repeated (default: 2)
@@ -18,6 +20,9 @@ public sealed record MatrixOptions(IReadOnlyList<int> Runs, int Repeats, int Dur
           --warmup S      seconds of unmeasured load after each start of Payments.Api (default: 60; 0: none)
           --fresh         empty the databases payments and ledger, delete the topic payments.captured and
                           the consumer group of the ledger first: every matrix then starts from the same stand
+          --instances N   instances of Payments.Api, on ports 5100, 5101, ...; k6 sends to them in turn (default: 1)
+          --redis-pause S hold every command to Redis for S seconds in the middle of each repeat, as a Redis
+                          that hangs (default: 0, no pause)
         """;
 
     public static MatrixOptions Parse(string[] args)
@@ -28,7 +33,9 @@ public sealed record MatrixOptions(IReadOnlyList<int> Runs, int Repeats, int Dur
             DurationSeconds: 120, 
             // 20 s were not enough: the repeats got faster one after another for half an hour.
             WarmupSeconds: 60,
-            Fresh: false);
+            Fresh: false,
+            Instances: 1,
+            RedisPauseSeconds: 0);
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -42,9 +49,15 @@ public sealed record MatrixOptions(IReadOnlyList<int> Runs, int Repeats, int Dur
                 "--repeats" => options with { Repeats = ParseNumber(name, Value(), min: 1) },
                 "--duration" => options with { DurationSeconds = ParseNumber(name, Value(), min: 10) },
                 "--warmup" => options with { WarmupSeconds = ParseNumber(name, Value(), min: 0) },
+                "--instances" => options with { Instances = ParseNumber(name, Value(), min: 1) },
+                "--redis-pause" => options with { RedisPauseSeconds = ParseNumber(name, Value(), min: 0) },
                 _ => throw Error($"Unknown option {name}"),
             };
         }
+
+        // The pause sits in the middle of the load, with load before and after it.
+        if (options.RedisPauseSeconds >= options.DurationSeconds)
+            throw Error($"--redis-pause {options.RedisPauseSeconds} must be shorter than --duration {options.DurationSeconds}");
 
         return options;
     }

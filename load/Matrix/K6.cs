@@ -3,8 +3,11 @@ using System.Text.Json;
 
 namespace Matrix;
 
-/// <summary>Runs load/payments.js with the merchants of stage 3 and reads what k6 measured.</summary>
-public sealed class K6(string script, string reports)
+/// <summary>
+/// Runs load/payments.js with the merchants of stage 3 and reads what k6 measured. With several instances of
+/// Payments.Api the requests go round them in turn.
+/// </summary>
+public sealed class K6(string script, string reports, IReadOnlyList<string> paymentsApiUrls)
 {
     // Stage 3: merchant 1 is the hot one, the rest of the payments go to merchants 2 to 50 equally.
     public const int HotMerchant = 1;
@@ -58,6 +61,7 @@ public sealed class K6(string script, string reports)
             "-e", $"HOT_SHARE={run.HotShare}",
             "-e", $"HOT_MERCHANT={HotMerchant}",
             "-e", $"MERCHANTS={Merchants}",
+            "-e", $"BASE_URL={string.Join(',', paymentsApiUrls)}",
             script,
         ]);
 }
