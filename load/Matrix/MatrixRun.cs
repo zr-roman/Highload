@@ -23,7 +23,10 @@ public sealed record MatrixRun(int Id, int Rate, double HotShare, bool Limiter)
     public bool HasHotMerchant => HotShare > 0;
 }
 
-/// <summary>What one repeat of a run measured. The label is the run and the repeat: 3a, 3b. Ledger is null if /invariants did not answer.</summary>
+/// <summary>
+/// What one repeat of a run measured. The label is the run and the repeat: 3a, 3b. Ledger is null if /invariants did not answer.
+/// LedgerMembers are the partitions of each instance of Ledger when the repeat began; null if Kafka did not tell.
+/// </summary>
 public sealed record RunResult(
     MatrixRun Run,
     string Label,
@@ -31,7 +34,8 @@ public sealed record RunResult(
     K6Result K6,
     BacklogSummary Backlog,
     int LimiterOutages,
-    LedgerCheck? Ledger)
+    LedgerCheck? Ledger,
+    IReadOnlyList<IReadOnlyList<int>>? LedgerMembers)
 {
     /// <summary>Payments of the hot merchant the service took, 201 and 202: all its requests but 429 and failures.</summary>
     public long HotAccepted => K6.HotRequests - K6.HotRateLimited - K6.HotFailed;
@@ -53,6 +57,12 @@ public sealed record RunResult(
     public double? HotPartitionMessagesPerSecond => HotPartition is { } partition ? (double)Backlog.Messages[partition] / DurationSeconds : null;
 
     public double OtherPartitionsMessagesPerSecond => Backlog.Messages.Where((_, partition) => partition != HotPartition).Average() / DurationSeconds;
+
+    /// <summary>The fastest the ledger wrote the hot partition (BacklogSummary.PeakWrite). Null if the run has no hot merchant.</summary>
+    public double? HotPartitionPeakWrite => HotPartition is { } partition ? Backlog.PeakWrite[partition] : null;
+
+    /// <summary>Messages a second that came to the partitions of one instance of Ledger.</summary>
+    public double MessagesPerSecond(IEnumerable<int> partitions) => (double)partitions.Sum(partition => Backlog.Messages[partition]) / DurationSeconds;
 }
 
 /// <summary>The answer of /invariants of the ledger: whether they hold, how many payments the ledger has, how long it took.</summary>

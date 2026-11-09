@@ -41,7 +41,8 @@ public static class MatrixRunner
         StandInfo info;
         using (var checks = KafkaClient(settings))
         {
-            info = await Preflight.CheckAsync(repository, settings, payments, checks, Stand.PaymentsApiUrlsOf(options.Instances), ct);
+            info = await Preflight.CheckAsync(
+                repository, settings, payments, checks, Stand.PaymentsApiUrlsOf(options.Instances), Stand.LedgerUrlsOf(options.Ledgers), ct);
 
             // After the checks: the services are not running, so nothing holds the tables, the topic or the group.
             if (options.Fresh)
@@ -55,7 +56,7 @@ public static class MatrixRunner
         // and for the topic the services create anew it found "No leaders" sample after sample.
         using var kafka = KafkaClient(settings);
 
-        using var stand = new Stand(repository, reports, options.Instances, options.HotQuota, options.HotBurst, options.BankFailsHot);
+        using var stand = new Stand(repository, reports, options);
         if (options.RedisPauseSeconds > 0)
             await stand.EnsureRedisCanPauseAsync(ct);
 
@@ -72,9 +73,10 @@ public static class MatrixRunner
         foreach (var group in groups)
         {
             Console.WriteLine($"{(group == groups[0] ? "Starting the stand" : "Restarting Payments.Api")}, limiter {(group.Key ? "on" : "off")}" +
-                (options.Instances > 1 ? $", {options.Instances} instances of Payments.Api" : ""));
+                (options.Instances > 1 ? $", {options.Instances} instances of Payments.Api" : "") +
+                (options.Ledgers > 1 ? $", {options.Ledgers} instances of Ledger" : ""));
             await stand.StartAsync(limiter: group.Key, ct);
-            await backlog.WaitLedgerAssignedAsync(ct);
+            await backlog.WaitLedgerAssignedAsync(options.Ledgers, ct);
 
             if (options.WarmupSeconds > 0)
             {
@@ -98,6 +100,7 @@ public static class MatrixRunner
 
             // Every run starts from a stand that has caught up with the load before it.
             var start = await backlog.WaitCaughtUpAsync(ct);
+            var ledgerMembers = await backlog.ReadLedgerAssignmentAsync(ct);
 
             using var stopLoad = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var load = k6.RunAsync(run, label, options.DurationSeconds, stopLoad.Token);
@@ -141,7 +144,8 @@ public static class MatrixRunner
                 k6Result,
                 BacklogSummary.Of(samples, k6Result.Finished),
                 LimiterOutages: stand.RedisTimeouts(k6Result.Started, k6Result.Finished),
-                Ledger: check);
+                Ledger: check,
+                LedgerMembers: ledgerMembers);
             Console.WriteLine(Describe(result, settings));
             return result;
         }
@@ -174,6 +178,10 @@ public static class MatrixRunner
             if (result.Run.Limiter)
                 line += $", over the limit {result.OverLimit(settings)}, Redis failures {result.LimiterOutages}";
         }
+
+        line += $"; ledger wrote at most {result.Backlog.PeakWriteTotal:0}/s";
+        if (result.HotPartitionPeakWrite is { } hotWrite)
+            line += $", {hotWrite:0}/s to the hot partition";
 
         return line +
             $"; dropped {result.K6.Dropped}; outbox max {result.Backlog.OutboxMaxAgeSeconds:0.0} s; lag max {result.Backlog.LagMax.Max()}" +

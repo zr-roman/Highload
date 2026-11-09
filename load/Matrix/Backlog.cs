@@ -30,11 +30,12 @@ public sealed class Backlog(NpgsqlDataSource payments, IAdminClient kafka, strin
     public static readonly TimeSpan SlowSample = TimeSpan.FromSeconds(2);
 
     /// <summary>
-    /// Waits until the ledger's group holds every partition of payments.captured. A ledger left without them consumes
-    /// nothing, and the wait for a catch-up would only end after 10 min: so it went when the group coordinator of Kafka
-    /// stopped answering, and the ledger lost its partitions and never got them back.
+    /// Waits until the ledger's group holds every partition of payments.captured, shared by all its <paramref name="members"/>.
+    /// A ledger left without them consumes nothing, and the wait for a catch-up would only end after 10 min: so it went when
+    /// the group coordinator of Kafka stopped answering, and the ledger lost its partitions and never got them back.
+    /// A ledger that joins later would take its partitions from the others in the middle of a run.
     /// </summary>
-    public async Task WaitLedgerAssignedAsync(CancellationToken ct)
+    public async Task WaitLedgerAssignedAsync(int members, CancellationToken ct)
     {
         var waited = Stopwatch.StartNew();
         while (true)
@@ -51,7 +52,7 @@ public sealed class Backlog(NpgsqlDataSource payments, IAdminClient kafka, strin
                     .SelectMany(member => member.Assignment.TopicPartitions)
                     .Count(partition => partition.Topic == Topics.PaymentsCaptured);
 
-                if (group.State == ConsumerGroupState.Stable && assigned == Partitions.Count)
+                if (group.State == ConsumerGroupState.Stable && group.Members.Count == members && assigned == Partitions.Count)
                     return;
 
                 state = $"the group is {group.State}, {group.Members.Count} member(s), {assigned} of {Partitions.Count} partitions assigned";
@@ -67,6 +68,35 @@ public sealed class Backlog(NpgsqlDataSource payments, IAdminClient kafka, strin
                     "Restart Kafka, docker restart payments-kafka, and start again.");
 
             await Task.Delay(TimeSpan.FromSeconds(1), ct);
+        }
+    }
+
+    /// <summary>
+    /// The partitions of each member of the ledger's group, the members in the order of their first partition. Null if Kafka
+    /// does not answer: the report then goes without them.
+    /// </summary>
+    public async Task<IReadOnlyList<IReadOnlyList<int>>?> ReadLedgerAssignmentAsync(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        try
+        {
+            var group = (await kafka.DescribeConsumerGroupsAsync(
+                [ledgerGroup], new DescribeConsumerGroupsOptions { RequestTimeout = KafkaTimeout })).ConsumerGroupDescriptions.Single();
+
+            return group.Members
+                .Select(member => (IReadOnlyList<int>)member.Assignment.TopicPartitions
+                    .Where(partition => partition.Topic == Topics.PaymentsCaptured)
+                    .Select(partition => partition.Partition.Value)
+                    .Order()
+                    .ToList())
+                .Where(partitions => partitions.Count > 0)
+                .OrderBy(partitions => partitions[0])
+                .ToList();
+        }
+        catch (KafkaException e)
+        {
+            Console.WriteLine($"  The partitions of the ledgers are not known: {e.Message}");
+            return null;
         }
     }
 
@@ -222,6 +252,9 @@ public sealed record BacklogSample(
 {
     public bool CaughtUp => OutboxRows == 0 && Lag.All(lag => lag == 0);
 
+    /// <summary>How far the ledger has committed the partition: its end less its lag.</summary>
+    public long Committed(int partition) => EndOffsets[partition] - Lag[partition];
+
     public string ToCsv() =>
         $"{At:HH:mm:ss},{OutboxRows},{OutboxAgeSeconds:0.000},{string.Join(",", Lag)},{Postgres.TotalMilliseconds:0},{Kafka.TotalMilliseconds:0}";
 
@@ -229,9 +262,18 @@ public sealed record BacklogSample(
         $"{At:HH:mm:ss}  outbox {OutboxRows} rows, the oldest {OutboxAgeSeconds:0.0} s;  lag by partition {string.Join(" ", Lag)}";
 }
 
-/// <summary>The backlog of one run, from its samples.</summary>
-public sealed record BacklogSummary(double OutboxMaxAgeSeconds, long[] LagMax, long[] Messages, double CaughtUpSeconds, double LongestGapSeconds)
+/// <summary>
+/// The backlog of one run, from its samples. PeakWrite is the fastest the ledger wrote each partition, PeakWriteTotal all
+/// of them together: the most its commits moved in <see cref="PeakWindow"/> of samples, a second. While a partition lags,
+/// that is as fast as its ledger writes it; while it does not, it is only what came in.
+/// </summary>
+public sealed record BacklogSummary(
+    double OutboxMaxAgeSeconds, long[] LagMax, long[] Messages, double CaughtUpSeconds, double LongestGapSeconds,
+    double[] PeakWrite, double PeakWriteTotal)
 {
+    // Long enough that a batch of 500 committed at once does not show as a rate of thousands a second.
+    public static readonly TimeSpan PeakWindow = TimeSpan.FromSeconds(10);
+
     public static BacklogSummary Of(IReadOnlyList<BacklogSample> samples, DateTimeOffset loadFinished)
     {
         var partitions = Enumerable.Range(0, samples[0].Lag.Length).ToList();
@@ -243,6 +285,27 @@ public sealed record BacklogSummary(double OutboxMaxAgeSeconds, long[] LagMax, l
             // The record ends with the first sample that has caught up after the load.
             CaughtUpSeconds: Math.Max(0, (samples[^1].At - loadFinished).TotalSeconds),
             // A second between samples, or longer where one failed or was slow: in that time the maxima above were not looked at.
-            LongestGapSeconds: samples.Zip(samples.Skip(1), (before, after) => (after.At - before.At).TotalSeconds).DefaultIfEmpty(0).Max());
+            LongestGapSeconds: samples.Zip(samples.Skip(1), (before, after) => (after.At - before.At).TotalSeconds).DefaultIfEmpty(0).Max(),
+            PeakWrite: partitions.Select(p => PeakPerSecond(samples, sample => sample.Committed(p))).ToArray(),
+            PeakWriteTotal: PeakPerSecond(samples, sample => partitions.Sum(sample.Committed)));
+    }
+
+    // Every window from a sample to the first one at least PeakWindow after it; 0 if the record is shorter.
+    private static double PeakPerSecond(IReadOnlyList<BacklogSample> samples, Func<BacklogSample, long> committed)
+    {
+        var peak = 0.0;
+        var to = 0;
+        for (var from = 0; from < samples.Count; from++)
+        {
+            while (to < samples.Count && samples[to].At - samples[from].At < PeakWindow)
+                to++;
+
+            if (to == samples.Count)
+                break;
+
+            var seconds = (samples[to].At - samples[from].At).TotalSeconds;
+            peak = Math.Max(peak, (committed(samples[to]) - committed(samples[from])) / seconds);
+        }
+        return peak;
     }
 }

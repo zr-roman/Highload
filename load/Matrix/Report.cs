@@ -43,7 +43,13 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
             text.Append($"Экземпляров Payments.Api — {options.Instances}, k6 шлёт им запросы по очереди. ");
         if (options.RedisPauseSeconds > 0)
             text.Append($"В середине каждого повтора Redis на паузе {options.RedisPauseSeconds} с (`CLIENT PAUSE`): все команды к нему ждут, как у зависшего Redis. ");
-        if (options.Instances > 1 || options.RedisPauseSeconds > 0)
+        if (options.Ledgers > 1)
+            text.Append($"Экземпляров Ledger — {options.Ledgers}, в одной группе: Kafka делит между ними партиции. ");
+        if (options.LedgerBatch > 0)
+            text.Append(options.LedgerBatch == 1
+                ? "Пачка Ledger — один платёж: одна SQL-команда и один коммит смещения на платёж (`--ledger-batch 1`). "
+                : $"Пачка Ledger — не больше {options.LedgerBatch} платежей (`--ledger-batch`). ");
+        if (options.Instances > 1 || options.RedisPauseSeconds > 0 || options.Ledgers > 1 || options.LedgerBatch > 0)
             text.Append("\n\n");
 
         text.Append("## Медиана повторов\n\n");
@@ -57,7 +63,8 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         text.Append("## Окна повторов\n\n");
         text.Append("Время — для `ledger.payment.delay` и `ledger.batch.size` с фильтром `partition` в дашборде: эти гистограммы есть только там.\n\n");
         Table(text,
-            ["Повтор", "Время", "Горячая партиция", "Сообщений в секунду: горячая / прочие в среднем", "Самый долгий промежуток между замерами, с", "Платежей в журнале"],
+            ["Повтор", "Время", "Горячая партиция", "Сообщений в секунду: горячая / прочие в среднем", "Партиции экземпляров Ledger: сообщений в секунду",
+             "Самый долгий промежуток между замерами, с", "Платежей в журнале"],
             results.Select(WindowRow));
 
         text.Append("## Столбцы\n\n");
@@ -75,11 +82,14 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         text.Append("- **Outbox** — возраст самой старой строки outbox, **lag** — сообщения партиции, ещё не закоммиченные Ledger; максимум замеров раз в секунду. ");
         text.Append("Горячая партиция — та, в которую за прогон пришло больше всего сообщений.\n");
         text.Append("- **Догнал за** — сколько после конца нагрузки outbox пустел, а lag всех партиций становился 0. Замер раз в секунду, поэтому «≤ 1» — догнал сразу.\n");
+        text.Append($"- **Запись, пик** — быстрее всего Ledger записывал горячую партицию и весь журнал: на сколько продвинулись закоммиченные смещения за {Count(BacklogSummary.PeakWindow.TotalSeconds)} с замеров, в секунду. ");
+        text.Append("Пока партиция отстаёт, это скорость её писателя; пока не отстаёт — только то, что в неё приходит.\n");
         text.Append("- **`/invariants`** — проверка журнала после повтора: двойная запись, балансы равны проводкам, сумма всех балансов — ноль. ");
         text.Append("«нет ответа» — Ledger не ответил, и у повтора проверки нет.\n");
         text.Append($"- **Самый долгий промежуток между замерами** — обычно секунда. Дольше — замер не удался или отброшен: Postgres или Kafka отвечали дольше {Count(Backlog.SlowSample.TotalSeconds)} с, ");
         text.Append("и lag в нём был бы завышен. За такой промежуток максимумы outbox и lag не видны.\n");
-        text.Append("- **Платежей в журнале** — `payments` из ответа `/invariants`: журнал растёт от повтора к повтору, и проверка вместе с ним.\n\n");
+        text.Append("- **Платежей в журнале** — `payments` из ответа `/invariants`: журнал растёт от повтора к повтору, и проверка вместе с ним.\n");
+        text.Append("- **Партиции экземпляров Ledger** — какие партиции были у каждого экземпляра в начале повтора и сколько сообщений в секунду в них пришло; горячая — жирным.\n\n");
         text.Append("Рядом с таблицей: `run-<повтор>.json` и `.txt` — итог и вывод k6, `.html` — его графики, `-backlog.csv` — замеры раз в секунду (первый — перед нагрузкой; в последних столбцах — сколько отвечали Postgres и Kafka), ");
         text.Append("`-invariants.json` — ответ `/invariants`; логи сервисов и сборки.\n");
 
@@ -122,6 +132,8 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         new("Outbox, макс. возраст, с", r => r.Backlog.OutboxMaxAgeSeconds, Seconds),
         new("Lag горячей партиции, макс.", r => r.HotPartitionLagMax, Count),
         new("Lag прочих партиций, макс.", r => r.OtherPartitionsLagMax, Count),
+        new("Запись горячей партиции, пик /с", r => r.HotPartitionPeakWrite, Count),
+        new("Запись журнала, пик /с", r => r.Backlog.PeakWriteTotal, Count),
         new("Догнал за, с", r => r.Backlog.CaughtUpSeconds, CatchUp),
     ];
 
@@ -134,9 +146,17 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         $"{result.K6.Started:HH:mm:ss}–{result.K6.Finished:HH:mm:ss}",
         result.HotPartition?.ToString() ?? "—",
         $"{Count(result.HotPartitionMessagesPerSecond)} / {Count(result.OtherPartitionsMessagesPerSecond)}",
+        LedgerMembers(result),
         Count(result.Backlog.LongestGapSeconds),
         Count(result.Ledger?.Payments),
     ];
+
+    // "0, 1, 2, **3**: 957; 4, 5, 6, 7: 43": the partitions of each instance and the messages a second that came to them.
+    private static string LedgerMembers(RunResult result) =>
+        result.LedgerMembers is { Count: > 0 } members
+            ? string.Join("; ", members.Select(partitions =>
+                $"{string.Join(", ", partitions.Select(p => p == result.HotPartition ? $"**{p}**" : $"{p}"))}: {Count(result.MessagesPerSecond(partitions))}"))
+            : "—";
 
     private static void Table(StringBuilder text, IReadOnlyList<string> header, IEnumerable<string[]> rows)
     {

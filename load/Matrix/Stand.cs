@@ -5,12 +5,12 @@ namespace Matrix;
 /// <summary>
 /// The processes of the stand, started as README, step 8, says for load runs: the bank emulator with its defaults
 /// (or failing the hot merchant, --bank-fails-hot) and both services from the Release build with 1% of traces,
-/// Payments.Api in one instance or several.
+/// each in one instance or several.
 /// Kafka, Redis, the dashboard and Postgres it only uses.
 /// </summary>
-public sealed class Stand(string repository, string reports, int instances, int hotQuota, int hotBurst, bool bankFailsHot) : IDisposable
+public sealed class Stand(string repository, string reports, MatrixOptions options) : IDisposable
 {
-    // The launch profiles of the services and the emulator's default BANK_ADDR.
+    // The launch profiles of the services and the emulator's default BANK_ADDR. /invariants is asked of the first Ledger.
     public const string LedgerUrl = "http://localhost:5200";
     public const string BankUrl = "http://localhost:5300";
 
@@ -36,10 +36,13 @@ public sealed class Stand(string repository, string reports, int instances, int 
     };
 
     private readonly List<DateTimeOffset> redisTimeouts = [];
-    private LoggedProcess? bank, ledger;
+    private LoggedProcess? bank;
+    private List<LoggedProcess> ledgers = [];
     private List<LoggedProcess> paymentsApis = [];
 
-    public IReadOnlyList<string> PaymentsApiUrls { get; } = PaymentsApiUrlsOf(instances);
+    public IReadOnlyList<string> PaymentsApiUrls { get; } = PaymentsApiUrlsOf(options.Instances);
+
+    public IReadOnlyList<string> LedgerUrls { get; } = LedgerUrlsOf(options.Ledgers);
 
     /// <summary>
     /// The first instance of Payments.Api on the port of its launch profile, 5100, the others on the ports after it.
@@ -48,6 +51,13 @@ public sealed class Stand(string repository, string reports, int instances, int 
     /// </summary>
     public static IReadOnlyList<string> PaymentsApiUrlsOf(int instances) =>
         Enumerable.Range(0, instances).Select(instance => $"http://localhost:{5100 + instance}").ToList();
+
+    /// <summary>
+    /// The ledgers on 5200, 5201, ...: one consumer group, so Kafka splits the partitions between them, and a partition
+    /// with all its payments goes to one of them.
+    /// </summary>
+    public static IReadOnlyList<string> LedgerUrlsOf(int ledgers) =>
+        Enumerable.Range(0, ledgers).Select(instance => $"http://localhost:{5200 + instance}").ToList();
 
     /// <summary>Release builds of both services, so that dotnet run --no-build starts them together without building twice.</summary>
     public async Task BuildAsync(CancellationToken ct)
@@ -62,16 +72,18 @@ public sealed class Stand(string repository, string reports, int instances, int 
     }
 
     /// <summary>
-    /// Starts the emulator and the ledger if they are not running yet, and Payments.Api with the limiter on or off.
+    /// Starts the emulator and the ledgers if they are not running yet, and Payments.Api with the limiter on or off.
     /// A running Payments.Api is restarted: the setting is an environment variable, and a process reads those at its start.
     /// </summary>
     public async Task StartAsync(bool limiter, CancellationToken ct)
     {
         // --bank-fails-hot: the bank fails the hot merchant alone.
-        var bankSettings = bankFailsHot ? new Dictionary<string, string> { ["BANK_ERROR_MERCHANT"] = $"{K6.HotMerchant}" } : null;
+        var bankSettings = options.BankFailsHot ? new Dictionary<string, string> { ["BANK_ERROR_MERCHANT"] = $"{K6.HotMerchant}" } : null;
         bank ??= new LoggedProcess("Bank emulator",
             Processes.Info("go", ["run", "."], Path.Combine(repository, "src", "bank-emulator"), bankSettings), Log("bank-emulator.log"));
-        ledger ??= DotnetRun("Ledger.Service", ServiceSettings, "ledger.log");
+
+        if (ledgers.Count == 0)
+            ledgers = LedgerUrls.Select(StartLedger).ToList();
 
         foreach (var instance in paymentsApis)
             instance.Dispose();
@@ -80,7 +92,7 @@ public sealed class Stand(string repository, string reports, int instances, int 
 
         await Task.WhenAll([
             WaitHealthyAsync(bank, $"{BankUrl}/healthz", ct),
-            WaitHealthyAsync(ledger, $"{LedgerUrl}/health", ct),
+            .. ledgers.Select((instance, i) => WaitHealthyAsync(instance, $"{LedgerUrls[i]}/health", ct)),
             .. paymentsApis.Select((instance, i) => WaitHealthyAsync(instance, $"{PaymentsApiUrls[i]}/health", ct)),
         ]);
     }
@@ -125,7 +137,7 @@ public sealed class Stand(string repository, string reports, int instances, int 
     /// <summary>A process of the stand that has died would leave every run after it meaningless.</summary>
     public void EnsureRunning()
     {
-        LoggedProcess?[] processes = [bank, ledger, .. paymentsApis];
+        LoggedProcess?[] processes = [bank, .. ledgers, .. paymentsApis];
         foreach (var process in processes)
             if (process is { HasExited: true })
                 throw new MatrixException($"{process.Name} has exited, see {process.LogPath}");
@@ -136,7 +148,9 @@ public sealed class Stand(string repository, string reports, int instances, int 
         foreach (var instance in paymentsApis)
             instance.Dispose();
 
-        ledger?.Dispose();
+        foreach (var instance in ledgers)
+            instance.Dispose();
+
         bank?.Dispose();
     }
 
@@ -146,10 +160,10 @@ public sealed class Stand(string repository, string reports, int instances, int 
         var settings = new Dictionary<string, string>(ServiceSettings) { ["RateLimiting__Merchant__Enabled"] = limiter ? "true" : "false" };
 
         // --hot-quota: the override of RateLimiting:Merchant:Overrides, as appsettings.json would carry it.
-        if (hotQuota > 0)
+        if (options.HotQuota > 0)
         {
-            settings[$"RateLimiting__Merchant__Overrides__{K6.HotMerchant}__TokensPerSecond"] = $"{hotQuota}";
-            settings[$"RateLimiting__Merchant__Overrides__{K6.HotMerchant}__Burst"] = $"{hotBurst}";
+            settings[$"RateLimiting__Merchant__Overrides__{K6.HotMerchant}__TokensPerSecond"] = $"{options.HotQuota}";
+            settings[$"RateLimiting__Merchant__Overrides__{K6.HotMerchant}__Burst"] = $"{options.HotBurst}";
         }
 
         // The first instance keeps the names it had when there was only one.
@@ -163,6 +177,20 @@ public sealed class Stand(string repository, string reports, int instances, int 
                 lock (redisTimeouts)
                     redisTimeouts.Add(DateTimeOffset.Now);
         }, name: $"Payments.Api{number}", arguments: ["--urls", url]);
+    }
+
+    private LoggedProcess StartLedger(string url, int instance)
+    {
+        var settings = new Dictionary<string, string>(ServiceSettings);
+
+        // --ledger-batch: Consumer:BatchSize, the most payments of a partition in one statement and one commit of offsets.
+        if (options.LedgerBatch > 0)
+            settings["Consumer__BatchSize"] = $"{options.LedgerBatch}";
+
+        // The first instance keeps the names it had when there was only one.
+        var number = instance == 0 ? "" : $" {instance + 1}";
+        return DotnetRun("Ledger.Service", settings, $"ledger{number.Replace(' ', '-')}.log",
+            name: $"Ledger.Service{number}", arguments: ["--urls", url]);
     }
 
     private LoggedProcess DotnetRun(

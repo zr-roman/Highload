@@ -3,7 +3,7 @@
 /// <summary>The command line of the matrix.</summary>
 public sealed record MatrixOptions(
     IReadOnlyList<int> Runs, int Repeats, int DurationSeconds, int WarmupSeconds, bool Fresh, int Instances, int RedisPauseSeconds,
-    int HotQuota, bool BankFailsHot)
+    int HotQuota, bool BankFailsHot, int Ledgers, int LedgerBatch)
 {
     /// <summary>The burst of the hot merchant's quota: twice its rate, as the default limit has it (200 and 400).</summary>
     public int HotBurst => 2 * HotQuota;
@@ -19,6 +19,7 @@ public sealed record MatrixOptions(
           dotnet run --project load\Matrix -c Release -- --runs 2,5 --repeats 3 --instances 2 --redis-pause 10
           dotnet run --project load\Matrix -c Release -- --fresh --runs 3,5 --repeats 3 --hot-quota 1000
           dotnet run --project load\Matrix -c Release -- --fresh --runs 3 --repeats 1 --hot-quota 1000 --bank-fails-hot
+          dotnet run --project load\Matrix -c Release -- --fresh --runs 1,3 --repeats 1 --duration 60 --hot-quota 1000 --ledger-batch 1 --ledgers 2
 
           --runs 1,2,...  the runs of the matrix to do (default: all six)
           --repeats N     how many times each run is repeated (default: 2)
@@ -33,6 +34,10 @@ public sealed record MatrixOptions(
                           (default: 0, the default limit of every merchant)
           --bank-fails-hot the bank emulator answers 500 to every authorization of the hot merchant
                           (BANK_ERROR_MERCHANT) and serves the others as usual
+          --ledgers N     instances of Ledger.Service, on ports 5200, 5201, ...; Kafka splits the partitions
+                          between them (default: 1)
+          --ledger-batch B at most B payments in a batch of the ledger, Consumer:BatchSize; 1: a statement and
+                          a commit of offsets per payment (default: 0, the value of appsettings.json)
         """;
 
     public static MatrixOptions Parse(string[] args)
@@ -47,7 +52,9 @@ public sealed record MatrixOptions(
             Instances: 1,
             RedisPauseSeconds: 0,
             HotQuota: 0,
-            BankFailsHot: false);
+            BankFailsHot: false,
+            Ledgers: 1,
+            LedgerBatch: 0);
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -65,6 +72,8 @@ public sealed record MatrixOptions(
                 "--redis-pause" => options with { RedisPauseSeconds = ParseNumber(name, Value(), min: 0) },
                 "--hot-quota" => options with { HotQuota = ParseNumber(name, Value(), min: 0) },
                 "--bank-fails-hot" => options with { BankFailsHot = true },
+                "--ledgers" => options with { Ledgers = ParseNumber(name, Value(), min: 1) },
+                "--ledger-batch" => options with { LedgerBatch = ParseNumber(name, Value(), min: 1) },
                 _ => throw Error($"Unknown option {name}"),
             };
         }
