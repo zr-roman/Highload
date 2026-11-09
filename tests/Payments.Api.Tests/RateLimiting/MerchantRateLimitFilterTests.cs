@@ -2,17 +2,19 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Testing;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 using Payments.Api.Payments;
 using Payments.Api.RateLimiting;
 using Payments.Api.Telemetry;
+using Payments.Api.Tests.Infrastructure;
 
 namespace Payments.Api.Tests.RateLimiting;
 
 /// <summary>
-/// The filter in front of POST /payments when Redis does not answer. Stage 3 showed what happened before: the limit
+/// The filter in front of POST /payments when Redis does not answer, and after. Stage 3 showed what happened before: the limit
 /// went off for everyone, and the hot merchant got 512 payments a second at a limit of 200.
 /// </summary>
 public sealed class MerchantRateLimitFilterTests : IDisposable
@@ -21,6 +23,7 @@ public sealed class MerchantRateLimitFilterTests : IDisposable
 
     private readonly FakeTimeProvider time = new();
     private readonly FakeRedis redis = new();
+    private readonly FakeLogger<MerchantRateLimitFilter> logs = new();
     private readonly ServiceProvider services = new ServiceCollection().AddMetrics().BuildServiceProvider();
     private readonly LocalMerchantLimiter localLimiter;
     private readonly MetricCollector<long> local;
@@ -28,15 +31,16 @@ public sealed class MerchantRateLimitFilterTests : IDisposable
 
     public MerchantRateLimitFilterTests()
     {
-        // One token a second and a burst of 5: the sixth payment in a row is over the limit.
-        var options = Options.Create(new MerchantRateLimitOptions { TokensPerSecond = 1, Burst = 5 });
+        // A burst of 5: the sixth payment in a row is over the limit. A token every 10 s: the local bucket refills
+        // in real time, and none comes back while a test runs.
+        var options = Options.Create(new MerchantRateLimitOptions { TokensPerSecond = 0.1, Burst = 5 });
         var meterFactory = services.GetRequiredService<IMeterFactory>();
         local = new MetricCollector<long>(meterFactory, PaymentsMetrics.MeterName, "payments.rate_limit.local");
 
         localLimiter = new LocalMerchantLimiter(options);
         filter = new MerchantRateLimitFilter(
             redis, localLimiter, options, new PaymentsMetrics(meterFactory, time), new RedisCircuitBreaker(time),
-            NullLogger<MerchantRateLimitFilter>.Instance);
+            logs);
     }
 
     public void Dispose()
@@ -71,6 +75,39 @@ public sealed class MerchantRateLimitFilterTests : IDisposable
         var first = await PayAsync(merchantId: 1);
 
         Assert.Equal(StatusCodes.Status429TooManyRequests, Assert.IsAssignableFrom<IStatusCodeHttpResult>(first).StatusCode);
+    }
+
+    // During an outage the Redis bucket refills: it does not see the payments let through locally. Deciding alone after
+    // the outage, it let a burst more through: about 400 payments over the limit per Redis failure in stage 3.
+    [Fact]
+    public async Task After_An_Outage_Redis_Does_Not_Let_A_Burst_More_Through()
+    {
+        redis.Hangs = true;
+        for (var i = 0; i < 5; i++)
+            Assert.Same(Passed, await PayAsync(merchantId: 1)); // the local bucket alone: the whole burst
+
+        redis.Hangs = false; // and FakeRedis allows everything, as a bucket that refilled during the outage would
+        time.Advance(RedisCircuitBreaker.BreakDuration);
+        var probe = await PayAsync(merchantId: 1);
+        var next = await PayAsync(merchantId: 1);
+
+        Assert.Equal(StatusCodes.Status429TooManyRequests, Assert.IsAssignableFrom<IStatusCodeHttpResult>(probe).StatusCode);
+        Assert.Equal(StatusCodes.Status429TooManyRequests, Assert.IsAssignableFrom<IStatusCodeHttpResult>(next).StatusCode);
+        Assert.Equal(3, redis.Calls); // the call that hung, then two Redis allowed and the local bucket did not
+    }
+
+    // A payment Redis refuses does not pass, so it costs no local token. Otherwise a hot merchant sending far over
+    // its limit would keep the local bucket empty, and it would refuse payments Redis allows.
+    [Fact]
+    public async Task A_Payment_Redis_Refuses_Costs_No_Local_Token()
+    {
+        redis.Refuses = true;
+        for (var i = 0; i < 10; i++)
+            await PayAsync(merchantId: 1);
+
+        redis.Refuses = false;
+        for (var i = 0; i < 5; i++)
+            Assert.Same(Passed, await PayAsync(merchantId: 1));
     }
 
     [Fact]
@@ -109,6 +146,21 @@ public sealed class MerchantRateLimitFilterTests : IDisposable
         Assert.Single(local.GetMeasurementSnapshot());
     }
 
+    // How late Redis answered tells a slow Redis from a process too busy to take the answer.
+    [Fact]
+    public async Task The_Call_That_Timed_Out_Tells_When_Redis_Answered()
+    {
+        redis.Hangs = true;
+        await PayAsync(merchantId: 1);
+
+        redis.AnswerHungCalls();
+
+        await Eventually.WaitUntilAsync(() => logs.Collector.GetSnapshot().Any(r => r.Message.Contains("answered after")));
+        var warning = Assert.Single(logs.Collector.GetSnapshot(), r => r.Level == LogLevel.Warning);
+        Assert.Contains("Redis did not answer", warning.Message); // load/Matrix counts these lines
+        Assert.Null(warning.Exception); // WaitAsync's own TimeoutException tells nothing
+    }
+
     private ValueTask<object?> PayAsync(long merchantId)
     {
         var context = new DefaultEndpointFilterInvocationContext(
@@ -116,21 +168,32 @@ public sealed class MerchantRateLimitFilterTests : IDisposable
         return filter.InvokeAsync(context, _ => ValueTask.FromResult<object?>(Passed));
     }
 
-    /// <summary>Redis that answers "allowed" to everything, or hangs: the filter's 100 ms timeout gives up on it.</summary>
+    /// <summary>
+    /// Redis that answers "allowed" to everything, or "refused", or hangs: the filter's 100 ms timeout gives up on it,
+    /// and the calls get their answer only when the test says so.
+    /// </summary>
     private sealed class FakeRedis : IMerchantRateLimitStore
     {
+        private static readonly RateLimitDecision Allowed = new(Allowed: true, RetryAfter: TimeSpan.Zero);
+
+        private readonly TaskCompletionSource<RateLimitDecision> hung = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int calls;
 
         public bool Hangs { get; set; }
 
+        public bool Refuses { get; set; }
+
         public int Calls => Volatile.Read(ref calls);
+
+        public void AnswerHungCalls() => hung.SetResult(Allowed);
 
         public Task<RateLimitDecision> TryTakeAsync(string bucket, double tokensPerSecond, int burst)
         {
             Interlocked.Increment(ref calls);
-            return Hangs
-                ? new TaskCompletionSource<RateLimitDecision>().Task
-                : Task.FromResult(new RateLimitDecision(Allowed: true, RetryAfter: TimeSpan.Zero));
+            if (Hangs)
+                return hung.Task;
+
+            return Task.FromResult(Refuses ? new RateLimitDecision(Allowed: false, RetryAfter: TimeSpan.FromSeconds(1)) : Allowed);
         }
     }
 }

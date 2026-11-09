@@ -33,20 +33,33 @@ public sealed class MerchantRateLimitFilter(
         if (entered == RedisBreakerState.Open)
             return await LimitLocallyAsync(context, next, request.MerchantId, merchant);
 
+        // If Redis does not answer in time, the warning tells what this process was doing meanwhile.
+        var started = Stopwatch.GetTimestamp();
+        var gcPauseBefore = GC.GetTotalPauseDuration();
+
+        var call = store.TryTakeAsync(merchant, settings.TokensPerSecond, settings.Burst);
         RateLimitDecision decision;
         try
         {
-            decision = await store
-                .TryTakeAsync(merchant, settings.TokensPerSecond, settings.Burst)
-                .WaitAsync(LimiterTimeout);
+            decision = await call.WaitAsync(LimiterTimeout);
         }
         catch (Exception e) when (e is RedisConnectionException or TimeoutException)
         {
             // TimeoutException covers both WaitAsync and RedisTimeoutException (it derives from it).
             // load/Matrix counts these lines: keep "Redis did not answer" in the text.
             if (breaker.Trip())
-                logger.LogWarning(e, "Rate limiter: Redis did not answer within {Timeout}; using the local limit for {BreakDuration}",
-                    LimiterTimeout, RedisCircuitBreaker.BreakDuration);
+            {
+                // A failed call says why in its exception. One WaitAsync gave up on has none worth logging,
+                // and LogWhenFinished tells what became of it.
+                logger.LogWarning(call.IsFaulted ? e : null,
+                    "Rate limiter: Redis did not answer within {Timeout}; using the local limit for {BreakDuration}. " +
+                    "Meanwhile GC paused the process for {GcPause} ms; thread pool: {Threads} threads, {Queued} work items waiting",
+                    LimiterTimeout, RedisCircuitBreaker.BreakDuration, (int)(GC.GetTotalPauseDuration() - gcPauseBefore).TotalMilliseconds,
+                    ThreadPool.ThreadCount, ThreadPool.PendingWorkItemCount);
+
+                if (!call.IsCompleted)
+                    LogWhenFinished(call, started, gcPauseBefore);
+            }
 
             return await LimitLocallyAsync(context, next, request.MerchantId, merchant);
         }
@@ -54,9 +67,9 @@ public sealed class MerchantRateLimitFilter(
         if (breaker.TryClose(entered))
             logger.LogInformation("Rate limiter: Redis answers again; merchant limits are shared again");
 
-        // The local bucket follows Redis, so that an outage starts from what the merchant has left (LocalMerchantLimiter).
-        if (decision.Allowed)
-            localLimiter.Spend(merchant);
+        // What Redis allows, the local bucket must allow too: it keeps the two buckets in step (LocalMerchantLimiter).
+        if (decision.Allowed && localLimiter.TryTake(merchant) is { Allowed: false } local)
+            return await ApplyAsync(context, next, local, request.MerchantId, source: "local");
 
         return await ApplyAsync(context, next, decision, request.MerchantId, source: "redis");
     }
@@ -68,6 +81,17 @@ public sealed class MerchantRateLimitFilter(
         metrics.RateLimitLocal();
         return ApplyAsync(context, next, localLimiter.TryTake(merchant), merchantId, source: "local");
     }
+
+    // Once per outage, for the call that opened the breaker: did Redis answer late, and how late, or fail? If GC
+    // paused the process for most of that time, or many work items were waiting, the delay was in this process;
+    // if neither, in Redis or the way to it.
+    private void LogWhenFinished(Task<RateLimitDecision> call, long started, TimeSpan gcPauseBefore) =>
+        call.ContinueWith(finished => logger.LogInformation(finished.Exception?.InnerException,
+                "Rate limiter: the Redis call that timed out {Outcome} after {Elapsed} ms; GC paused the process for {GcPause} ms of them",
+                finished.IsCompletedSuccessfully ? "answered" : "failed",
+                (int)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                (int)(GC.GetTotalPauseDuration() - gcPauseBefore).TotalMilliseconds),
+            TaskScheduler.Default);
 
     private async ValueTask<object?> ApplyAsync(
         EndpointFilterInvocationContext context, EndpointFilterDelegate next, RateLimitDecision decision, long merchantId, string source)

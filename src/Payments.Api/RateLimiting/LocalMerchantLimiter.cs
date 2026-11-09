@@ -4,20 +4,26 @@ using Microsoft.Extensions.Options;
 namespace Payments.Api.RateLimiting;
 
 /// <summary>
-/// The merchant limit kept in the memory of this process, for the time Redis does not answer: without it a hot
-/// merchant gets everything it sends until Redis is back (stage 3, run 5c: 512 payments a second at a limit of 200).
+/// The merchant limit kept in the memory of this process. It decides alone while Redis does not answer: without it
+/// a hot merchant gets everything it sends until Redis is back (stage 3, run 5c: 512 payments a second at a limit
+/// of 200). While Redis answers, it keeps in step with Redis.
 /// </summary>
 /// <remarks>
-/// While Redis answers, the filter spends a local token for every payment Redis allows (<see cref="Spend"/>), so when
-/// an outage starts the local bucket holds about what the merchant has left, not a full burst. A bucket that started
-/// full cost about <see cref="MerchantRateLimitOptions.Burst"/> payments over the limit per outage (stage 3, step 5).
-/// It is still an approximation, and it errs on the side of the merchant:
+/// While Redis answers, a payment passes only if both Redis and the local bucket allow it, and both lose a token
+/// for it. So the two stay in step: when an outage starts, the local bucket holds about what the merchant has left,
+/// not a full burst; and after it, Redis, whose bucket refilled meanwhile because it did not see the payments let
+/// through locally, cannot let a burst more through on its own. Stage 3 of the load tests measured both: about
+/// 750 payments over the limit per Redis failure with a local bucket that started full, about 400 with Redis
+/// alone deciding after the failure.
+/// It is still an approximation:
 /// <list type="bullet">
 /// <item>Each instance of Payments.Api has its own buckets with the full limit and sees only its own payments,
 /// so with N instances a merchant gets up to N times the limit while Redis is down. Bounded, unlike no limit;
 /// a share of the limit per instance would need the number of instances.</item>
-/// <item>Redis does not see the payments let through locally: its bucket refills during the outage, and after it
-/// may let up to a burst through at once.</item>
+/// <item>A payment Redis allowed and the local bucket refused has cost a Redis token all the same. Right after an
+/// outage that is the point: Redis's extra burst is spent on payments that do not pass. At the limit it costs a
+/// few payments: the local bucket gets its tokens every tenth of a second, Redis's refills all the time. Each
+/// such refusal leaves a token in the local bucket, so they stop by themselves.</item>
 /// </list>
 /// </remarks>
 public sealed class LocalMerchantLimiter : IDisposable
@@ -28,13 +34,14 @@ public sealed class LocalMerchantLimiter : IDisposable
     {
         var settings = options.Value;
 
-        // TokensPerPeriod is a whole number. Tokens come in portions of about a tenth of a second, 20 every 100 ms
-        // at 200 a second, not 200 at once every second; the period is set so that the rate stays exact.
+        // Rate = TokensPerPeriod / ReplenishmentPeriod, and TokensPerPeriod is a whole number: a tenth of a second's
+        // worth, with the period set so that the rate stays exact, also for rates below 10 a second.
         var tokensPerPeriod = Math.Max(1, (int)Math.Round(settings.TokensPerSecond / 10));
         var period = TimeSpan.FromSeconds(tokensPerPeriod / settings.TokensPerSecond);
 
-        // A token bucket per merchant, created on its first request. AutoReplenishment = false: the partitioned
-        // limiter refills all its buckets from one timer of its own, instead of a timer per merchant.
+        // A token bucket per merchant, created on its first request. AutoReplenishment = false: instead of a timer per
+        // merchant, the partitioned limiter refills all its buckets from one timer of its own, every 100 ms, by the
+        // rate times the time since the last refill: 20 tokens every 100 ms at 200 a second.
         _limiter = PartitionedRateLimiter.Create<string, string>(merchant =>
             RateLimitPartition.GetTokenBucketLimiter(merchant, _ => new TokenBucketRateLimiterOptions
             {
@@ -46,14 +53,7 @@ public sealed class LocalMerchantLimiter : IDisposable
             }));
     }
 
-    /// <summary>Redis allowed a payment of the merchant: the local bucket loses its token too, to stay in step.</summary>
-    public void Spend(string merchant)
-    {
-        // Whether a token was there does not matter: the decision is Redis's.
-        using var lease = _limiter.AttemptAcquire(merchant);
-    }
-
-    /// <summary>The decision of the local limit alone, while Redis does not answer.</summary>
+    /// <summary>Takes a token of the merchant if there is one: the decision of the local limit.</summary>
     public RateLimitDecision TryTake(string merchant)
     {
         using var lease = _limiter.AttemptAcquire(merchant);

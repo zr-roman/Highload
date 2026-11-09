@@ -20,7 +20,10 @@ public enum RedisBreakerState
 /// </summary>
 public sealed class RedisCircuitBreaker(TimeProvider time)
 {
-    public static readonly TimeSpan BreakDuration = TimeSpan.FromSeconds(5);
+    // Short: while the breaker is open, every instance limits on its own (LocalMerchantLimiter), so the sooner
+    // the limit is shared again, the better. The price is a probe a second per instance while Redis is down,
+    // a payment that waits up to the limiter's timeout.
+    public static readonly TimeSpan BreakDuration = TimeSpan.FromSeconds(1);
 
     private readonly long _breakTicks = (long)(BreakDuration.TotalSeconds * time.TimestampFrequency);
 
