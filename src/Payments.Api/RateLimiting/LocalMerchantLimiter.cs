@@ -8,13 +8,16 @@ namespace Payments.Api.RateLimiting;
 /// merchant gets everything it sends until Redis is back (stage 3, run 5c: 512 payments a second at a limit of 200).
 /// </summary>
 /// <remarks>
-/// It is an approximation, and it errs on the side of the merchant:
+/// While Redis answers, the filter spends a local token for every payment Redis allows (<see cref="Spend"/>), so when
+/// an outage starts the local bucket holds about what the merchant has left, not a full burst. A bucket that started
+/// full cost about <see cref="MerchantRateLimitOptions.Burst"/> payments over the limit per outage (stage 3, step 5).
+/// It is still an approximation, and it errs on the side of the merchant:
 /// <list type="bullet">
-/// <item>Each instance of Payments.Api has its own buckets with the full limit, so with N instances a merchant gets up
-/// to N times the limit while Redis is down. Bounded, unlike no limit; a share of the limit per instance would need
-/// the number of instances.</item>
-/// <item>The local bucket is not kept in step with Redis: it is full when an outage starts, so every outage may let
-/// up to <see cref="MerchantRateLimitOptions.Burst"/> payments of a merchant through at once.</item>
+/// <item>Each instance of Payments.Api has its own buckets with the full limit and sees only its own payments,
+/// so with N instances a merchant gets up to N times the limit while Redis is down. Bounded, unlike no limit;
+/// a share of the limit per instance would need the number of instances.</item>
+/// <item>Redis does not see the payments let through locally: its bucket refills during the outage, and after it
+/// may let up to a burst through at once.</item>
 /// </list>
 /// </remarks>
 public sealed class LocalMerchantLimiter : IDisposable
@@ -43,6 +46,14 @@ public sealed class LocalMerchantLimiter : IDisposable
             }));
     }
 
+    /// <summary>Redis allowed a payment of the merchant: the local bucket loses its token too, to stay in step.</summary>
+    public void Spend(string merchant)
+    {
+        // Whether a token was there does not matter: the decision is Redis's.
+        using var lease = _limiter.AttemptAcquire(merchant);
+    }
+
+    /// <summary>The decision of the local limit alone, while Redis does not answer.</summary>
     public RateLimitDecision TryTake(string merchant)
     {
         using var lease = _limiter.AttemptAcquire(merchant);

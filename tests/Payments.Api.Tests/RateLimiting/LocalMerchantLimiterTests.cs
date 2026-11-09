@@ -25,6 +25,15 @@ public sealed class LocalMerchantLimiterTests : IDisposable
     }
 
     [Fact]
+    public void Tokens_Spent_While_Redis_Answers_Are_Gone_When_It_Stops()
+    {
+        for (var i = 0; i < 5; i++)
+            limiter.Spend("1");
+
+        Assert.False(limiter.TryTake("1").Allowed);
+    }
+
+    [Fact]
     public void Each_Merchant_Has_A_Bucket_Of_Its_Own()
     {
         for (var i = 0; i < 6; i++)

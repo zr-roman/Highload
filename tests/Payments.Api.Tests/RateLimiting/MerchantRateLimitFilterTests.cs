@@ -59,6 +59,20 @@ public sealed class MerchantRateLimitFilterTests : IDisposable
         Assert.Equal(6, local.GetMeasurementSnapshot().Count);
     }
 
+    // A local bucket that started full let a burst more through on every outage: 754-784 payments over the limit
+    // per Redis failure in the stage 3 matrix after step 5.
+    [Fact]
+    public async Task An_Outage_Starts_From_What_The_Merchant_Has_Left()
+    {
+        for (var i = 0; i < 5; i++)
+            Assert.Same(Passed, await PayAsync(merchantId: 1)); // Redis allows the whole burst
+
+        redis.Hangs = true;
+        var first = await PayAsync(merchantId: 1);
+
+        Assert.Equal(StatusCodes.Status429TooManyRequests, Assert.IsAssignableFrom<IStatusCodeHttpResult>(first).StatusCode);
+    }
+
     [Fact]
     public async Task After_One_Timeout_The_Others_Do_Not_Wait_For_Redis()
     {

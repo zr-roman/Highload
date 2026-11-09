@@ -54,6 +54,10 @@ public sealed class MerchantRateLimitFilter(
         if (breaker.TryClose(entered))
             logger.LogInformation("Rate limiter: Redis answers again; merchant limits are shared again");
 
+        // The local bucket follows Redis, so that an outage starts from what the merchant has left (LocalMerchantLimiter).
+        if (decision.Allowed)
+            localLimiter.Spend(merchant);
+
         return await ApplyAsync(context, next, decision, request.MerchantId, source: "redis");
     }
 
