@@ -2,7 +2,7 @@
 
 namespace Payments.Api.RateLimiting;
 
-public sealed class RedisTokenBucket(IDatabase db)
+public sealed class RedisTokenBucket(IDatabase db) : IMerchantRateLimitStore
 {
     public async Task<RateLimitDecision> TryTakeAsync(string bucket, double tokensPerSecond, int burst)
     {

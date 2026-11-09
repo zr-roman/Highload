@@ -53,8 +53,9 @@ builder.Services.Configure<OutboxOptions>(builder.Configuration.GetSection("Outb
 builder.Services.AddSingleton<PaymentStore>();
 builder.Services.AddSingleton<PaymentCompletion>();
 builder.Services.AddSingleton<PaymentsMetrics>();
-builder.Services.AddSingleton<RedisTokenBucket>();
+builder.Services.AddSingleton<IMerchantRateLimitStore, RedisTokenBucket>();
 builder.Services.AddSingleton<RedisCircuitBreaker>();
+builder.Services.AddSingleton<LocalMerchantLimiter>();
 builder.Services.AddSingleton(TimeProvider.System);
 
 builder.Services.AddHostedService<OutboxRelay>();

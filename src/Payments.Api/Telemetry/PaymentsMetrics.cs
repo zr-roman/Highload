@@ -15,8 +15,7 @@ public sealed class PaymentsMetrics
     private readonly Histogram<int> _outboxBatchSize;
     private readonly Histogram<double> _outboxStageDuration;
     private readonly Counter<long> _rateLimited;
-
-    private readonly Counter<long> _rateLimitBypassed;
+    private readonly Counter<long> _rateLimitLocal;
 
     private readonly TimeProvider _timeProvider;
 
@@ -53,10 +52,10 @@ public sealed class PaymentsMetrics
             description: "One stage of a relay cycle: read the batch, produce it to Kafka, delete it");
 
         _rateLimited = meter.CreateCounter<long>("payments.rate_limited",
-            description: "Requests rejected by the merchant rate limit");
+            description: "Requests rejected by the merchant rate limit; tag source: redis or local");
 
-        _rateLimitBypassed = meter.CreateCounter<long>("payments.rate_limit.bypassed",
-            description: "Requests let through because Redis was unavailable");
+        _rateLimitLocal = meter.CreateCounter<long>("payments.rate_limit.local",
+            description: "Requests decided by the local limit of the instance because Redis was unavailable");
 
         // The age is counted when the exporter asks for it, not when the relay reads: if the relay is stuck on a batch
         // (Kafka is down, the producer keeps retrying), the age keeps growing instead of freezing at its last value.
@@ -76,9 +75,10 @@ public sealed class PaymentsMetrics
 
     public void Unknown() => _unknown.Add(1);
 
-    public void RateLimited() => _rateLimited.Add(1);
+    /// <summary>A request got 429; <paramref name="source"/> is who decided: "redis" or "local".</summary>
+    public void RateLimited(string source) => _rateLimited.Add(1, new KeyValuePair<string, object?>("source", source));
 
-    public void RateLimitBypassed() => _rateLimitBypassed.Add(1);
+    public void RateLimitLocal() => _rateLimitLocal.Add(1);
 
     /// <summary>One relay cycle: how many messages it moved and how long each stage took.</summary>
     public void OutboxBatch(int count, TimeSpan read, TimeSpan produce, TimeSpan delete)
