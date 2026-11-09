@@ -9,6 +9,11 @@ namespace Matrix;
 public sealed record StandSettings(
     string PaymentsDatabase, string LedgerDatabase, string Kafka, string Redis, string LedgerGroup, int TokensPerSecond, int Burst)
 {
+    /// <summary>The limit the hot merchant is held against: the default one, or its own quota (--hot-quota).</summary>
+    public int HotTokensPerSecond { get; init; } = TokensPerSecond;
+
+    public int HotBurst { get; init; } = Burst;
+
     public static StandSettings Read(string repository)
     {
         var paymentsApi = ReadAppSettings(repository, "Payments.Api");

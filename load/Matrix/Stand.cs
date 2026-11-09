@@ -7,7 +7,7 @@ namespace Matrix;
 /// and both services from the Release build with 1% of traces, Payments.Api in one instance or several.
 /// Kafka, Redis, the dashboard and Postgres it only uses.
 /// </summary>
-public sealed class Stand(string repository, string reports, int instances) : IDisposable
+public sealed class Stand(string repository, string reports, int instances, int hotQuota, int hotBurst) : IDisposable
 {
     // The launch profiles of the services and the emulator's default BANK_ADDR.
     public const string LedgerUrl = "http://localhost:5200";
@@ -68,8 +68,10 @@ public sealed class Stand(string repository, string reports, int instances) : ID
     {
         bank ??= new LoggedProcess("Bank emulator", Processes.Info("go", ["run", "."], Path.Combine(repository, "src", "bank-emulator")), Log("bank-emulator.log"));
         ledger ??= DotnetRun("Ledger.Service", ServiceSettings, "ledger.log");
+
         foreach (var instance in paymentsApis)
             instance.Dispose();
+
         paymentsApis = PaymentsApiUrls.Select((url, instance) => StartPaymentsApi(limiter, instance, url)).ToList();
 
         await Task.WhenAll([
@@ -98,6 +100,7 @@ public sealed class Stand(string repository, string reports, int instances) : ID
         await Task.Delay(after, ct);
         var pause = Processes.Info("docker", ["exec", RedisContainer, "redis-cli", "CLIENT", "PAUSE", $"{(long)duration.TotalMilliseconds}"]);
         var log = Log("redis-pause.log");
+
         if (await Processes.RunAsync(pause, log, ct) != 0)
             throw new MatrixException($"Redis could not be paused, see {log}");
 
@@ -128,6 +131,7 @@ public sealed class Stand(string repository, string reports, int instances) : ID
     {
         foreach (var instance in paymentsApis)
             instance.Dispose();
+
         ledger?.Dispose();
         bank?.Dispose();
     }
@@ -136,6 +140,13 @@ public sealed class Stand(string repository, string reports, int instances) : ID
     {
         // Set either way: a value left in the shell is not passed on (Processes.IsStandSetting).
         var settings = new Dictionary<string, string>(ServiceSettings) { ["RateLimiting__Merchant__Enabled"] = limiter ? "true" : "false" };
+
+        // --hot-quota: the override of RateLimiting:Merchant:Overrides, as appsettings.json would carry it.
+        if (hotQuota > 0)
+        {
+            settings[$"RateLimiting__Merchant__Overrides__{K6.HotMerchant}__TokensPerSecond"] = $"{hotQuota}";
+            settings[$"RateLimiting__Merchant__Overrides__{K6.HotMerchant}__Burst"] = $"{hotBurst}";
+        }
 
         // The first instance keeps the names it had when there was only one.
         var number = instance == 0 ? "" : $" {instance + 1}";

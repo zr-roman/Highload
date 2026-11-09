@@ -11,6 +11,8 @@ public static class MatrixRunner
     {
         var repository = FindRepository();
         var settings = StandSettings.Read(repository);
+        if (options.HotQuota > 0)
+            settings = settings with { HotTokensPerSecond = options.HotQuota, HotBurst = options.HotBurst };
         var reports = Path.Combine(repository, "load", "reports", $"matrix-{DateTime.Now:yyyyMMdd-HHmmss}");
         Directory.CreateDirectory(reports);
 
@@ -53,7 +55,7 @@ public static class MatrixRunner
         // and for the topic the services create anew it found "No leaders" sample after sample.
         using var kafka = KafkaClient(settings);
 
-        using var stand = new Stand(repository, reports, options.Instances);
+        using var stand = new Stand(repository, reports, options.Instances, options.HotQuota, options.HotBurst);
         if (options.RedisPauseSeconds > 0)
             await stand.EnsureRedisCanPauseAsync(ct);
 

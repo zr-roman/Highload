@@ -33,6 +33,8 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
             : "Базы — с прошлых прогонов (без `--fresh`): сколько в журнале платежей, видно в «Окнах повторов».\n\n");
         text.Append("Стенд запущен матрицей: сервисы в Release, выборка трейсов 1 %, метрики раз в секунду; эмулятор банка с настройками по умолчанию. ");
         text.Append($"{K6.Merchants} продавцов, горячий — продавец {K6.HotMerchant}. Лимит продавца — {settings.TokensPerSecond} в секунду, всплеск {settings.Burst}. ");
+        if (options.HotQuota > 0)
+            text.Append($"Квота горячего продавца — {options.HotQuota} в секунду, всплеск {options.HotBurst} (`--hot-quota`). ");
         text.Append($"{stand.K6Version}. Приоритет процесса Docker — {stand.DockerPriority ?? "не проверен"}.\n\n");
         if (options.Instances > 1)
             text.Append($"Экземпляров Payments.Api — {options.Instances}, k6 шлёт им запросы по очереди. ");
@@ -59,8 +61,8 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         text.Append("- **p99** — из итога k6; **hot 201** — только платежи горячего продавца с решением банка, без быстрых ответов 429.\n");
         text.Append("- **429 у hot** — доля ответов 429 у горячего продавца; **hot прошло** — его платежи, которые сервис принял (201 и 202), в секунду.\n");
         text.Append("- **Сверх лимита** — на сколько принятых платежей горячего продавца больше, чем пропускает его корзина токенов за прогон: ");
-        text.Append($"всплеск и лимит за каждую секунду, {Count(settings.Burst)} + {Count(settings.TokensPerSecond)} × {options.DurationSeconds} = ");
-        text.Append($"{Count(settings.Burst + (double)settings.TokensPerSecond * options.DurationSeconds)}.\n");
+        text.Append($"всплеск и лимит за каждую секунду, {Count(settings.HotBurst)} + {Count(settings.HotTokensPerSecond)} × {options.DurationSeconds} = ");
+        text.Append($"{Count(settings.HotBurst + (double)settings.HotTokensPerSecond * options.DurationSeconds)}.\n");
         text.Append("- **Сбоев Redis** — строк `Redis did not answer` в логах Payments.Api, всех экземпляров, за прогон: столько раз Redis не ответил лимитеру за 100 мс. ");
         text.Append("Одна строка — один сбой: лимит на это время у каждого экземпляра Payments.Api свой, в памяти, пока пробный запрос не получит ответ Redis. ");
         text.Append("До шага 4а этапа 3 лимит в такие моменты не действовал совсем, а breaker мерцал, и строк на один сбой было много. Сколько платежей прошло сверх лимита, видно по «Сверх лимита».\n");
@@ -133,8 +135,10 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
     {
         text.Append("| ").AppendJoin(" | ", header).Append(" |\n");
         text.Append('|').AppendJoin('|', header.Select(_ => "---")).Append("|\n");
+
         foreach (var row in rows)
             text.Append("| ").AppendJoin(" | ", row).Append(" |\n");
+
         text.Append('\n');
     }
 
@@ -154,14 +158,18 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
     {
         var notPassed = passed.Count(ok => ok == false);
         var unanswered = passed.Count(ok => ok is null);
+
         if (notPassed == 0 && unanswered == 0)
             return "ok";
 
         var notes = new List<string>();
+
         if (notPassed > 0)
             notes.Add($"{failed} в {notPassed} из {passed.Count}");
+
         if (unanswered > 0)
             notes.Add($"нет ответа в {unanswered} из {passed.Count}");
+
         return string.Join(", ", notes);
     }
 

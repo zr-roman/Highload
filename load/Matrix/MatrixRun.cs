@@ -41,7 +41,7 @@ public sealed record RunResult(
     /// plus the rate for every second. Above zero, the limiter let payments through without counting them.
     /// </summary>
     public long OverLimit(StandSettings settings) =>
-        Math.Max(0, HotAccepted - ((long)settings.TokensPerSecond * DurationSeconds + settings.Burst));
+        Math.Max(0, HotAccepted - ((long)settings.HotTokensPerSecond * DurationSeconds + settings.HotBurst));
 
     /// <summary>The partition of the hot merchant: the one that got the most messages. Null if the run has no hot merchant.</summary>
     public int? HotPartition => Run.HasHotMerchant ? Array.IndexOf(Backlog.Messages, Backlog.Messages.Max()) : null;
