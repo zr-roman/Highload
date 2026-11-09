@@ -106,7 +106,7 @@ public sealed class Stand(string repository, string reports, int instances) : ID
 
     /// <summary>
     /// How many times in the window Payments.Api logged that Redis did not answer: a line per outage and instance; for
-    /// that time each instance limits merchants on its own (LocalMerchantLimiter). Before step 5 of stage 3 the limit
+    /// that time each instance limits merchants on its own (LocalMerchantLimiter). Before step 4a of stage 3 the limit
     /// went off instead, and the breaker flapped, with many lines per outage, sometimes out of order.
     /// </summary>
     public int RedisTimeouts(DateTimeOffset from, DateTimeOffset to)

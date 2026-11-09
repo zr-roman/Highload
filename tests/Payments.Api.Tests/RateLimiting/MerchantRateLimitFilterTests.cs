@@ -64,7 +64,7 @@ public sealed class MerchantRateLimitFilterTests : IDisposable
     }
 
     // A local bucket that started full let a burst more through on every outage: 754-784 payments over the limit
-    // per Redis failure in the stage 3 matrix after step 5.
+    // per Redis failure in the stage 3 matrix after step 4a.
     [Fact]
     public async Task An_Outage_Starts_From_What_The_Merchant_Has_Left()
     {

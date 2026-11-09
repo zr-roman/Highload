@@ -63,7 +63,7 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         text.Append($"{Count(settings.Burst + (double)settings.TokensPerSecond * options.DurationSeconds)}.\n");
         text.Append("- **Сбоев Redis** — строк `Redis did not answer` в логах Payments.Api, всех экземпляров, за прогон: столько раз Redis не ответил лимитеру за 100 мс. ");
         text.Append("Одна строка — один сбой: лимит на это время у каждого экземпляра Payments.Api свой, в памяти, пока пробный запрос не получит ответ Redis. ");
-        text.Append("До шага 5 этапа 3 лимит в такие моменты не действовал совсем, а breaker мерцал, и строк на один сбой было много. Сколько платежей прошло сверх лимита, видно по «Сверх лимита».\n");
+        text.Append("До шага 4а этапа 3 лимит в такие моменты не действовал совсем, а breaker мерцал, и строк на один сбой было много. Сколько платежей прошло сверх лимита, видно по «Сверх лимита».\n");
         text.Append("- **Не отправлено** — `dropped_iterations` от числа запланированных платежей.\n");
         text.Append("- **Outbox** — возраст самой старой строки outbox, **lag** — сообщения партиции, ещё не закоммиченные Ledger; максимум замеров раз в секунду. ");
         text.Append("Горячая партиция — та, в которую за прогон пришло больше всего сообщений.\n");
