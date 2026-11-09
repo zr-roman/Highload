@@ -52,7 +52,7 @@ public sealed class PaymentsMetrics
             description: "One stage of a relay cycle: read the batch, produce it to Kafka, delete it");
 
         _rateLimited = meter.CreateCounter<long>("payments.rate_limited",
-            description: "Requests rejected by the merchant rate limit; tag source: redis or local");
+            description: "Requests rejected by the merchant rate limit; tags source (redis or local) and quota (default or override)");
 
         _rateLimitLocal = meter.CreateCounter<long>("payments.rate_limit.local",
             description: "Requests decided by the local limit of the instance because Redis was unavailable");
@@ -75,8 +75,12 @@ public sealed class PaymentsMetrics
 
     public void Unknown() => _unknown.Add(1);
 
-    /// <summary>A request got 429; <paramref name="source"/> is who decided: "redis" or "local".</summary>
-    public void RateLimited(string source) => _rateLimited.Add(1, new KeyValuePair<string, object?>("source", source));
+    /// <summary>
+    /// A request got 429; <paramref name="source"/> is who decided: "redis" or "local". The quota tag tells merchants
+    /// with a quota of their own from the rest without a merchantId in the metric: 10 000 merchants would be 10 000 series.
+    /// </summary>
+    public void RateLimited(string source, bool overrideQuota) =>
+        _rateLimited.Add(1, new KeyValuePair<string, object?>("source", source), new KeyValuePair<string, object?>("quota", overrideQuota ? "override" : "default"));
 
     public void RateLimitLocal() => _rateLimitLocal.Add(1);
 

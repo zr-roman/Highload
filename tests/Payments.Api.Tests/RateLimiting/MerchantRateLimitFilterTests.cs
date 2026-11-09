@@ -3,8 +3,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Logging.Testing;
-using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 using Payments.Api.Payments;
 using Payments.Api.RateLimiting;
@@ -25,27 +25,38 @@ public sealed class MerchantRateLimitFilterTests : IDisposable
     private readonly FakeRedis redis = new();
     private readonly FakeLogger<MerchantRateLimitFilter> logs = new();
     private readonly ServiceProvider services = new ServiceCollection().AddMetrics().BuildServiceProvider();
-    private readonly LocalMerchantLimiter localLimiter;
+    private readonly LocalMerchantLimiter localLimiter = new();
+    private readonly MerchantQuotas quotas;
     private readonly MetricCollector<long> local;
+    private readonly MetricCollector<long> rejected;
     private readonly MerchantRateLimitFilter filter;
 
     public MerchantRateLimitFilterTests()
     {
         // A burst of 5: the sixth payment in a row is over the limit. A token every 10 s: the local bucket refills
-        // in real time, and none comes back while a test runs.
-        var options = Options.Create(new MerchantRateLimitOptions { TokensPerSecond = 0.1, Burst = 5 });
+        // in real time, and none comes back while a test runs. Merchant 9 has a quota of its own, a burst of 10.
+        var options = new MerchantRateLimitOptions
+        {
+            TokensPerSecond = 0.1,
+            Burst = 5,
+            Overrides = { [9] = new MerchantQuotaOptions { TokensPerSecond = 0.2, Burst = 10 } },
+        };
+        quotas = new MerchantQuotas(new TestOptionsMonitor<MerchantRateLimitOptions>(options), NullLogger<MerchantQuotas>.Instance);
+
         var meterFactory = services.GetRequiredService<IMeterFactory>();
         local = new MetricCollector<long>(meterFactory, PaymentsMetrics.MeterName, "payments.rate_limit.local");
+        rejected = new MetricCollector<long>(meterFactory, PaymentsMetrics.MeterName, "payments.rate_limited");
 
-        localLimiter = new LocalMerchantLimiter(options);
         filter = new MerchantRateLimitFilter(
-            redis, localLimiter, options, new PaymentsMetrics(meterFactory, time), new RedisCircuitBreaker(time),
+            redis, localLimiter, quotas, new PaymentsMetrics(meterFactory, time), new RedisCircuitBreaker(time),
             logs);
     }
 
     public void Dispose()
     {
         local.Dispose();
+        rejected.Dispose();
+        quotas.Dispose();
         localLimiter.Dispose();
         services.Dispose();
     }
@@ -146,6 +157,39 @@ public sealed class MerchantRateLimitFilterTests : IDisposable
         Assert.Single(local.GetMeasurementSnapshot());
     }
 
+    // Redis takes the merchant's own quota: the Lua script gets the rate and the burst as arguments.
+    [Fact]
+    public async Task Redis_Gets_The_Quota_Of_The_Merchant()
+    {
+        await PayAsync(merchantId: 9);
+        await PayAsync(merchantId: 1);
+
+        Assert.Equal([("9", 0.2, 10), ("1", 0.1, 5)], redis.Asked);
+    }
+
+    [Fact]
+    public async Task Without_Redis_A_Merchant_With_A_Quota_Keeps_Its_Own_Burst()
+    {
+        redis.Hangs = true;
+
+        for (var i = 0; i < 10; i++)
+            Assert.Same(Passed, await PayAsync(merchantId: 9));
+        var eleventh = await PayAsync(merchantId: 9);
+
+        Assert.Equal(StatusCodes.Status429TooManyRequests, Assert.IsAssignableFrom<IStatusCodeHttpResult>(eleventh).StatusCode);
+    }
+
+    [Fact]
+    public async Task A_Rejection_Tells_Whether_The_Merchant_Has_A_Quota_Of_Its_Own()
+    {
+        redis.Refuses = true;
+
+        await PayAsync(merchantId: 9);
+        await PayAsync(merchantId: 1);
+
+        Assert.Equal(["override", "default"], rejected.GetMeasurementSnapshot().Select(m => (string?)m.Tags["quota"]));
+    }
+
     // How late Redis answered tells a slow Redis from a process too busy to take the answer.
     [Fact]
     public async Task The_Call_That_Timed_Out_Tells_When_Redis_Answered()
@@ -185,11 +229,16 @@ public sealed class MerchantRateLimitFilterTests : IDisposable
 
         public int Calls => Volatile.Read(ref calls);
 
+        /// <summary>The buckets asked for, with the rate and the burst the filter sent for each.</summary>
+        public List<(string Bucket, double TokensPerSecond, int Burst)> Asked { get; } = [];
+
         public void AnswerHungCalls() => hung.SetResult(Allowed);
 
         public Task<RateLimitDecision> TryTakeAsync(string bucket, double tokensPerSecond, int burst)
         {
             Interlocked.Increment(ref calls);
+            lock (Asked)
+                Asked.Add((bucket, tokensPerSecond, burst));
             if (Hangs)
                 return hung.Task;
 

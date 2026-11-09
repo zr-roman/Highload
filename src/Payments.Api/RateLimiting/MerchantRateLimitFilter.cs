@@ -1,5 +1,4 @@
-﻿using Microsoft.Extensions.Options;
-using Payments.Api.Payments;
+﻿using Payments.Api.Payments;
 using Payments.Api.Telemetry;
 using StackExchange.Redis;
 using System.Diagnostics;
@@ -10,7 +9,7 @@ namespace Payments.Api.RateLimiting;
 public sealed class MerchantRateLimitFilter(
     IMerchantRateLimitStore store,
     LocalMerchantLimiter localLimiter,
-    IOptions<MerchantRateLimitOptions> options,
+    MerchantQuotas quotas,
     PaymentsMetrics metrics,
     RedisCircuitBreaker breaker,
     ILogger<MerchantRateLimitFilter> logger) : IEndpointFilter
@@ -19,25 +18,24 @@ public sealed class MerchantRateLimitFilter(
 
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
-        var settings = options.Value;
-
-        if (!settings.Enabled)
+        if (!quotas.Enabled)
             return await next(context);
 
         var request = context.Arguments.OfType<CreatePaymentRequest>().First();
         var merchant = request.MerchantId.ToString(CultureInfo.InvariantCulture);
+        var quota = quotas.Of(request.MerchantId);
 
         Activity.Current?.SetTag("payments.merchant_id", request.MerchantId);
 
         var entered = breaker.Enter();
         if (entered == RedisBreakerState.Open)
-            return await LimitLocallyAsync(context, next, request.MerchantId, merchant);
+            return await LimitLocallyAsync(context, next, request.MerchantId, merchant, quota);
 
         // If Redis does not answer in time, the warning tells what this process was doing meanwhile.
         var started = Stopwatch.GetTimestamp();
         var gcPauseBefore = GC.GetTotalPauseDuration();
 
-        var call = store.TryTakeAsync(merchant, settings.TokensPerSecond, settings.Burst);
+        var call = store.TryTakeAsync(merchant, quota.TokensPerSecond, quota.Burst);
         RateLimitDecision decision;
         try
         {
@@ -61,25 +59,25 @@ public sealed class MerchantRateLimitFilter(
                     LogWhenFinished(call, started, gcPauseBefore);
             }
 
-            return await LimitLocallyAsync(context, next, request.MerchantId, merchant);
+            return await LimitLocallyAsync(context, next, request.MerchantId, merchant, quota);
         }
 
         if (breaker.TryClose(entered))
             logger.LogInformation("Rate limiter: Redis answers again; merchant limits are shared again");
 
         // What Redis allows, the local bucket must allow too: it keeps the two buckets in step (LocalMerchantLimiter).
-        if (decision.Allowed && localLimiter.TryTake(merchant) is { Allowed: false } local)
-            return await ApplyAsync(context, next, local, request.MerchantId, source: "local");
+        if (decision.Allowed && localLimiter.TryTake(merchant, quota) is { Allowed: false } local)
+            return await ApplyAsync(context, next, local, request.MerchantId, quota, source: "local");
 
-        return await ApplyAsync(context, next, decision, request.MerchantId, source: "redis");
+        return await ApplyAsync(context, next, decision, request.MerchantId, quota, source: "redis");
     }
 
     // Redis does not answer: the limit of this instance alone, not no limit at all (LocalMerchantLimiter).
     private ValueTask<object?> LimitLocallyAsync(
-        EndpointFilterInvocationContext context, EndpointFilterDelegate next, long merchantId, string merchant)
+        EndpointFilterInvocationContext context, EndpointFilterDelegate next, long merchantId, string merchant, MerchantQuota quota)
     {
         metrics.RateLimitLocal();
-        return ApplyAsync(context, next, localLimiter.TryTake(merchant), merchantId, source: "local");
+        return ApplyAsync(context, next, localLimiter.TryTake(merchant, quota), merchantId, quota, source: "local");
     }
 
     // Once per outage, for the call that opened the breaker: did Redis answer late, and how late, or fail? If GC
@@ -94,10 +92,12 @@ public sealed class MerchantRateLimitFilter(
             TaskScheduler.Default);
 
     private async ValueTask<object?> ApplyAsync(
-        EndpointFilterInvocationContext context, EndpointFilterDelegate next, RateLimitDecision decision, long merchantId, string source)
+        EndpointFilterInvocationContext context, EndpointFilterDelegate next, RateLimitDecision decision, long merchantId,
+        MerchantQuota quota, string source)
     {
         Activity.Current?.SetTag("payments.rate_limit", decision.Allowed ? "allowed" : "rejected");
         Activity.Current?.SetTag("payments.rate_limit.source", source);
+        Activity.Current?.SetTag("payments.rate_limit.quota", quota.IsOverride ? "override" : "default");
 
         if (decision.Allowed)
             return await next(context);
@@ -106,7 +106,7 @@ public sealed class MerchantRateLimitFilter(
         var seconds = Math.Max(1, (int)Math.Ceiling(decision.RetryAfter.TotalSeconds));
         context.HttpContext.Response.Headers.RetryAfter = seconds.ToString(CultureInfo.InvariantCulture);
 
-        metrics.RateLimited(source);
+        metrics.RateLimited(source, quota.IsOverride);
 
         logger.LogDebug("Merchant {MerchantId} rate limited by {Source}, retry after {RetryAfter}", merchantId, source, decision.RetryAfter);
 

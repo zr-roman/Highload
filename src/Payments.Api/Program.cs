@@ -32,10 +32,9 @@ builder.Services.AddOptions<RecoveryOptions>()
     .Validate(recoveryOptions => recoveryOptions.StaleAfter > 2 * httpStandardResilienceOptions.TotalRequestTimeout.Timeout, msg)
     .ValidateOnStart();
 
+// Validated by MerchantQuotas, not here: see its remarks.
 builder.Services.AddOptions<MerchantRateLimitOptions>()
-    .Bind(builder.Configuration.GetSection("RateLimiting:Merchant"))
-    .Validate(o => o.TokensPerSecond > 0 && o.Burst > 0, "RateLimiting: TokensPerSecond and Burst must be positive")
-    .ValidateOnStart();
+    .Bind(builder.Configuration.GetSection("RateLimiting:Merchant"));
 
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(postgres));
 builder.Services.AddSingleton<IProducer<string, string>>(_ => new ProducerBuilder<string, string>(new ProducerConfig
@@ -56,6 +55,7 @@ builder.Services.AddSingleton<PaymentsMetrics>();
 builder.Services.AddSingleton<IMerchantRateLimitStore, RedisTokenBucket>();
 builder.Services.AddSingleton<RedisCircuitBreaker>();
 builder.Services.AddSingleton<LocalMerchantLimiter>();
+builder.Services.AddSingleton<MerchantQuotas>();
 builder.Services.AddSingleton(TimeProvider.System);
 
 builder.Services.AddHostedService<OutboxRelay>();
@@ -79,6 +79,9 @@ await KafkaTopics.EnsureCreatedAsync(kafka, Topics.PaymentsCaptured, Topics.Paym
 
 // Connect at startup, not on the first request that needs Redis: the first attempt may take up to connectTimeout.
 app.Services.GetRequiredService<IConnectionMultiplexer>();
+
+// Merchant limits that do not validate fail the start, not the first payment.
+app.Services.GetRequiredService<MerchantQuotas>();
 
 app.MapPaymentEndpoints();
 app.MapHealthChecks("/health");

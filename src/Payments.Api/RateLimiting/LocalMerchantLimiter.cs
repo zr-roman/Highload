@@ -1,5 +1,4 @@
 ﻿using System.Threading.RateLimiting;
-using Microsoft.Extensions.Options;
 
 namespace Payments.Api.RateLimiting;
 
@@ -30,35 +29,19 @@ namespace Payments.Api.RateLimiting;
 /// </remarks>
 public sealed class LocalMerchantLimiter : IDisposable
 {
-    private readonly PartitionedRateLimiter<string> _limiter;
-
-    public LocalMerchantLimiter(IOptions<MerchantRateLimitOptions> options)
-    {
-        var settings = options.Value;
-
-        // Rate = TokensPerPeriod / ReplenishmentPeriod, and TokensPerPeriod is a whole number: a tenth of a second's
-        // worth, with the period set so that the rate stays exact, also for rates below 10 a second.
-        var tokensPerPeriod = Math.Max(1, (int)Math.Round(settings.TokensPerSecond / 10));
-        var period = TimeSpan.FromSeconds(tokensPerPeriod / settings.TokensPerSecond);
-
-        // A token bucket per merchant, created on its first request. AutoReplenishment = false: instead of a timer per
-        // merchant, the partitioned limiter refills all its buckets from one timer of its own, every 100 ms, by the
-        // rate times the time since the last refill: 20 tokens every 100 ms at 200 a second.
-        _limiter = PartitionedRateLimiter.Create<string, string>(merchant =>
-            RateLimitPartition.GetTokenBucketLimiter(merchant, _ => new TokenBucketRateLimiterOptions
-            {
-                TokenLimit = settings.Burst,
-                TokensPerPeriod = tokensPerPeriod,
-                ReplenishmentPeriod = period,
-                QueueLimit = 0, // decide at once: a payment does not wait for a token
-                AutoReplenishment = false,
-            }));
-    }
+    // A token bucket per merchant and quota, created on its first request. The quota is part of the key: when it
+    // changes (MerchantQuotas), the merchant gets a new bucket at once, and the old one goes when it has stood full
+    // for 10 s, as every idle partition does. AutoReplenishment = false: instead of a timer per merchant, the
+    // partitioned limiter refills all its buckets from one timer of its own, every 100 ms, by the rate times the
+    // time since the last refill: 20 tokens every 100 ms at 200 a second.
+    private readonly PartitionedRateLimiter<(string Merchant, MerchantQuota Quota)> _limiter =
+        PartitionedRateLimiter.Create<(string Merchant, MerchantQuota Quota), (string, MerchantQuota)>(key =>
+            RateLimitPartition.GetTokenBucketLimiter(key, _ => Bucket(key.Quota)));
 
     /// <summary>Takes a token of the merchant if there is one: the decision of the local limit.</summary>
-    public RateLimitDecision TryTake(string merchant)
+    public RateLimitDecision TryTake(string merchant, MerchantQuota quota)
     {
-        using var lease = _limiter.AttemptAcquire(merchant);
+        using var lease = _limiter.AttemptAcquire((merchant, quota));
         if (lease.IsAcquired)
             return new RateLimitDecision(Allowed: true, RetryAfter: TimeSpan.Zero);
 
@@ -69,4 +52,20 @@ public sealed class LocalMerchantLimiter : IDisposable
     }
 
     public void Dispose() => _limiter.Dispose();
+
+    private static TokenBucketRateLimiterOptions Bucket(MerchantQuota quota)
+    {
+        // Rate = TokensPerPeriod / ReplenishmentPeriod, and TokensPerPeriod is a whole number: a tenth of a second's
+        // worth, with the period set so that the rate stays exact, also for rates below 10 a second.
+        var tokensPerPeriod = Math.Max(1, (int)Math.Round(quota.TokensPerSecond / 10));
+
+        return new TokenBucketRateLimiterOptions
+        {
+            TokenLimit = quota.Burst,
+            TokensPerPeriod = tokensPerPeriod,
+            ReplenishmentPeriod = TimeSpan.FromSeconds(tokensPerPeriod / quota.TokensPerSecond),
+            QueueLimit = 0, // decide at once: a payment does not wait for a token
+            AutoReplenishment = false,
+        };
+    }
 }
