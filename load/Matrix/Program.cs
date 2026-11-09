@@ -20,19 +20,20 @@ CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
 // The first Ctrl+C stops the matrix at the next await: the stand is stopped on the way out, and the table keeps
 // the repeats done so far. A second one ends the process at once.
-using var stop = new CancellationTokenSource();
+using var cts = new CancellationTokenSource();
+
 Console.CancelKeyPress += (_, e) =>
 {
-    e.Cancel = !stop.IsCancellationRequested;
-    stop.Cancel();
+    e.Cancel = !cts.IsCancellationRequested;
+    cts.Cancel();
 };
 
 try
 {
-    await MatrixRunner.RunAsync(MatrixOptions.Parse(args), stop.Token);
+    await MatrixRunner.RunAsync(MatrixOptions.Parse(args), cts.Token);
     return 0;
 }
-catch (Exception e) when (e is OperationCanceledException || (e is MatrixException && stop.IsCancellationRequested))
+catch (Exception e) when (e is OperationCanceledException || (e is MatrixException && cts.IsCancellationRequested))
 {
     // Ctrl+C reaches k6 and the services as well, and they may exit before the matrix sees the cancellation:
     // k6 stopped from outside ends the matrix the same way (K6.RunAsync), and "Payments.Api has exited"

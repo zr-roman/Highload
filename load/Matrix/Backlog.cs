@@ -46,9 +46,11 @@ public sealed class Backlog(NpgsqlDataSource payments, IAdminClient kafka, strin
             {
                 var group = (await kafka.DescribeConsumerGroupsAsync(
                     [ledgerGroup], new DescribeConsumerGroupsOptions { RequestTimeout = KafkaTimeout })).ConsumerGroupDescriptions.Single();
+
                 var assigned = group.Members
                     .SelectMany(member => member.Assignment.TopicPartitions)
                     .Count(partition => partition.Topic == Topics.PaymentsCaptured);
+
                 if (group.State == ConsumerGroupState.Stable && assigned == Partitions.Count)
                     return;
 

@@ -104,6 +104,7 @@ public static class FreshStart
         await using var connection = await dataSource.OpenConnectionAsync(ct);
 
         var tables = new List<string>();
+
         await using (var list = new NpgsqlCommand("SELECT quote_ident(tablename) FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename", connection))
         await using (var reader = await list.ExecuteReaderAsync(ct))
             while (await reader.ReadAsync(ct))
@@ -118,6 +119,7 @@ public static class FreshStart
 
         await using (var truncate = new NpgsqlCommand($"TRUNCATE {string.Join(", ", tables)} RESTART IDENTITY", connection))
             await truncate.ExecuteNonQueryAsync(ct);
+
         Console.WriteLine($"  Postgres: {database} emptied ({string.Join(", ", tables)})");
     }
 }

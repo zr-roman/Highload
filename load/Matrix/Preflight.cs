@@ -83,6 +83,7 @@ public static class Preflight
             " | Select-Object ProcessName, PriorityClass" +
             " | ForEach-Object { $_.ProcessName + '=' + $_.PriorityClass }" +
             "; $Error | ForEach-Object { [Console]::Error.WriteLine($_) }");
+
         if (result is null)
         {
             Console.WriteLine("Warning: powershell not found, so the priority of Docker's process is not checked (README, step 8).");
@@ -103,13 +104,17 @@ public static class Preflight
                 : $"Warning: no Windows process listens on port {kafkaPort}, so there is no priority to check (README, step 8).");
             return null;
         }
+
         if (listeners.Any(listener => listener.Priority.Length > 0 && listener.Priority != "Normal"))
             throw new MatrixException(
                 $"Port {kafkaPort} is served by {shown}, not Normal: under load the relay nearly stops (README, step 8). " +
                 "Turn off efficiency mode for it in Task Manager and start again.");
+
         var hidden = listeners.Where(listener => listener.Priority.Length == 0).Select(listener => listener.Name).ToList();
+
         if (hidden.Count > 0)
             Console.WriteLine($"Warning: Windows does not show the priority of {string.Join(", ", hidden)} on port {kafkaPort} (README, step 8).");
+        
         return shown;
     }
 
@@ -119,9 +124,11 @@ public static class Preflight
     private static async Task<bool> ListensAsync(string host, int port, CancellationToken ct)
     {
         using var settled = CancellationTokenSource.CreateLinkedTokenSource(ct);
+
         var attempts = (await Dns.GetHostAddressesAsync(host, ct))
             .Select(address => ConnectsAsync(address, port, settled.Token))
             .ToList();
+
         while (attempts.Count > 0)
         {
             var attempt = await Task.WhenAny(attempts);
