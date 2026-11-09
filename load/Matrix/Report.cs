@@ -55,8 +55,9 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         text.Append("- **Сверх лимита** — на сколько принятых платежей горячего продавца больше, чем пропускает его корзина токенов за прогон: ");
         text.Append($"всплеск и лимит за каждую секунду, {Count(settings.Burst)} + {Count(settings.TokensPerSecond)} × {options.DurationSeconds} = ");
         text.Append($"{Count(settings.Burst + (double)settings.TokensPerSecond * options.DurationSeconds)}.\n");
-        text.Append("- **Отключений лимитера** — строк `Redis did not answer` в логе Payments.Api за прогон: столько раз Redis не ответил лимитеру за 100 мс и лимит переставал действовать для всех продавцов — ");
-        text.Append("на миллисекунды или на весь перерыв RedisCircuitBreaker, 5 секунд. Сколько платежей горячего продавца прошло без лимита, видно по «Сверх лимита».\n");
+        text.Append("- **Сбоев Redis** — строк `Redis did not answer` в логе Payments.Api за прогон: столько раз Redis не ответил лимитеру за 100 мс. ");
+        text.Append("Одна строка — один сбой: лимит на это время у каждого экземпляра Payments.Api свой, в памяти, пока пробный запрос не получит ответ Redis. ");
+        text.Append("До шага 5 этапа 3 лимит в такие моменты не действовал совсем, а breaker мерцал, и строк на один сбой было много. Сколько платежей прошло сверх лимита, видно по «Сверх лимита».\n");
         text.Append("- **Не отправлено** — `dropped_iterations` от числа запланированных платежей.\n");
         text.Append("- **Outbox** — возраст самой старой строки outbox, **lag** — сообщения партиции, ещё не закоммиченные Ledger; максимум замеров раз в секунду. ");
         text.Append("Горячая партиция — та, в которую за прогон пришло больше всего сообщений.\n");
@@ -101,7 +102,7 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         new("429 у hot", r => r.Run.HasHotMerchant ? (double)r.K6.HotRateLimited / r.K6.HotRequests : null, Percent),
         new("hot прошло, /с", r => r.Run.HasHotMerchant ? (double)r.HotAccepted / r.DurationSeconds : null, Count),
         new("Сверх лимита", r => r.Run.HasHotMerchant && r.Run.Limiter ? r.OverLimit(settings) : null, Count),
-        new("Отключений лимитера", r => r.Run.Limiter ? r.LimiterOutages : null, Count),
+        new("Сбоев Redis", r => r.Run.Limiter ? r.LimiterOutages : null, Count),
         new("Не отправлено", r => (double)r.K6.Dropped / ((long)r.Run.Rate * r.DurationSeconds), Percent),
         new("Outbox, макс. возраст, с", r => r.Backlog.OutboxMaxAgeSeconds, Seconds),
         new("Lag горячей партиции, макс.", r => r.HotPartitionLagMax, Count),

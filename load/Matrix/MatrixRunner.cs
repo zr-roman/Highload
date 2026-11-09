@@ -156,7 +156,7 @@ public static class MatrixRunner
         {
             line += $", hot 201 {result.K6.P99Hot201:0} ms; hot accepted {(double)result.HotAccepted / result.DurationSeconds:0}/s";
             if (result.Run.Limiter)
-                line += $", over the limit {result.OverLimit(settings)}, limiter outages {result.LimiterOutages}";
+                line += $", over the limit {result.OverLimit(settings)}, Redis failures {result.LimiterOutages}";
         }
 
         return line +
