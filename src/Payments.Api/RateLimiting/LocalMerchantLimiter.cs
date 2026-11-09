@@ -18,8 +18,10 @@ namespace Payments.Api.RateLimiting;
 /// It is still an approximation:
 /// <list type="bullet">
 /// <item>Each instance of Payments.Api has its own buckets with the full limit and sees only its own payments,
-/// so with N instances a merchant gets up to N times the limit while Redis is down. Bounded, unlike no limit;
-/// a share of the limit per instance would need the number of instances.</item>
+/// so with N instances a merchant gets up to N times the limit while Redis is down. Nor does the bucket keep in step
+/// then: an instance that sees a part of the merchant's payments has a full bucket when the outage starts. In stage 3
+/// a 10 s outage cost about 3 000 payments over the limit with two instances, under 100 with one. Bounded, unlike
+/// no limit; a share of the limit per instance would need the number of instances.</item>
 /// <item>A payment Redis allowed and the local bucket refused has cost a Redis token all the same. Right after an
 /// outage that is the point: Redis's extra burst is spent on payments that do not pass. At the limit it costs a
 /// few payments: the local bucket gets its tokens every tenth of a second, Redis's refills all the time. Each
