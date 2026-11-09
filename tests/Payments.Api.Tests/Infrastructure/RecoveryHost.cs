@@ -8,6 +8,7 @@ using Microsoft.Extensions.Time.Testing;
 using Npgsql;
 using Payments.Api.Acquiring;
 using Payments.Api.Payments;
+using Payments.Api.RateLimiting;
 using Payments.Api.Recovery;
 using Payments.Api.Telemetry;
 
@@ -79,11 +80,13 @@ public sealed class RecoveryHost : IAsyncDisposable
             .AddSingleton<TimeProvider>(time)
             .AddSingleton<IAcquirer>(bank)
             .AddSingleton<PaymentStore>()
+            .AddSingleton<MerchantQuotas>()
             .AddSingleton<PaymentCompletion>()
             .AddSingleton<PaymentsMetrics>()
             .AddSingleton<PaymentRecovery>();
 
         services.AddOptions<FeeOptions>();
+        services.AddOptions<MerchantRateLimitOptions>();
         services.Configure<RecoveryOptions>(options =>
         {
             options.Interval = Interval;      // fake time: a pause lasts until the test moves the clock

@@ -1,6 +1,7 @@
 ﻿using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
+using Contracts;
 using EndToEnd.Tests.Infrastructure;
 using Ledger.Service.Ledger;
 using Npgsql;
@@ -45,8 +46,8 @@ public sealed class MoneyAddsUpTests(PlatformFixture platform, ITestOutputHelper
     [Fact]
     public async Task Money_Adds_Up_When_One_Merchant_Gets_Most_Payments()
     {
-        // 90% of the orders go to one merchant. Its key sends all of them to one partition and so to one writer,
-        // and its account row changes in every batch of that partition.
+        // 90% of the orders go to one merchant, a large one (PlatformFixture). Its payments are spread over the partitions,
+        // and the writer of each partition books them to the merchant's sub-account of that partition.
         var orders = NewOrders(new Random(2029), singles: 2000, hotShare: 0.9);
 
         // The load is skewed indeed: if the share got lost on the way, the test would check an even load and pass.
@@ -59,8 +60,18 @@ public sealed class MoneyAddsUpTests(PlatformFixture platform, ITestOutputHelper
         await AssertNoDoubleChargeAsync(orders, answers);
         var captured = await AssertMoneyAddsUpAsync();
 
-        // The hot merchant on its own, through the ledger's API: what the merchant sees. AssertMoneyAddsUpAsync compares
-        // account rows one to one; if a merchant's money is ever kept in several rows, this answer must stay their sum.
+        // Spread indeed: the hot merchant has a sub-account in every partition, so its eight keys found eight partitions
+        // (Topics.PaymentsCapturedKey). The other merchants keep one: all their payments come from one partition.
+        Assert.Equal(Topics.PaymentsCapturedPartitions, await ScalarAsync(platform.LedgerDb,
+            $"SELECT count(*) FROM accounts WHERE id LIKE 'merchant:{HotMerchant}:p%'"));
+        Assert.Equal(1, await ScalarAsync(platform.LedgerDb, $"""
+            SELECT max(n) FROM (
+                SELECT count(*) AS n FROM accounts
+                WHERE id LIKE 'merchant:%' AND id NOT LIKE 'merchant:{HotMerchant}:%'
+                GROUP BY split_part(id, ':', 2)) AS sub_accounts
+            """));
+
+        // The hot merchant on its own, through the ledger's API: what the merchant sees, the sum of its sub-accounts.
         var balance = await platform.Ledger.GetFromJsonAsync<MerchantBalance>($"/balances/merchants/{HotMerchant}", Ct);
         Assert.NotNull(balance);
         Assert.Equal(await OwedToMerchantAsync(HotMerchant), balance.Balance);
@@ -193,12 +204,15 @@ public sealed class MoneyAddsUpTests(PlatformFixture platform, ITestOutputHelper
         Assert.Equal(0, await ScalarAsync(platform.PaymentsDb, "SELECT count(*) FROM payments WHERE status = 'created'"));
 
         // 3. Money adds up across the services: what Payments.Api captured is what the ledger booked, once.
+        //    The ledger keeps a merchant's money in sub-accounts, merchant:{id}:p{partition}: they are added up by merchant.
         var owedToMerchants = await BalancesAsync(platform.PaymentsDb, """
             SELECT 'merchant:' || merchant_id, sum(amount - fee)::bigint
             FROM payments WHERE status = 'captured' GROUP BY merchant_id
             """);
-        var merchantAccounts = await BalancesAsync(platform.LedgerDb,
-            "SELECT id, balance FROM accounts WHERE id LIKE 'merchant:%'");
+        var merchantAccounts = await BalancesAsync(platform.LedgerDb, """
+            SELECT 'merchant:' || split_part(id, ':', 2), sum(balance)::bigint
+            FROM accounts WHERE id LIKE 'merchant:%' GROUP BY split_part(id, ':', 2)
+            """);
         Assert.Equal(owedToMerchants, merchantAccounts);
 
         Assert.Equal(

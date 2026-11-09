@@ -18,8 +18,10 @@ public sealed class ConsumerOptions
 /// <summary>
 /// Reads payments.captured and applies it to the ledger in batches, one batch per partition.
 /// Kafka gives each partition to exactly one consumer of the group, so every partition, together with
-/// its merchants and its clearing and fee sub-accounts, has a single writer: there are no lock queues
+/// its sub-accounts of merchants, clearing and fees, has a single writer: there are no lock queues
 /// on hot rows (experiments 4 and 5). Run a second instance and Kafka splits the partitions between them.
+/// One loop writes all the partitions of an instance in turn: a partition that lags holds up the others of the
+/// instance (load tests, stage 3, step 7).
 /// </summary>
 public sealed class PaymentsConsumer(
     IConfiguration configuration,

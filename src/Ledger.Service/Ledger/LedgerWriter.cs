@@ -11,7 +11,8 @@ public sealed class LedgerWriter(NpgsqlDataSource dataSource)
 {
     // 1. batch        — the payments of the batch, without repeats inside the batch;
     // 2. fresh        — the ones not applied before (processed_payments filters out redelivered messages);
-    // 3. new_postings — three postings per new payment: clearing (debit), merchant (credit), fee (credit);
+    // 3. new_postings — three postings per new payment: clearing (debit), merchant (credit), fee (credit),
+    //                   each to the sub-account of this partition;
     // 4. balances     — one upsert per touched account instead of one UPDATE per payment.
     // The statement returns how many payments were actually applied.
     private const string ApplyBatchSql = """
@@ -30,7 +31,7 @@ public sealed class LedgerWriter(NpgsqlDataSource dataSource)
             INSERT INTO postings (payment_id, account_id, amount)
             SELECT payment_id, $5, -amount FROM items
             UNION ALL
-            SELECT payment_id, 'merchant:' || merchant_id, amount - fee FROM items
+            SELECT payment_id, 'merchant:' || merchant_id || ':p' || $7, amount - fee FROM items
             UNION ALL
             SELECT payment_id, $6, fee FROM items
             RETURNING account_id, amount
@@ -64,6 +65,7 @@ public sealed class LedgerWriter(NpgsqlDataSource dataSource)
         command.Parameters.Add(new NpgsqlParameter<long[]> { TypedValue = fees });
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = LedgerAccounts.Clearing(partition) });
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = LedgerAccounts.Fee(partition) });
+        command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = partition }); // LedgerAccounts.Merchant, built per row
 
         var applied = (long)(await command.ExecuteScalarAsync(cancellationToken))!;
         return (int)applied;

@@ -30,7 +30,7 @@ await DatabaseSchema.ApplyAsync(
 await KafkaTopics.EnsureCreatedAsync(kafka, Topics.PaymentsCaptured, Topics.PaymentsCapturedPartitions, app.Logger);
 
 app.MapGet("/balances/merchants/{merchantId:long}", async (long merchantId, LedgerQueries queries, CancellationToken ct) =>
-    await queries.GetBalanceAsync(LedgerAccounts.Merchant(merchantId), ct) is { } balance
+    await queries.GetBalanceAsync(LedgerAccounts.MerchantAccounts(merchantId), ct) is { } balance
         ? Results.Ok(new { merchantId, balance })
         : Results.NotFound());
 

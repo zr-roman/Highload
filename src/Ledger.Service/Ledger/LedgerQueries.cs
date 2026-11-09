@@ -10,10 +10,11 @@ public sealed record LedgerInvariants(long UnbalancedPayments, long MismatchedAc
 
 public sealed class LedgerQueries(NpgsqlDataSource dataSource)
 {
-    public async Task<long?> GetBalanceAsync(string accountId, CancellationToken cancellationToken)
+    /// <summary>The sum of the balances of these accounts; null if none of them exists.</summary>
+    public async Task<long?> GetBalanceAsync(string[] accountIds, CancellationToken cancellationToken)
     {
-        await using var command = dataSource.CreateCommand("SELECT balance FROM accounts WHERE id = $1");
-        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = accountId });
+        await using var command = dataSource.CreateCommand("SELECT sum(balance)::bigint FROM accounts WHERE id = ANY($1)");
+        command.Parameters.Add(new NpgsqlParameter<string[]> { TypedValue = accountIds });
         var value = await command.ExecuteScalarAsync(cancellationToken);
         return value is long balance ? balance : null;
     }

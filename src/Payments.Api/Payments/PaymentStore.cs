@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using Contracts;
 using Npgsql;
@@ -37,8 +36,9 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
     /// <summary>
     /// The status change and the outbox row are written by one statement: they commit together,
     /// and the outbox row appears only if the payment really moved out of 'created'.
+    /// The message key decides the partition, and so the Ledger consumer (Topics.PaymentsCapturedKey).
     /// </summary>
-    public async Task<bool> MarkCapturedAsync(PaymentCaptured captured, CancellationToken cancellationToken)
+    public async Task<bool> MarkCapturedAsync(PaymentCaptured captured, string messageKey, CancellationToken cancellationToken)
     {
         await using var command = dataSource.CreateCommand("""
             WITH captured AS (
@@ -53,11 +53,7 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
         command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = captured.PaymentId });
         command.Parameters.Add(new NpgsqlParameter<long> { TypedValue = captured.Fee });
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = Topics.PaymentsCaptured });
-        // The key decides the partition: all payments of a merchant go to the same Ledger consumer.
-        command.Parameters.Add(new NpgsqlParameter<string>
-        {
-            TypedValue = captured.MerchantId.ToString(CultureInfo.InvariantCulture),
-        });
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = messageKey });
         command.Parameters.Add(new NpgsqlParameter<string>
         {
             TypedValue = JsonSerializer.Serialize(captured, ContractsJson.Default.PaymentCaptured),
