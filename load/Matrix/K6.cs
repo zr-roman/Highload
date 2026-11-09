@@ -76,9 +76,20 @@ public sealed record K6Result(
     long HotRequests,
     long HotRateLimited,
     long HotFailed,
+    long Hot202,
+    long OtherRequests,
+    long Other202,
     long Dropped,
     IReadOnlyList<string> CrossedThresholds)
 {
+    /// <summary>
+    /// The share of 202 among the requests of the other merchants: the bank gave no decision in time, by a timeout,
+    /// a 500 or an open circuit, and the payment waits for recovery. 0 if there were no such requests.
+    /// </summary>
+    public double Other202Share => OtherRequests > 0 ? (double)Other202 / OtherRequests : 0;
+
+    public double Hot202Share => HotRequests > 0 ? (double)Hot202 / HotRequests : 0;
+
     public static K6Result Read(string path, DateTimeOffset started, DateTimeOffset finished)
     {
         using var document = JsonDocument.Parse(File.ReadAllText(path));
@@ -106,6 +117,9 @@ public sealed record K6Result(
             HotRateLimited: (long)Get("rate_limited{merchant:hot}", "count"),
             // http_req_failed is a rate: its "passes" are the requests for which it is true, that is the failed ones.
             HotFailed: (long)Get("http_req_failed{merchant:hot}", "passes"),
+            Hot202: (long)Get("http_reqs{merchant:hot,status:202}", "count"),
+            OtherRequests: (long)Get("http_reqs{merchant:other}", "count"),
+            Other202: (long)Get("http_reqs{merchant:other,status:202}", "count"),
             Dropped: (long)Get("dropped_iterations", "count"),
             CrossedThresholds: crossed);
     }

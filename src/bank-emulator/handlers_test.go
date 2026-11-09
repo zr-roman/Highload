@@ -119,6 +119,23 @@ func TestSimulatedErrorDecidesNothing(t *testing.T) {
 	}
 }
 
+func TestErrorMerchantFailsAloneAndDecidesNothing(t *testing.T) {
+	h := NewHandler(NewBank(Config{ErrorMerchant: 42}))
+
+	rec := call(t, h, http.MethodPost, "/v1/authorizations", validBody)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("ErrorMerchant=42: want 500 for merchant 42, got %d: %s", rec.Code, rec.Body)
+	}
+	if rec := call(t, h, http.MethodGet, "/v1/authorizations/p-1", ""); rec.Code != http.StatusNotFound {
+		t.Errorf("a failure before the decision must decide nothing: want 404 from GET, got %d", rec.Code)
+	}
+
+	other := strings.NewReplacer(`"p-1"`, `"p-2"`, `"merchantId":42`, `"merchantId":7`).Replace(validBody)
+	if rec := call(t, h, http.MethodPost, "/v1/authorizations", other); rec.Code != http.StatusOK {
+		t.Errorf("ErrorMerchant=42: want 200 for merchant 7, got %d: %s", rec.Code, rec.Body)
+	}
+}
+
 func TestSlowAnswerComesAfterTheDecision(t *testing.T) {
 	const slow = 300 * time.Millisecond
 	h := NewHandler(NewBank(Config{SlowPercent: 100, SlowDelay: slow}))

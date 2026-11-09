@@ -70,6 +70,8 @@ if (HOT_SHARE === null) {
   show(['http_req_duration{merchant:hot}', 'http_req_duration{merchant:hot,status:201}'], 'p(99)>=0');
   show(['http_reqs{merchant:hot}', 'http_reqs{merchant:other}'], 'count>=0');
   show(['rate_limited{merchant:hot}', 'rate_limited{merchant:other}'], 'count>=0');
+  // 202: the bank gave no decision in time. A bank that fails the hot merchant must not give the others 202 (step 6).
+  show(['http_reqs{merchant:hot,status:202}', 'http_reqs{merchant:other,status:202}'], 'count>=0');
 }
 
 export const options = {

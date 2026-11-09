@@ -4,10 +4,11 @@ namespace Matrix;
 
 /// <summary>
 /// The processes of the stand, started as README, step 8, says for load runs: the bank emulator with its defaults
-/// and both services from the Release build with 1% of traces, Payments.Api in one instance or several.
+/// (or failing the hot merchant, --bank-fails-hot) and both services from the Release build with 1% of traces,
+/// Payments.Api in one instance or several.
 /// Kafka, Redis, the dashboard and Postgres it only uses.
 /// </summary>
-public sealed class Stand(string repository, string reports, int instances, int hotQuota, int hotBurst) : IDisposable
+public sealed class Stand(string repository, string reports, int instances, int hotQuota, int hotBurst, bool bankFailsHot) : IDisposable
 {
     // The launch profiles of the services and the emulator's default BANK_ADDR.
     public const string LedgerUrl = "http://localhost:5200";
@@ -66,7 +67,10 @@ public sealed class Stand(string repository, string reports, int instances, int 
     /// </summary>
     public async Task StartAsync(bool limiter, CancellationToken ct)
     {
-        bank ??= new LoggedProcess("Bank emulator", Processes.Info("go", ["run", "."], Path.Combine(repository, "src", "bank-emulator")), Log("bank-emulator.log"));
+        // --bank-fails-hot: the bank fails the hot merchant alone.
+        var bankSettings = bankFailsHot ? new Dictionary<string, string> { ["BANK_ERROR_MERCHANT"] = $"{K6.HotMerchant}" } : null;
+        bank ??= new LoggedProcess("Bank emulator",
+            Processes.Info("go", ["run", "."], Path.Combine(repository, "src", "bank-emulator"), bankSettings), Log("bank-emulator.log"));
         ledger ??= DotnetRun("Ledger.Service", ServiceSettings, "ledger.log");
 
         foreach (var instance in paymentsApis)

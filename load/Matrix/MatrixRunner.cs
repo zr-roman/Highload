@@ -55,7 +55,7 @@ public static class MatrixRunner
         // and for the topic the services create anew it found "No leaders" sample after sample.
         using var kafka = KafkaClient(settings);
 
-        using var stand = new Stand(repository, reports, options.Instances, options.HotQuota, options.HotBurst);
+        using var stand = new Stand(repository, reports, options.Instances, options.HotQuota, options.HotBurst, options.BankFailsHot);
         if (options.RedisPauseSeconds > 0)
             await stand.EnsureRedisCanPauseAsync(ct);
 
@@ -167,10 +167,10 @@ public static class MatrixRunner
 
     private static string Describe(RunResult result, StandSettings settings)
     {
-        var line = $"  p99 other {result.K6.P99Other:0} ms";
+        var line = $"  p99 other {result.K6.P99Other:0} ms, 202 other {result.K6.Other202Share:0.#%}";
         if (result.Run.HasHotMerchant)
         {
-            line += $", hot 201 {result.K6.P99Hot201:0} ms; hot accepted {(double)result.HotAccepted / result.DurationSeconds:0}/s";
+            line += $", hot 201 {result.K6.P99Hot201:0} ms, 202 hot {result.K6.Hot202Share:0.#%}; hot accepted {(double)result.HotAccepted / result.DurationSeconds:0}/s";
             if (result.Run.Limiter)
                 line += $", over the limit {result.OverLimit(settings)}, Redis failures {result.LimiterOutages}";
         }

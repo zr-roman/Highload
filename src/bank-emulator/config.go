@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"time"
@@ -18,6 +19,7 @@ type Config struct {
 	ErrorPercent   int           // BANK_ERROR_PERCENT: requests that fail with 500 before anything is decided
 	SlowPercent    int           // BANK_SLOW_PERCENT: requests that are decided and stored, but answered late
 	SlowDelay      time.Duration // BANK_SLOW_MS: how late such an answer comes
+	ErrorMerchant  int64         // BANK_ERROR_MERCHANT: a merchant whose every authorization fails with 500; 0: none
 }
 
 func configFromEnv() (Config, error) {
@@ -32,6 +34,11 @@ func configFromEnv() (Config, error) {
 		errs = append(errs, err)
 		return v
 	}
+	merchant := func(name string) int64 {
+		v, err := envInt(name, 0, 0, math.MaxInt)
+		errs = append(errs, err)
+		return int64(v)
+	}
 
 	cfg := Config{
 		Addr:           envString("BANK_ADDR", ":5300"),
@@ -41,6 +48,7 @@ func configFromEnv() (Config, error) {
 		ErrorPercent:   percent("BANK_ERROR_PERCENT", 0),
 		SlowPercent:    percent("BANK_SLOW_PERCENT", 0),
 		SlowDelay:      millis("BANK_SLOW_MS", 5000),
+		ErrorMerchant:  merchant("BANK_ERROR_MERCHANT"),
 	}
 	// errors.Join drops nil errors and returns nil when nothing went wrong.
 	return cfg, errors.Join(errs...)

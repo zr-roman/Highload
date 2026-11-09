@@ -37,6 +37,13 @@ func (b *Bank) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// One merchant fails, the others are served: Payments.Api must not let that merchant's failures stop the rest.
+	// validate has rejected merchantId 0, so ErrorMerchant 0 matches no request.
+	if req.MerchantID == b.cfg.ErrorMerchant {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("simulated bank failure for merchant %d", req.MerchantID))
+		return
+	}
+
 	if b.chance(b.cfg.ErrorPercent) {
 		writeError(w, http.StatusInternalServerError, "simulated bank failure")
 		return

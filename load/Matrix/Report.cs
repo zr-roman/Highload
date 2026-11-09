@@ -31,7 +31,10 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         text.Append(options.Fresh
             ? "Перед матрицей базы payments и ledger очищены, топик payments.captured и группа Ledger удалены (`--fresh`).\n\n"
             : "Базы — с прошлых прогонов (без `--fresh`): сколько в журнале платежей, видно в «Окнах повторов».\n\n");
-        text.Append("Стенд запущен матрицей: сервисы в Release, выборка трейсов 1 %, метрики раз в секунду; эмулятор банка с настройками по умолчанию. ");
+        text.Append("Стенд запущен матрицей: сервисы в Release, выборка трейсов 1 %, метрики раз в секунду; ");
+        text.Append(options.BankFailsHot
+            ? "эмулятор банка отвечает 500 на каждую авторизацию горячего продавца, остальных обслуживает с настройками по умолчанию (`--bank-fails-hot`). "
+            : "эмулятор банка с настройками по умолчанию. ");
         text.Append($"{K6.Merchants} продавцов, горячий — продавец {K6.HotMerchant}. Лимит продавца — {settings.TokensPerSecond} в секунду, всплеск {settings.Burst}. ");
         if (options.HotQuota > 0)
             text.Append($"Квота горячего продавца — {options.HotQuota} в секунду, всплеск {options.HotBurst} (`--hot-quota`). ");
@@ -59,6 +62,8 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
 
         text.Append("## Столбцы\n\n");
         text.Append("- **p99** — из итога k6; **hot 201** — только платежи горячего продавца с решением банка, без быстрых ответов 429.\n");
+        text.Append("- **202** — доля ответов 202 у остальных продавцов и у горячего: банк не дал решения вовремя — таймаут, ответ 500 или открытый circuit breaker. ");
+        text.Append("Такой платёж ждёт восстановления, которое спросит банк о решении позже.\n");
         text.Append("- **429 у hot** — доля ответов 429 у горячего продавца; **hot прошло** — его платежи, которые сервис принял (201 и 202), в секунду.\n");
         text.Append("- **Сверх лимита** — на сколько принятых платежей горячего продавца больше, чем пропускает его корзина токенов за прогон: ");
         text.Append($"всплеск и лимит за каждую секунду, {Count(settings.HotBurst)} + {Count(settings.HotTokensPerSecond)} × {options.DurationSeconds} = ");
@@ -107,6 +112,8 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         new("p99 other, мс", r => r.K6.P99Other, Milliseconds),
         new("p99 hot, мс", r => r.Run.HasHotMerchant ? r.K6.P99Hot : null, Milliseconds),
         new("p99 hot 201, мс", r => r.Run.HasHotMerchant ? r.K6.P99Hot201 : null, Milliseconds),
+        new("202 у other", r => r.K6.Other202Share, Percent),
+        new("202 у hot", r => r.Run.HasHotMerchant ? r.K6.Hot202Share : null, Percent),
         new("429 у hot", r => r.Run.HasHotMerchant ? (double)r.K6.HotRateLimited / r.K6.HotRequests : null, Percent),
         new("hot прошло, /с", r => r.Run.HasHotMerchant ? (double)r.HotAccepted / r.DurationSeconds : null, Count),
         new("Сверх лимита", r => r.Run.HasHotMerchant && r.Run.Limiter ? r.OverLimit(settings) : null, Count),
