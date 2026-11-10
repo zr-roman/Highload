@@ -64,6 +64,7 @@ public static class MatrixRunner
         await stand.BuildAsync(ct);
 
         var backlog = new Backlog(payments, kafka, settings.LedgerGroup, stand.EnsureRunning);
+        var table = new PaymentsTable(payments);
         var k6 = new K6(Path.Combine(repository, "load", "payments.js"), reports, stand.PaymentsApiUrls);
         // /invariants reads every posting of the ledger, which takes a while on a big one.
         using var ledger = new HttpClient { BaseAddress = new Uri(Stand.LedgerUrl), Timeout = TimeSpan.FromMinutes(3) };
@@ -77,6 +78,16 @@ public static class MatrixRunner
                 (options.Ledgers > 1 ? $", {options.Ledgers} instances of Ledger" : ""));
             await stand.StartAsync(limiter: group.Key, ct);
             await backlog.WaitLedgerAssignedAsync(options.Ledgers, ct);
+
+            // After the start: Payments.Api has applied schema.sql, so the table is there.
+            if (group == groups[0] && (options.PrefillRows > 0 || options.StaleIndex is not null))
+            {
+                Console.WriteLine("Preparing the table payments");
+                if (options.PrefillRows > 0)
+                    await table.PrefillAsync(options.PrefillRows, ct);
+                if (options.StaleIndex is { } staleIndex)
+                    await table.SetStaleIndexAsync(staleIndex, ct);
+            }
 
             if (options.WarmupSeconds > 0)
             {
@@ -100,6 +111,7 @@ public static class MatrixRunner
             Console.WriteLine($"Waiting for the stand to catch up before run {label}");
             var start = await backlog.WaitCaughtUpAsync(ct);
             var ledgerMembers = await backlog.ReadLedgerAssignmentAsync(ct);
+            var updatesBefore = await table.ReadUpdatesAsync(ct);
 
             Console.WriteLine($"Run {label}: {run.Rate}/s, hot share {run.HotShare}, limiter {(run.Limiter ? "on" : "off")}, {options.DurationSeconds} s");
 
@@ -137,6 +149,8 @@ public static class MatrixRunner
             var k6Result = await load;
             await pause;
             var check = await CheckLedgerAsync(label);
+            var updatesAfter = await table.ReadUpdatesAsync(ct);
+            var staleSearch = await table.ExplainStaleSearchAsync(ct);
 
             var result = new RunResult(
                 run,
@@ -146,7 +160,9 @@ public static class MatrixRunner
                 BacklogSummary.Of(samples, k6Result.Finished),
                 LimiterOutages: stand.RedisTimeouts(k6Result.Started, k6Result.Finished),
                 Ledger: check,
-                LedgerMembers: ledgerMembers);
+                LedgerMembers: ledgerMembers,
+                HotShare: UpdateCounts.HotShare(updatesBefore, updatesAfter),
+                StaleSearch: staleSearch);
             Console.WriteLine(Describe(result, settings));
             return result;
         }
@@ -181,6 +197,7 @@ public static class MatrixRunner
         }
 
         line += $"; ledger wrote at most {result.Backlog.PeakWriteTotal:0}/s";
+        line += $"; HOT updates {(result.HotShare is { } hot ? $"{hot:0.#%}" : "none")}, stale search {result.StaleSearch.Milliseconds:0} ms ({result.StaleSearch.Scan})";
         if (result.HotPartitionPeakWrite is { } hotWrite)
             line += $", {hotWrite:0}/s to the hot partition";
 

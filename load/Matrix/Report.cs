@@ -49,7 +49,14 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
             text.Append(options.LedgerBatch == 1
                 ? "Пачка Ledger — один платёж: одна SQL-команда и один коммит смещения на платёж (`--ledger-batch 1`). "
                 : $"Пачка Ledger — не больше {options.LedgerBatch} платежей (`--ledger-batch`). ");
-        if (options.Instances > 1 || options.RedisPauseSeconds > 0 || options.Ledgers > 1 || options.LedgerBatch > 0)
+        if (options.PrefillRows > 0)
+            text.Append($"До прогрева в `payments` записано {Count(options.PrefillRows)} проведённых платежей суточной давности (`--prefill`). ");
+        if (options.StaleIndex is { } staleIndex)
+            text.Append(staleIndex
+                ? $"Частичный индекс для поиска зависших платежей `{PaymentsTable.StaleIndex}` создан (`--stale-index on`). "
+                : $"Частичного индекса для поиска зависших платежей нет (`--stale-index off`). ");
+        if (options.Instances > 1 || options.RedisPauseSeconds > 0 || options.Ledgers > 1 || options.LedgerBatch > 0
+            || options.PrefillRows > 0 || options.StaleIndex is not null)
             text.Append("\n\n");
 
         text.Append("## Медиана повторов\n\n");
@@ -64,7 +71,7 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         text.Append("Время — для `ledger.payment.delay` и `ledger.batch.size` с фильтром `partition` в дашборде: эти гистограммы есть только там.\n\n");
         Table(text,
             ["Повтор", "Время", "Горячая партиция", "Сообщений в секунду: горячая / прочие в среднем", "Партиции экземпляров Ledger: сообщений в секунду",
-             "Самый долгий промежуток между замерами, с", "Платежей в журнале"],
+             "Самый долгий промежуток между замерами, с", "Платежей в журнале", "Поиск зависших: как читал payments"],
             results.Select(WindowRow));
 
         text.Append("## Столбцы\n\n");
@@ -89,7 +96,10 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         text.Append($"- **Самый долгий промежуток между замерами** — обычно секунда. Дольше — замер не удался или отброшен: Postgres или Kafka отвечали дольше {Count(Backlog.SlowSample.TotalSeconds)} с, ");
         text.Append("и lag в нём был бы завышен. За такой промежуток максимумы outbox и lag не видны.\n");
         text.Append("- **Платежей в журнале** — `payments` из ответа `/invariants`: журнал растёт от повтора к повтору, и проверка вместе с ним.\n");
-        text.Append("- **Партиции экземпляров Ledger** — какие партиции были у каждого экземпляра в начале повтора и сколько сообщений в секунду в них пришло; горячая — жирным.\n\n");
+        text.Append("- **Партиции экземпляров Ledger** — какие партиции были у каждого экземпляра в начале повтора и сколько сообщений в секунду в них пришло; горячая — жирным.\n");
+        text.Append("- **HOT-обновлений** — доля обновлений `payments` за повтор, которые остались HOT, по `pg_stat_user_tables`: смена статуса без новых записей в индексах. ");
+        text.Append("**Поиск зависших** — выборка `PaymentRecovery` (платежи в `created` старше 30 с, 100 штук), один раз после повтора, по `EXPLAIN ANALYZE`; ");
+        text.Append("в «Окнах повторов» — каким узлом он читал `payments` и сколько страниц по 8 КБ тронул. Восстановление делает такую выборку каждые 10 секунд.\n\n");
         text.Append("Рядом с таблицей: `run-<повтор>.json` и `.txt` — итог и вывод k6, `.html` — его графики, `-backlog.csv` — замеры раз в секунду (первый — перед нагрузкой; в последних столбцах — сколько отвечали Postgres и Kafka), ");
         text.Append("`-invariants.json` — ответ `/invariants`; логи сервисов и сборки.\n");
 
@@ -135,6 +145,8 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         new("Запись горячей партиции, пик /с", r => r.HotPartitionPeakWrite, Count),
         new("Запись журнала, пик /с", r => r.Backlog.PeakWriteTotal, Count),
         new("Догнал за, с", r => r.Backlog.CaughtUpSeconds, CatchUp),
+        new("HOT-обновлений", r => r.HotShare, share => share is { } v ? $"{(v * 100).ToString("0.#", Numbers)} %" : "—"),
+        new("Поиск зависших, мс", r => r.StaleSearch.Milliseconds, Milliseconds),
     ];
 
     private static string[] RunCells(MatrixRun run) =>
@@ -149,6 +161,7 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         LedgerMembers(result),
         Count(result.Backlog.LongestGapSeconds),
         Count(result.Ledger?.Payments),
+        $"{result.StaleSearch.Scan}, {Count(result.StaleSearch.Pages)} страниц",
     ];
 
     // "0, 1, 2, **3**: 957; 4, 5, 6, 7: 43": the partitions of each instance and the messages a second that came to them.

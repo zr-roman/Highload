@@ -3,7 +3,7 @@
 /// <summary>The command line of the matrix.</summary>
 public sealed record MatrixOptions(
     IReadOnlyList<int> Runs, int Repeats, int DurationSeconds, int WarmupSeconds, bool Fresh, int Instances, int RedisPauseSeconds,
-    int HotQuota, bool BankFailsHot, int Ledgers, int LedgerBatch)
+    int HotQuota, bool BankFailsHot, int Ledgers, int LedgerBatch, int PrefillRows, bool? StaleIndex)
 {
     /// <summary>The burst of the hot merchant's quota: twice its rate, as the default limit has it (200 and 400).</summary>
     public int HotBurst => 2 * HotQuota;
@@ -20,6 +20,7 @@ public sealed record MatrixOptions(
           dotnet run --project load\Matrix -c Release -- --fresh --runs 3,5 --repeats 3 --hot-quota 1000
           dotnet run --project load\Matrix -c Release -- --fresh --runs 3 --repeats 1 --hot-quota 1000 --bank-fails-hot
           dotnet run --project load\Matrix -c Release -- --fresh --runs 1,3 --repeats 1 --duration 60 --hot-quota 1000 --ledger-batch 1 --ledgers 2
+          dotnet run --project load\Matrix -c Release -- --fresh --prefill 5000000 --stale-index off --runs 1,4 --repeats 3
 
           --runs 1,2,...  the runs of the matrix to do (default: all six)
           --repeats N     how many times each run is repeated (default: 2)
@@ -38,6 +39,10 @@ public sealed record MatrixOptions(
                           between them (default: 1)
           --ledger-batch B at most B payments in a batch of the ledger, Consumer:BatchSize; 1: a statement and
                           a commit of offsets per payment (default: 0, the value of appsettings.json)
+          --prefill N     write N captured payments a day old into payments before the warm-up, as on a stand
+                          that has worked for days; needs --fresh (default: 0)
+          --stale-index on|off  put the partial index of the first measurement of the search for stale payments
+                          into payments, or drop the one it left (default: leave payments as it is)
         """;
 
     public static MatrixOptions Parse(string[] args)
@@ -54,7 +59,9 @@ public sealed record MatrixOptions(
             HotQuota: 0,
             BankFailsHot: false,
             Ledgers: 1,
-            LedgerBatch: 0);
+            LedgerBatch: 0,
+            PrefillRows: 0,
+            StaleIndex: null);
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -74,6 +81,11 @@ public sealed record MatrixOptions(
                 "--bank-fails-hot" => options with { BankFailsHot = true },
                 "--ledgers" => options with { Ledgers = ParseNumber(name, Value(), min: 1) },
                 "--ledger-batch" => options with { LedgerBatch = ParseNumber(name, Value(), min: 1) },
+                "--prefill" => options with { PrefillRows = ParseNumber(name, Value(), min: 1) },
+                "--stale-index" => options with
+                {
+                    StaleIndex = Value() switch { "on" => true, "off" => false, var other => throw Error($"--stale-index takes on or off, got {other}") },
+                },
                 _ => throw Error($"Unknown option {name}"),
             };
         }
@@ -81,6 +93,10 @@ public sealed record MatrixOptions(
         // The pause sits in the middle of the load, with load before and after it.
         if (options.RedisPauseSeconds >= options.DurationSeconds)
             throw Error($"--redis-pause {options.RedisPauseSeconds} must be shorter than --duration {options.DurationSeconds}");
+
+        // The prefilled ids are the row numbers: a second fill would collide with the first.
+        if (options.PrefillRows > 0 && !options.Fresh)
+            throw Error("--prefill needs --fresh: it writes into an empty payments");
 
         return options;
     }
