@@ -14,7 +14,7 @@ dev = [
     "pytest>=8.3",
     "httpx2>=2.16.0",
     "ruff>=0.8",
-    "fakeredis>=2.40.0",
+    "fakeredis[lua]>=2.40.0",
     "pytest-asyncio>=1.4.1",
 ]
 

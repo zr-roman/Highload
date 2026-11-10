@@ -15,12 +15,16 @@ def settings() -> Settings:
         velocity_limit=100,
         velocity_window_seconds=60,
         decision_ttl_seconds=86400,
+        redis_timeout_ms=20,
     )
 
 
 @pytest.fixture
 async def redis() -> AsyncIterator[FakeAsyncRedis]:
-    """Redis in memory with the same API: tests of the logic need no running server."""
+    """Redis in memory with the same API: tests of the logic need no running server.
+
+    It runs Lua scripts too: the lua extra of fakeredis brings in lupa, a Lua interpreter.
+    """
     client = FakeAsyncRedis(decode_responses=True)
     yield client
     await client.aclose()

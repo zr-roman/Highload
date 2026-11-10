@@ -4,8 +4,9 @@ from redis.asyncio import Redis
 
 from antifraud.models import CheckRequest, CheckResponse, Decision
 from antifraud.settings import Settings
+from antifraud.velocity import count_payment, velocity_limit
 
-RULES_VERSION = "rules-1"
+RULES_VERSION = "rules-2"  # rules-1 allowed every payment; rules-2 adds the velocity rule
 
 
 def decision_key(payment_id: UUID) -> str:
@@ -35,9 +36,17 @@ async def check_payment(request: CheckRequest, redis: Redis, settings: Settings)
 
 
 async def evaluate_rules(request: CheckRequest, redis: Redis, settings: Settings) -> CheckResponse:
-    # TODO 2. Velocity: count the merchant's payments in the window (INCR + EXPIRE on a per-merchant key).
+    number_in_window = await count_payment(request, redis, settings)
 
-    # TODO 3. Rules -> decision, score and reasons.
+    # The rules are hard limits, so the score is 0 or 1; a model will give values in between.
+    if number_in_window > velocity_limit(request, settings):
+        return CheckResponse(
+            payment_id=request.payment_id,
+            decision=Decision.DENY,
+            score=1.0,
+            reasons=["velocity"],
+            model_version=RULES_VERSION,
+        )
 
     return CheckResponse(
         payment_id=request.payment_id,
