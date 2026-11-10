@@ -30,7 +30,7 @@ public sealed class PostgresFixture : IAsyncLifetime
     // Every test starts from empty tables.
     public async Task ResetAsync(CancellationToken cancellationToken = default)
     {
-        await using var command = DataSource.CreateCommand("TRUNCATE payments, outbox RESTART IDENTITY");
+        await using var command = DataSource.CreateCommand("TRUNCATE payments, pending_payments, outbox RESTART IDENTITY");
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -39,9 +39,15 @@ public sealed class PostgresFixture : IAsyncLifetime
         var id = Guid.NewGuid();
 
         // Only the id, the status and the age vary; the idempotency key reuses the id, so it is unique as well.
+        // A payment in 'created' is also in pending_payments, as PaymentStore.TryInsertAsync writes it.
         await using var command = DataSource.CreateCommand("""
-        INSERT INTO payments (id, merchant_id, idempotency_key, request_hash, amount, currency, status, created_at)
-        VALUES ($1, 42, $1::text, 'test', 150000, 'RUB', $2, now() - $3)
+        WITH payment AS (
+            INSERT INTO payments (id, merchant_id, idempotency_key, request_hash, amount, currency, status, created_at)
+            VALUES ($1, 42, $1::text, 'test', 150000, 'RUB', $2, now() - $3)
+            RETURNING id, created_at, status
+        )
+        INSERT INTO pending_payments (id, created_at)
+        SELECT id, created_at FROM payment WHERE status = 'created'
         """);
         command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = id });
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = status });
@@ -58,10 +64,16 @@ public sealed class PostgresFixture : IAsyncLifetime
         return (string)(await command.ExecuteScalarAsync(cancellationToken))!;
     }
 
-    /// <summary>Changes a payment behind recovery's back: this is how a test plays the endpoint that finished first.</summary>
+    /// <summary>
+    /// Changes a payment behind recovery's back: this is how a test plays the endpoint that finished first.
+    /// Like the endpoint, it takes the payment out of pending_payments when the payment leaves 'created'.
+    /// </summary>
     public async Task SetStatusAsync(Guid id, string status, CancellationToken cancellationToken = default)
     {
-        await using var command = DataSource.CreateCommand("UPDATE payments SET status = $2, updated_at = now() WHERE id = $1");
+        await using var command = DataSource.CreateCommand("""
+            WITH changed AS (UPDATE payments SET status = $2, updated_at = now() WHERE id = $1 RETURNING id, status)
+            DELETE FROM pending_payments WHERE id IN (SELECT id FROM changed WHERE status <> 'created')
+            """);
         command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = id });
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = status });
         await command.ExecuteNonQueryAsync(cancellationToken);
@@ -72,6 +84,12 @@ public sealed class PostgresFixture : IAsyncLifetime
         await using var command = DataSource.CreateCommand("SELECT fee FROM payments WHERE id = $1");
         command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = id });
         return await command.ExecuteScalarAsync(cancellationToken) is long fee ? fee : null;
+    }
+
+    public async Task<long> CountPendingAsync(CancellationToken cancellationToken = default)
+    {
+        await using var command = DataSource.CreateCommand("SELECT count(*) FROM pending_payments");
+        return (long)(await command.ExecuteScalarAsync(cancellationToken))!;
     }
 
     public async Task<long> CountOutboxAsync(CancellationToken cancellationToken = default)

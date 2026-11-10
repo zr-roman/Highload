@@ -13,16 +13,25 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
     private const string SelectColumns =
         "id, merchant_id, idempotency_key, request_hash, amount, currency, fee, status, created_at";
 
+    // The same columns of payments joined to pending_payments, which has an id and a created_at of its own.
+    private static readonly string SelectPaymentColumns = string.Join(", ", SelectColumns.Split(", ").Select(column => $"p.{column}"));
+
     /// <summary>
     /// Returns false when a payment with the same (merchant_id, idempotency_key) already exists:
     /// the unique constraint, not a SELECT before the INSERT, decides who was first.
+    /// A new payment also gets its row in pending_payments, in the same statement: recovery finds it there.
     /// </summary>
     public async Task<bool> TryInsertAsync(Payment payment, CancellationToken cancellationToken)
     {
         await using var command = dataSource.CreateCommand("""
-            INSERT INTO payments (id, merchant_id, idempotency_key, request_hash, amount, currency, status)
-            VALUES ($1, $2, $3, $4, $5, $6, 'created')
-            ON CONFLICT (merchant_id, idempotency_key) DO NOTHING
+            WITH payment AS (
+                INSERT INTO payments (id, merchant_id, idempotency_key, request_hash, amount, currency, status)
+                VALUES ($1, $2, $3, $4, $5, $6, 'created')
+                ON CONFLICT (merchant_id, idempotency_key) DO NOTHING
+                RETURNING id, created_at
+            )
+            INSERT INTO pending_payments (id, created_at)
+            SELECT id, created_at FROM payment
             """);
         command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = payment.Id });
         command.Parameters.Add(new NpgsqlParameter<long> { TypedValue = payment.MerchantId });
@@ -35,7 +44,8 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
 
     /// <summary>
     /// The status change and the outbox row are written by one statement: they commit together,
-    /// and the outbox row appears only if the payment really moved out of 'created'.
+    /// and the outbox row appears only if the payment really moved out of 'created'. The same statement takes
+    /// the payment out of pending_payments.
     /// The message key decides the partition, and so the Ledger consumer (Topics.PaymentsCapturedKey).
     /// </summary>
     public async Task<bool> MarkCapturedAsync(PaymentCaptured captured, string messageKey, CancellationToken cancellationToken)
@@ -46,6 +56,9 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
                 SET status = 'captured', fee = $2, updated_at = now()
                 WHERE id = $1 AND status = 'created'
                 RETURNING id
+            ),
+            settled AS (
+                DELETE FROM pending_payments WHERE id IN (SELECT id FROM captured)
             )
             INSERT INTO outbox (topic, message_key, payload)
             SELECT $3, $4, $5 FROM captured
@@ -64,12 +77,19 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
     public async Task<bool> MarkDeclinedAsync(Guid paymentId, CancellationToken cancellationToken)
     {
         await using var command = dataSource.CreateCommand("""
-            UPDATE payments
-            SET status = 'declined', updated_at = now()
-            WHERE id = $1 AND status = 'created'
+            WITH declined AS (
+                UPDATE payments
+                SET status = 'declined', updated_at = now()
+                WHERE id = $1 AND status = 'created'
+                RETURNING id
+            ),
+            settled AS (
+                DELETE FROM pending_payments WHERE id IN (SELECT id FROM declined)
+            )
+            SELECT count(*) FROM declined
             """);
         command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = paymentId });
-        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+        return (long)(await command.ExecuteScalarAsync(cancellationToken))! == 1;
     }
 
     public async Task<Payment?> FindByIdAsync(Guid id, CancellationToken cancellationToken)
@@ -88,9 +108,19 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
         return await ReadSingleAsync(command, cancellationToken);
     }
 
+    /// <summary>
+    /// The oldest payments in 'created', from pending_payments: the payments in progress, not all of them. The status
+    /// is checked on payments all the same: a row of the queue without its payment in 'created' must not take a place
+    /// in the batch.
+    /// </summary>
     public async Task<IReadOnlyList<Payment>> FindStaleCreatedAsync(TimeSpan staleAfter, int batchSize, CancellationToken cancellationToken)
     {
-        var sql = $"SELECT {SelectColumns} FROM payments WHERE created_at < now() - $1 AND status = 'created' ORDER BY created_at LIMIT $2";
+        var sql = $"""
+            SELECT {SelectPaymentColumns}
+            FROM pending_payments q JOIN payments p ON p.id = q.id
+            WHERE q.created_at < now() - $1 AND p.status = 'created'
+            ORDER BY q.created_at LIMIT $2
+            """;
         await using var command = dataSource.CreateCommand(sql);
         command.Parameters.Add(new NpgsqlParameter<TimeSpan> { TypedValue = staleAfter });
         command.Parameters.Add(new NpgsqlParameter<int> { TypedValue = batchSize });

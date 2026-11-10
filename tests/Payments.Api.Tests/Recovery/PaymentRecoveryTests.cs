@@ -38,6 +38,7 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
         Assert.Equal("captured", await db.GetStatusAsync(id, Ct));
         Assert.Equal(3000L, await db.GetFeeAsync(id, Ct));          // 2 % of 150000 by default FeeOptions
         Assert.Equal(1L, await db.CountOutboxAsync(Ct));            // the event Ledger books
+        Assert.Equal(0L, await db.CountPendingAsync(Ct));           // out of the queue of recovery, in the same statement
         Assert.Single(host.Captured.GetMeasurementSnapshot());      // the same metric the endpoint feeds
 
         var record = Assert.Single(host.Logs.GetSnapshot(), r => r.GetStructuredStateValue("Reason") is not null);
@@ -59,6 +60,7 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
         Assert.Equal("declined", await db.GetStatusAsync(id, Ct));
         Assert.Null(await db.GetFeeAsync(id, Ct));
         Assert.Equal(0L, await db.CountOutboxAsync(Ct));            // nothing for Ledger to book
+        Assert.Equal(0L, await db.CountPendingAsync(Ct));
         Assert.Single(host.Declined.GetMeasurementSnapshot());
 
         var record = Assert.Single(host.Logs.GetSnapshot(), r => r.GetStructuredStateValue("Reason") is not null);

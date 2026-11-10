@@ -202,6 +202,7 @@ public sealed class MoneyAddsUpTests(PlatformFixture platform, ITestOutputHelper
         var captured = await CapturedAsync();
         Assert.Equal(captured, await BookedAsync());
         Assert.Equal(0, await ScalarAsync(platform.PaymentsDb, "SELECT count(*) FROM payments WHERE status = 'created'"));
+        Assert.Equal(0, await ScalarAsync(platform.PaymentsDb, "SELECT count(*) FROM pending_payments"));
 
         // 3. Money adds up across the services: what Payments.Api captured is what the ledger booked, once.
         //    The ledger keeps a merchant's money in sub-accounts, merchant:{id}:p{partition}: they are added up by merchant.
