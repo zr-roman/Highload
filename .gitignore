@@ -14,3 +14,5 @@ src/bank-emulator/bank-emulator.exe
 __pycache__/
 .pytest_cache/
 .ruff_cache/
+# Postgres password for the k8s stand: copy deploy/k8s/postgres.env.example
+deploy/k8s/postgres.env

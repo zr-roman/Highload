@@ -1,0 +1,29 @@
+# Stage 1 of the stand in Kubernetes (k3d): the four services, Kafka, Redis and the telemetry dashboard.
+# PostgreSQL stays on the host (port 5433) and is reached as host.docker.internal.
+#   kubectl apply -k deploy/k8s
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: highload
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: payments-platform
+
+resources:
+  - namespace.yaml
+  - kafka.yaml
+  - redis.yaml
+  - dashboard.yaml
+  - bank-emulator.yaml
+  - antifraud.yaml
+  - payments-api.yaml
+  - ledger-service.yaml
+
+# Connection strings with the Postgres password, from a local file that is not in git (postgres.env.example shows
+# its shape). The generated Secret gets a hash of its content in its name, and kustomize rewrites the references to
+# it, so a changed password rolls the pods that use it.
+secretGenerator:
+  - name: postgres
+    envs:
+      - postgres.env

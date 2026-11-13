@@ -1,0 +1,60 @@
+# The acquiring bank emulator (Go). Its latency and failures are set with BANK_* variables
+# (src/bank-emulator/README.md); here it runs with the defaults: 50 ms + up to 20 ms, 2% declines.
+apiVersion: v1
+kind: Service
+metadata:
+  name: bank-emulator
+  labels:
+    app.kubernetes.io/name: bank-emulator
+spec:
+  selector:
+    app.kubernetes.io/name: bank-emulator
+  ports:
+    - name: http
+      port: 5300
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bank-emulator
+  labels:
+    app.kubernetes.io/name: bank-emulator
+spec:
+  # One replica: the emulator keeps its decisions in memory, and the recovery of Payments.Api asks it
+  # about a payment it decided before; a second replica would not know them.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bank-emulator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bank-emulator
+    spec:
+      containers:
+        - name: bank-emulator
+          # Built locally and imported into the nodes (k3d image import): IfNotPresent, never pulled.
+          image: bank-emulator:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BANK_ADDR
+              value: ":5300"
+          ports:
+            - name: http
+              containerPort: 5300
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 32Mi
+            limits:
+              memory: 256Mi

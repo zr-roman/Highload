@@ -1,0 +1,75 @@
+# Payments.Api (C#): accepts payments, calls the bank, writes the outbox and relays it to Kafka.
+#   kubectl -n highload port-forward svc/payments-api 5100:8080   ->  the README's requests to http://localhost:5100
+apiVersion: v1
+kind: Service
+metadata:
+  name: payments-api
+  labels:
+    app.kubernetes.io/name: payments-api
+spec:
+  selector:
+    app.kubernetes.io/name: payments-api
+  ports:
+    - name: http
+      port: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments-api
+  labels:
+    app.kubernetes.io/name: payments-api
+spec:
+  # More replicas are safe: the schema, OutboxRelay and PaymentRecovery each take an advisory lock in Postgres,
+  # so only one replica relays the outbox and recovers payments. Each replica keeps 16 connections open.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payments-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: payments-api
+    spec:
+      containers:
+        - name: payments-api
+          image: payments-api:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            # Environment variables override appsettings.json: __ stands for the : of a configuration key.
+            - name: ConnectionStrings__Payments
+              valueFrom:
+                secretKeyRef:
+                  name: postgres
+                  key: ConnectionStrings__Payments
+            - name: ConnectionStrings__Kafka
+              value: kafka:9092
+            - name: ConnectionStrings__Redis
+              value: redis:6379,connectTimeout=2000,syncTimeout=100,asyncTimeout=100
+            - name: Acquirer__BaseAddress
+              value: http://bank-emulator:5300/
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://dashboard:18889
+          ports:
+            - name: http
+              containerPort: 8080
+          # /health has no checks yet: it answers once the app has started, that is after the schema, the topic
+          # and the connection to Redis (Program.cs). Checks of the dependencies come with stage 2.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            # No CPU limit: throttling within the 100 ms CFS period shows up as latency spikes.
+            requests:
+              cpu: 250m
+              memory: 192Mi
+            limits:
+              memory: 512Mi

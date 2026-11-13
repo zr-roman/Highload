@@ -1,0 +1,56 @@
+# The antifraud check (Python). Payments.Api does not call it yet (stage 4), but it runs in the cluster already.
+apiVersion: v1
+kind: Service
+metadata:
+  name: antifraud
+  labels:
+    app.kubernetes.io/name: antifraud
+spec:
+  selector:
+    app.kubernetes.io/name: antifraud
+  ports:
+    - name: http
+      port: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: antifraud
+  labels:
+    app.kubernetes.io/name: antifraud
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: antifraud
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: antifraud
+    spec:
+      containers:
+        - name: antifraud
+          image: antifraud:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ANTIFRAUD_REDIS_URL
+              value: redis://redis:6379/0
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 96Mi
+            limits:
+              memory: 256Mi
