@@ -50,6 +50,12 @@ spec:
               value: http://bank-emulator:5300/
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: http://dashboard:18889
+            # 1 % of traces, as the load matrix runs the services (load/Matrix/Stand.cs): a trace of every request
+            # is thousands of spans a second for the dashboard on the same laptop, and it shows in the latency.
+            - name: OTEL_TRACES_SAMPLER
+              value: parentbased_traceidratio
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: "0.01"
           ports:
             - name: http
               containerPort: 8080
