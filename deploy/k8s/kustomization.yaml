@@ -19,6 +19,7 @@ resources:
   - antifraud.yaml
   - payments-api.yaml
   - ledger-service.yaml
+  - ingress.yaml
 
 # Connection strings with the Postgres password, from a local file that is not in git (postgres.env.example shows
 # its shape). The generated Secret gets a hash of its content in its name, and kustomize rewrites the references to

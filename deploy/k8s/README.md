@@ -11,6 +11,7 @@
 | `antifraud.yaml` | антифрод (Python) | `antifraud:8000` |
 | `payments-api.yaml` | Payments.Api | `payments-api:8080` |
 | `ledger-service.yaml` | Ledger.Service | `ledger-service:8080` |
+| `ingress.yaml` | вход через Traefik | `localhost:8080` снаружи |
 
 ## Запуск
 
@@ -49,13 +50,26 @@
 
 ## Проверка
 
-Порты наружу пробрасываются на время работы, каждый — в своём окне:
+Всё доступно через Traefik на `http://localhost:8080` (`ingress.yaml`): Traefik распределяет запросы по всем готовым подам и не рвётся при их перезапуске, в отличие от `kubectl port-forward`.
+
+| Адрес | Куда |
+|---|---|
+| `http://localhost:8080/payments` | Payments.Api |
+| `http://localhost:8080/balances/...`, `/invariants` | Ledger.Service |
+| `http://dashboard.localhost:8080` | дашборд телеметрии (в браузере) |
+
 ```powershell
-kubectl -n highload port-forward svc/payments-api 5100:8080
-kubectl -n highload port-forward svc/ledger-service 5200:8080
-kubectl -n highload port-forward svc/dashboard 18888:18888
+$body = '{"merchantId": 42, "amount": 150000, "currency": "RUB"}'
+$headers = @{ "Idempotency-Key" = [guid]::NewGuid().ToString() }
+Invoke-RestMethod -Method Post -Uri http://localhost:8080/payments -Headers $headers -ContentType "application/json" -Body $body
+Invoke-RestMethod http://localhost:8080/balances/merchants/42
+Invoke-RestMethod http://localhost:8080/invariants
 ```
-Дальше — шаг 6 из корневого README: платёж на `http://localhost:5100`, баланс и инварианты на `http://localhost:5200`, трейсы на `http://localhost:18888`.
+
+Нагрузка — тот же сценарий k6, адрес через `BASE_URL`:
+```powershell
+k6 run -e BASE_URL=http://localhost:8080 -e RATE=200 -e DURATION=60s load/payments.js
+```
 
 С какого адреса поды приходят в Postgres:
 ```powershell

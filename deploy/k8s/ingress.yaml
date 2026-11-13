@@ -1,0 +1,47 @@
+# One entry point for the stand: Traefik, the ingress controller built into k3s, on http://localhost:8080
+# (k3d cluster create ... -p "8080:80@loadbalancer"). Unlike kubectl port-forward, which is tied to one pod and breaks
+# when that pod goes away, Traefik spreads the requests over all ready pods of a Service and follows them as pods
+# come and go: the stand stays reachable through a rolling update or a deleted pod.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: payments-platform
+spec:
+  ingressClassName: traefik
+  rules:
+    # The API, by path, on any host name: http://localhost:8080/payments, /balances/..., /invariants.
+    - http:
+        paths:
+          - path: /payments
+            pathType: Prefix
+            backend:
+              service:
+                name: payments-api
+                port:
+                  name: http
+          - path: /balances
+            pathType: Prefix
+            backend:
+              service:
+                name: ledger-service
+                port:
+                  name: http
+          - path: /invariants
+            pathType: Exact
+            backend:
+              service:
+                name: ledger-service
+                port:
+                  name: http
+    # The telemetry dashboard on its own host name, since its UI lives at the root path: http://dashboard.localhost:8080.
+    # Browsers resolve any *.localhost to 127.0.0.1 themselves; Windows tools such as Invoke-RestMethod do not.
+    - host: dashboard.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dashboard
+                port:
+                  name: ui
