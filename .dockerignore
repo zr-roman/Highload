@@ -1,0 +1,41 @@
+# Build context of every image is the repository root: the .NET services need
+# Directory.Build.props, Directory.Packages.props and the projects Platform and Contracts.
+# Everything below never goes into an image, and the disk is tight.
+
+# Git and IDE
+.git
+.gitattributes
+.gitignore
+.vs
+.vscode
+.idea
+**/*.user
+**/*.swp
+
+# .NET build output and test results
+**/bin
+**/obj
+TestResults
+**/TestResults
+
+# Python caches and the local virtual environment: the image builds its own with uv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/.venv
+
+# Go build output from `go build` on the host
+src/bank-emulator/bank-emulator
+src/bank-emulator/bank-emulator.exe
+
+# Not part of any service: load tests, benchmarks, docs, tests
+load
+bench
+docs
+tests
+src/antifraud-service/tests
+
+# Deployment files themselves
+**/Dockerfile*
+docker-compose.yml
+deploy
