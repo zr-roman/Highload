@@ -19,6 +19,7 @@ resources:
   - antifraud.yaml
   - payments-api.yaml
   - pdb.yaml
+  - hpa.yaml
   - ledger-service.yaml
   - ingress.yaml
   - traefik.yaml

@@ -1,0 +1,37 @@
+# Payments.Api from 2 to 4 replicas by CPU. The metrics come from metrics-server, which k3s already runs.
+#   kubectl -n highload get hpa payments-api -w
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: payments-api
+  labels:
+    app.kubernetes.io/name: payments-api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: payments-api
+  # Never below 2: one replica must survive the loss of a pod or a node (pdb.yaml counts on the second one too).
+  minReplicas: 2
+  # Each replica keeps 16 connections to Postgres open: the ceiling is set by the database, not by the nodes.
+  # 4 replicas are 64 connections out of max_connections; a larger ceiling needs a smaller pool or PgBouncer.
+  maxReplicas: 4
+  metrics:
+    # Utilization is a share of the CPU request of the pod (250m), not of a core: 70 % is 175m per pod.
+    # An idle replica takes about 15m, one under 100 payments a second several times the target.
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    # Up at once, by as many pods as the metric asks for (the default). A new pod counts only when it is Ready.
+    # Down slowly: replicas are removed only after a minute of low load, one at a time, so a pause between two bursts
+    # does not throw away pods the next burst needs. The default window is 5 minutes; a minute is enough to watch.
+    scaleDown:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 30
