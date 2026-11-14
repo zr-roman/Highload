@@ -18,6 +18,7 @@ resources:
   - bank-emulator.yaml
   - antifraud.yaml
   - payments-api.yaml
+  - pdb.yaml
   - ledger-service.yaml
   - ingress.yaml
 

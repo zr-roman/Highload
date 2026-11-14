@@ -20,9 +20,10 @@ metadata:
   labels:
     app.kubernetes.io/name: payments-api
 spec:
-  # More replicas are safe: the schema, OutboxRelay and PaymentRecovery each take an advisory lock in Postgres,
-  # so only one replica relays the outbox and recovers payments. Each replica keeps 16 connections open.
-  replicas: 1
+  # Two, so that losing one pod or one node leaves the other serving while a replacement starts (pdb.yaml keeps one up
+  # through a drain). More replicas are safe: the schema, OutboxRelay and PaymentRecovery each take an advisory lock
+  # in Postgres, so only one replica relays the outbox and recovers payments. Each replica keeps 16 connections open.
+  replicas: 2
   selector:
     matchLabels:
       app.kubernetes.io/name: payments-api
@@ -34,6 +35,26 @@ spec:
       # Counted from the start of preStop: 5 s of the pause, then up to 30 s for the app to stop (HostOptions.ShutdownTimeout
       # is 25 s in Platform, a margin before SIGKILL).
       terminationGracePeriodSeconds: 35
+      # The replicas on different nodes, so a node going down takes one of them, not both. ScheduleAnyway: with fewer
+      # nodes than replicas, or one node cordoned, the pods still start, just not spread.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: payments-api
+      # A node that stops answering is marked not-ready after about 40 s; by default its pods are evicted and started
+      # elsewhere only 5 minutes after that. 30 s here: the other replica carries the load meanwhile.
+      tolerations:
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 30
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 30
       containers:
         - name: payments-api
           image: payments-api:dev

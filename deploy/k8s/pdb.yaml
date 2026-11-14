@@ -1,0 +1,14 @@
+# Voluntary disruptions only: kubectl drain, a node upgrade, the cluster autoscaler removing a node. They evict
+# a Payments.Api pod only while the other one is available. A node that crashes is not stopped by a PDB: that is
+# what the second replica on another node and the tolerations in payments-api.yaml are for.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: payments-api
+  labels:
+    app.kubernetes.io/name: payments-api
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payments-api

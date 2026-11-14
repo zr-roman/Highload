@@ -9,9 +9,10 @@
 | `dashboard.yaml` | Aspire dashboard: UI и приём OTLP | `dashboard:18888`, `dashboard:18889` |
 | `bank-emulator.yaml` | эмулятор банка (Go), одна реплика: решения в памяти | `bank-emulator:5300` |
 | `antifraud.yaml` | антифрод (Python) | `antifraud:8000` |
-| `payments-api.yaml` | Payments.Api | `payments-api:8080` |
+| `payments-api.yaml` | Payments.Api, 2 реплики на разных нодах | `payments-api:8080` |
 | `ledger-service.yaml` | Ledger.Service | `ledger-service:8080` |
 | `ingress.yaml` | вход через Traefik | `localhost:8080` снаружи |
+| `pdb.yaml` | PodDisruptionBudget Payments.Api: при `kubectl drain` одна реплика всегда в работе | — |
 
 ## Запуск
 
