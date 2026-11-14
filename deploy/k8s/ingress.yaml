@@ -6,6 +6,9 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: payments-platform
+  annotations:
+    # The retry middleware of traefik.yaml: <namespace>-<name>@kubernetescrd.
+    traefik.ingress.kubernetes.io/router.middlewares: highload-retry@kubernetescrd
 spec:
   ingressClassName: traefik
   rules:

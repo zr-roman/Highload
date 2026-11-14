@@ -1,0 +1,28 @@
+# How Traefik treats a pod that stops answering. A pod on a node that went down does not refuse connections, it just
+# never answers: Kubernetes notices the dead node only after about 40 s, and until then Traefik keeps sending it its
+# share of requests. With the defaults each of them hangs for the 30 s dial timeout and then fails.
+#
+# fast-dial: inside the cluster a connection takes milliseconds, so 1 s without one means the pod is gone.
+# Used by the Services of the API (annotation traefik.ingress.kubernetes.io/service.serverstransport).
+apiVersion: traefik.io/v1alpha1
+kind: ServersTransport
+metadata:
+  name: fast-dial
+spec:
+  forwardingTimeouts:
+    dialTimeout: 1s
+---
+# retry: a request Traefik could not deliver goes to the next pod of the Service. It retries only when the pod did not
+# answer at all; once a pod answers, with any status, the answer is final. The retry goes through the same load
+# balancer and may pick the dead pod again, one time in two with two replicas: with 5 attempts a request fails only if
+# all of them hit it, 1 in 16 instead of 1 in 4 with 3 (stopped node under load: 1412 errors with 3 attempts).
+# A POST /payments delivered twice is still safe: the Idempotency-Key makes the second one return the same payment.
+# Used by the Ingress (annotation traefik.ingress.kubernetes.io/router.middlewares).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: retry
+spec:
+  retry:
+    attempts: 5
+    initialInterval: 100ms

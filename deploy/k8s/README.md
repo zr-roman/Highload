@@ -12,6 +12,7 @@
 | `payments-api.yaml` | Payments.Api, 2 реплики на разных нодах | `payments-api:8080` |
 | `ledger-service.yaml` | Ledger.Service | `ledger-service:8080` |
 | `ingress.yaml` | вход через Traefik | `localhost:8080` снаружи |
+| `traefik.yaml` | Traefik: таймаут подключения 1 с вместо 30 и повтор запроса на другом поде | — |
 | `pdb.yaml` | PodDisruptionBudget Payments.Api: при `kubectl drain` одна реплика всегда в работе | — |
 
 ## Запуск
@@ -92,3 +93,13 @@ kubectl -n highload rollout restart deployment/payments-api
 kubectl delete -k deploy/k8s     # всё, включая том Kafka
 k3d cluster delete highload      # или весь кластер
 ```
+
+## CoreDNS в двух экземплярах
+
+k3s запускает CoreDNS в одном экземпляре. Если упадёт нода, на которой он живёт, в кластере пропадёт DNS, и ни один новый под не стартует: Payments.Api и Ledger.Service при старте резолвят `host.docker.internal`, `kafka` и `redis`. Вторая реплика — на другой ноде:
+```powershell
+kubectl -n kube-system scale deployment/coredns --replicas=2
+kubectl -n kube-system get pods -l k8s-app=kube-dns -o wide     # реплики должны быть на разных нодах
+```
+CoreDNS — системный компонент k3s, не часть `deploy/k8s`; после перезапуска сервера k3s может вернуть одну реплику — тогда команду повторить.
+

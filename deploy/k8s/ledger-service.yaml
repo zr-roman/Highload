@@ -6,6 +6,9 @@ metadata:
   name: ledger-service
   labels:
     app.kubernetes.io/name: ledger-service
+  annotations:
+    # Traefik gives up on a pod after 1 s without a connection, not 30 (traefik.yaml).
+    traefik.ingress.kubernetes.io/service.serverstransport: highload-fast-dial@kubernetescrd
 spec:
   selector:
     app.kubernetes.io/name: ledger-service
