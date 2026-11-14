@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Npgsql;
 using OpenTelemetry;
 using OpenTelemetry.Metrics;
@@ -36,6 +37,11 @@ public static class TelemetryExtensions
             .UseOtlpExporter();
 
         builder.Services.AddHealthChecks();
+        
+        // Kubernetes sends SIGTERM after the 5 s preStop pause and SIGKILL 35 s after the pause began:
+        // requests in flight and background services must stop within the 30 s left, with a margin.
+        builder.Services.Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromSeconds(25));
+
         return builder;
     }
 }

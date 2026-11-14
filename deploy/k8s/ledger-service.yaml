@@ -31,6 +31,9 @@ spec:
       labels:
         app.kubernetes.io/name: ledger-service
     spec:
+      # Counted from the start of preStop: 5 s of the pause, then up to 30 s for the app to stop (HostOptions.ShutdownTimeout
+      # is 25 s in Platform, a margin before SIGKILL).
+      terminationGracePeriodSeconds: 35
       containers:
         - name: ledger-service
           image: ledger-service:dev
@@ -81,6 +84,13 @@ spec:
               port: http
             periodSeconds: 10
             failureThreshold: 3
+          # Kubernetes removes the pod from the Service and sends SIGTERM at the same moment, but Traefik learns of the
+          # removal later and keeps sending requests for a while: the pod keeps serving them for 5 more seconds and
+          # gets SIGTERM only after that. The sleep action, not exec sleep: the chiseled image has no shell and no sleep.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
           resources:
             requests:
               cpu: 250m
