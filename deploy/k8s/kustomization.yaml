@@ -31,7 +31,7 @@ images:
   - name: payments-api
     newTag: d8882dc86ba0
   - name: ledger-service
-    newTag: dev
+    newTag: c1ae1c4b9a25
   - name: bank-emulator
     newTag: dev
   - name: antifraud
