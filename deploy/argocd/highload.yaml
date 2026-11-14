@@ -1,0 +1,37 @@
+# The stand in the cluster, synced by Argo CD from git: what is in deploy/k8s on main is what runs.
+# Applied once by hand; after that a change reaches the cluster by git push, not by kubectl apply:
+#   kubectl apply -f deploy/argocd/highload.yaml
+# Not in deploy/k8s on purpose: the application would then manage itself, and deleting it from git would delete it.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: highload
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/zr-roman/Highload.git
+    targetRevision: main
+    # A kustomization.yaml there: Argo CD runs kustomize itself, no Helm chart needed.
+    path: deploy/k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: highload
+  syncPolicy:
+    automated:
+      # Deleted from git, deleted from the cluster.
+      prune: true
+      # Changed in the cluster by hand (kubectl scale, edit), changed back to what git says.
+      selfHeal: true
+    syncOptions:
+      # Server-side apply: fields the API server fills in with defaults (the volumeClaimTemplates of the Kafka
+      # StatefulSet) do not show up as a difference, so the application does not stay OutOfSync forever.
+      - ServerSideApply=true
+  # The number of replicas of Payments.Api belongs to the HPA (hpa.yaml): the manifest has none, and a difference
+  # in it is not a reason to sync.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: payments-api
+      jsonPointers:
+        - /spec/replicas

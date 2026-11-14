@@ -43,7 +43,16 @@
    Copy-Item deploy\k8s\postgres.env.example deploy\k8s\postgres.env
    notepad deploy\k8s\postgres.env
    ```
-   Заменить `CHANGE_ME` в обеих строках. Из файла kustomize создаёт Secret `postgres-<хеш>`; сменился пароль — сменился хеш, и поды перезапускаются сами.
+   Заменить `CHANGE_ME` в обеих строках и создать из файла Secret:
+   ```powershell
+   kubectl create namespace highload
+   kubectl -n highload create secret generic postgres --from-env-file=deploy/k8s/postgres.env
+   ```
+   Secret создаётся руками, а не из `kustomization.yaml`: кластер синхронизирует из git Argo CD, а пароля в git нет. Сменился пароль — пересоздать Secret и перезапустить поды:
+   ```powershell
+   kubectl -n highload create secret generic postgres --from-env-file=deploy/k8s/postgres.env --dry-run=client -o yaml | kubectl apply -f -
+   kubectl -n highload rollout restart deployment/payments-api deployment/ledger-service
+   ```
 4. **Остановить стенд docker compose** — на два стенда сразу памяти не хватит:
    ```powershell
    docker compose down
