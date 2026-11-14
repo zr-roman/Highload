@@ -1,6 +1,6 @@
 # payments-platform
 
-Платёжный сервис на микросервисах — пет-проект о высокой нагрузке. Архитектура выведена из замеров на PostgreSQL: пять экспериментов, их цифры и выводы — в [docs/postgres-experiments.md](docs/postgres-experiments.md). Как этап 1 держит нагрузку и во что упирается — в [docs/load-testing.md](docs/load-testing.md).
+Платёжный сервис на микросервисах — пет-проект о высокой нагрузке. Архитектура выведена из замеров на PostgreSQL: пять экспериментов, их цифры и выводы — в [docs/postgres-experiments.md](docs/postgres-experiments.md). Как этап 1 держит нагрузку и во что упирается — в [docs/load-testing.md](docs/load-testing.md). Стенд в Kubernetes и выкатка через git — в [deploy/k8s/README.md](deploy/k8s/README.md) и [docs/gitops.md](docs/gitops.md).
 
 ## Этап 1: что уже работает
 
