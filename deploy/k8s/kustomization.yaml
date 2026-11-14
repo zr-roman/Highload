@@ -24,6 +24,19 @@ resources:
   - ingress.yaml
   - traefik.yaml
 
+# The version of each service's image. The manifests say <name>:dev; the tag here replaces dev. A release changes it
+# here and nowhere else (deploy/release.ps1): a new tag in git is what makes Argo CD roll the pods, since the same
+# tag rebuilt would look unchanged. The tag is the commit the image was built from.
+images:
+  - name: payments-api
+    newTag: dev
+  - name: ledger-service
+    newTag: dev
+  - name: bank-emulator
+    newTag: dev
+  - name: antifraud
+    newTag: dev
+
 # The Postgres password is not here: the cluster is synced from git by Argo CD (deploy/argocd), and the password
 # must not be in git. The Secret postgres is created once by hand from postgres.env (README, step 3): the Deployments
 # refer to it by name.

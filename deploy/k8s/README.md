@@ -94,14 +94,17 @@ k6 run -e BASE_URL=http://localhost:8080 -e RATE=200 -e DURATION=60s load/paymen
 psql -p 5433 -U postgres -c "SELECT DISTINCT client_addr, datname FROM pg_stat_activity WHERE datname IN ('payments','ledger')"
 ```
 
-## Пересборка сервиса
+## Выкатка новой версии
 
+Кластер синхронизирует из git Argo CD (`deploy/argocd/highload.yaml`), поэтому новая версия выкатывается через git, а не через `kubectl`:
 ```powershell
-docker build -t payments-api:dev -f src/Payments.Api/Dockerfile .
-k3d image import payments-api:dev -c highload
-kubectl -n highload rollout restart deployment/payments-api
+git commit -am "..."                                   # код сервиса закоммичен
+.\deploy\release.ps1 -Services payments-api             # сборка с тегом = коммит, импорт в ноды, тег в kustomization.yaml, push
+kubectl -n highload rollout status deployment/payments-api
 ```
-Тег тот же, поэтому Deployment сам не заметит новый образ — нужен `rollout restart`.
+Argo CD замечает новый тег в течение 3 минут, сразу — по кнопке Refresh. Откат — `git revert` коммита `Release: ...` и `git push`: тег возвращается к прошлому, а прошлый образ ещё лежит в нодах.
+
+Без скрипта, вручную — то же самое: `docker build -t payments-api:<тег>`, `k3d image import payments-api:<тег> -c highload`, тег в блок `images:` в `kustomization.yaml`, коммит, push.
 
 ## Удалить
 
