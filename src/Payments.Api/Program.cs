@@ -67,6 +67,9 @@ if (acquirer.Mode == AcquirerMode.Http)
 else
     builder.Services.AddSingleton<IAcquirer, FakeAcquirer>();
 
+builder.Services.AddHealthChecks()
+    .AddCheck<PostgresHealthCheck>("postgres", tags: [HealthCheckEndpoints.ReadyTag], timeout: TimeSpan.FromSeconds(2));
+
 var app = builder.Build();
 
 // From the content root, like appsettings.json. Not from AppContext.BaseDirectory: when the end-to-end tests host
@@ -84,6 +87,7 @@ app.Services.GetRequiredService<IConnectionMultiplexer>();
 app.Services.GetRequiredService<MerchantQuotas>();
 
 app.MapPaymentEndpoints();
-app.MapHealthChecks("/health");
+
+app.MapPlatformHealthChecks();
 
 app.Run();

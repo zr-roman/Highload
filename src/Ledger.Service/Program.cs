@@ -20,6 +20,9 @@ builder.Services.AddSingleton<LedgerQueries>();
 builder.Services.AddSingleton<LedgerMetrics>();
 builder.Services.AddHostedService<PaymentsConsumer>();
 
+builder.Services.AddHealthChecks()
+    .AddCheck<PostgresHealthCheck>("postgres", tags: [HealthCheckEndpoints.ReadyTag], timeout: TimeSpan.FromSeconds(2));
+
 var app = builder.Build();
 
 // From the content root, like appsettings.json. Not from AppContext.BaseDirectory: when the end-to-end tests host
@@ -41,6 +44,6 @@ app.MapGet("/balances/platform-fees", async (LedgerQueries queries, Cancellation
 app.MapGet("/invariants", async (LedgerQueries queries, CancellationToken ct) =>
     Results.Ok(await queries.CheckInvariantsAsync(ct)));
 
-app.MapHealthChecks("/health");
+app.MapPlatformHealthChecks();
 
 app.Run();

@@ -59,16 +59,29 @@ spec:
           ports:
             - name: http
               containerPort: 8080
-          # /health has no checks yet: it answers once the app has started, that is after the schema, the topic
-          # and the connection to Redis (Program.cs). Checks of the dependencies come with stage 2.
+          # startup: until the app has applied the schema, created the topic and connected to Redis (Program.cs),
+          # the other probes wait.
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          # readiness: Postgres only (Platform/HealthCheckEndpoints.cs): Redis has a local fallback and Kafka the outbox.
+          # While it fails the pod gets no requests but keeps running; three failures in a row, so one slow check
+          # under load does not take the pod out.
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health/ready
               port: http
             periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # liveness: the process answers, no dependency checks: with Postgres down it would restart every pod at once,
+          # and none could start again until Postgres came back.
           livenessProbe:
             httpGet:
-              path: /health
+              path: /health/live
               port: http
             periodSeconds: 10
             failureThreshold: 3

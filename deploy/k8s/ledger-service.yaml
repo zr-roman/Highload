@@ -54,16 +54,33 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+          # startup: until the app has applied the schema and created the topic (Program.cs),
+          # the other probes wait.
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          # readiness: Postgres only (Platform/HealthCheckEndpoints.cs): balances and invariants are read from it; with Kafka
+          # down the journal stops growing, but it can still be read.
+          # While it fails the pod gets no requests but keeps running; three failures in a row, so one slow check
+          # under load does not take the pod out.
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health/ready
               port: http
             periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # liveness: the process answers, no dependency checks: with Postgres down it would restart every pod at once,
+          # and none could start again until Postgres came back.
           livenessProbe:
             httpGet:
-              path: /health
+              path: /health/live
               port: http
             periodSeconds: 10
+            failureThreshold: 3
           resources:
             requests:
               cpu: 250m
