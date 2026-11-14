@@ -29,7 +29,7 @@ resources:
 # tag rebuilt would look unchanged. The tag is the commit the image was built from.
 images:
   - name: payments-api
-    newTag: dev
+    newTag: d8882dc86ba0
   - name: ledger-service
     newTag: dev
   - name: bank-emulator
