@@ -15,7 +15,7 @@ spec:
   minReplicas: 2
   # Each replica keeps 16 connections to Postgres open: the ceiling is set by the database, not by the nodes.
   # 4 replicas are 64 connections out of max_connections; a larger ceiling needs a smaller pool or PgBouncer.
-  maxReplicas: 4
+  maxReplicas: 3
   metrics:
     # Utilization is a share of the CPU request of the pod (250m), not of a core: 70 % is 175m per pod.
     # An idle replica takes about 15m, one under 100 payments a second several times the target.

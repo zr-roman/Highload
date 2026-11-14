@@ -11,10 +11,15 @@ import (
 const (
 	StatusApproved = "approved"
 	StatusDeclined = "declined"
+	StatusVoided   = "voided"
 )
 
 // ErrConflict: the payment id was already used for a payment with other details.
-var ErrConflict = errors.New("payment id already used with different payment details")
+var (
+	ErrConflict    = errors.New("payment id already used with different payment details")
+	ErrNotFound    = errors.New("решения нет")
+	ErrNotApproved = errors.New("платёж отклонён, отменять нечего")
+)
 
 // AuthorizationRequest is what Payments.Api asks the bank.
 type AuthorizationRequest struct {
@@ -26,10 +31,11 @@ type AuthorizationRequest struct {
 
 // Authorization is the bank's decision. The same payment id always gets the same decision.
 type Authorization struct {
-	PaymentID         string    `json:"paymentId"`
-	Status            string    `json:"status"`                      // StatusApproved or StatusDeclined
-	AuthorizationCode string    `json:"authorizationCode,omitempty"` // six digits, only for approved payments
-	DecidedAt         time.Time `json:"decidedAt"`
+	PaymentID         string     `json:"paymentId"`
+	Status            string     `json:"status"`                      // StatusApproved or StatusDeclined
+	AuthorizationCode string     `json:"authorizationCode,omitempty"` // six digits, only for approved payments
+	DecidedAt         time.Time  `json:"decidedAt"`
+	VoidedAt          *time.Time `json:"voidedAt,omitempty"` // only for voided payments
 }
 
 // decision is what the bank remembers about a payment: the request, to detect conflicts, and the answer.
@@ -83,6 +89,32 @@ func (b *Bank) Authorize(req AuthorizationRequest) (Authorization, error) {
 	b.decisions[req.PaymentID] = decision{request: req, authorization: auth}
 
 	return auth, nil
+}
+
+func (b *Bank) Void(paymentID string) (Authorization, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	d, ok := b.decisions[paymentID]
+
+	if !ok {
+		return Authorization{}, ErrNotFound
+	}
+
+	switch d.authorization.Status {
+	case StatusVoided:
+		return d.authorization, nil
+	case StatusDeclined:
+		return Authorization{}, ErrNotApproved
+	}
+
+	// Status = Approved: keep the code and the time of the decision, add the time of the void.
+	now := time.Now().UTC()
+	d.authorization.VoidedAt = &now
+	d.authorization.Status = StatusVoided
+	b.decisions[paymentID] = decision{request: d.request, authorization: d.authorization}
+
+	return d.authorization, nil
 }
 
 // Get returns the decision for a payment id, if the bank has made one.
