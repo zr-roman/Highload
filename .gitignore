@@ -16,3 +16,5 @@ __pycache__/
 .ruff_cache/
 # Postgres password for the k8s stand: copy deploy/k8s/postgres.env.example
 deploy/k8s/postgres.env
+# Timelines of the node failure experiments (load/node-failure.ps1): the numbers worth keeping go into docs/
+*.log
