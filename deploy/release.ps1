@@ -48,15 +48,16 @@ $tag = (git rev-parse --short=12 HEAD).Trim()
 Write-Host "Release $($Services -join ', ') as $tag"
 
 # 2. Build. The layers of an unchanged service come from the cache: only the tag is new.
-$images = foreach ($service in $Services) {
+# @(...): with one service the loop yields a single string, and @images would then pass it to k3d letter by letter.
+$images = @(foreach ($service in $Services) {
     $image = "${service}:$tag"
     # Out-Host: the build log goes to the screen, not into $images (in PowerShell all output of the loop is its result).
     Invoke-Checked "docker build $image" { docker build -t $image -f $catalog[$service].Dockerfile . | Out-Host }
     $image
-}
+})
 
 # 3. Into the nodes before the tag reaches git: once Argo CD sees the tag, the pods must find the image at once.
-Invoke-Checked "k3d image import" { k3d image import @images -c $Cluster | Out-Host }
+Invoke-Checked "k3d image import" { k3d image import $images -c $Cluster | Out-Host }
 
 # 4. The tag in kustomization.yaml: the newTag line right after "- name: <service>" in the images block.
 $path = "deploy/k8s/kustomization.yaml"
