@@ -1,16 +1,21 @@
-# A node of the k3d cluster goes down under load: what k6 sees, how many attempts Traefik made per status code,
-# and when Kubernetes noticed the node and moved the pod.
+# A node of the k3d cluster goes away under load: what k6 sees, how many attempts Traefik made per status code,
+# and when Kubernetes moved the pod.
 #
-#   .\load\node-failure.ps1                                  # agent-1, 200 payments a second, log node-failure.log
+#   .\load\node-failure.ps1                                  # agent-1 crashes, 200 payments a second
 #   .\load\node-failure.ps1 -Log node-failure-4.log
+#   .\load\node-failure.ps1 -Mode Drain -Log drain.log       # planned maintenance instead of a crash
 #
-# Before the run it puts one replica of Payments.Api on the node that goes down, if none is there.
-# The node is stopped 30 s into the load and started again 90 s later; the load lasts 150 s.
+# Before the run it puts one replica of Payments.Api on that node, if none is there. The load lasts 150 s.
+#   Stop:  the node's container is stopped 30 s into the load and started again 90 s later, as if the machine died.
+#   Drain: kubectl drain 30 s into the load: pods are evicted one by one, gracefully and within the PodDisruptionBudget;
+#          the node is uncordoned 90 s later.
 
 param(
     [string]$Node = "k3d-highload-agent-1",
     [int]$Rate = 200,
-    [string]$Log = "node-failure.log"
+    [string]$Log = "node-failure.log",
+    [ValidateSet("Stop", "Drain")]
+    [string]$Mode = "Stop"
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,10 +69,20 @@ try {
     $before = Get-TraefikCounts
 
     # 3. The node goes down 30 s into the load and comes back 90 s later; the watch logs nodes and pods every 5 s.
-    $outage = Start-Job -ArgumentList $Node {
-        param($n)
-        Start-Sleep 30; docker stop $n | Out-Null; "stopped  $(Get-Date -Format HH:mm:ss)"
-        Start-Sleep 90; docker start $n | Out-Null; "started  $(Get-Date -Format HH:mm:ss)"
+    $outage = Start-Job -ArgumentList $Node, $Mode {
+        param($n, $mode)
+        Start-Sleep 30
+        if ($mode -eq "Stop") {
+            docker stop $n | Out-Null; "stopped  $(Get-Date -Format HH:mm:ss)"
+            Start-Sleep 90
+            docker start $n | Out-Null; "started  $(Get-Date -Format HH:mm:ss)"
+        } else {
+            "drain    $(Get-Date -Format HH:mm:ss)"
+            kubectl drain $n --ignore-daemonsets --delete-emptydir-data --timeout=90s 2>&1
+            "drained  $(Get-Date -Format HH:mm:ss)"
+            Start-Sleep 60
+            kubectl uncordon $n | Out-Null; "uncordoned $(Get-Date -Format HH:mm:ss)"
+        }
     }
     $watch = Start-Job -ArgumentList $ns, $app {
         param($ns, $app)
@@ -87,11 +102,16 @@ try {
     Remove-Job $watch
 
     # 4. Attempts per status code during the run.
-    $after = Get-TraefikCounts
-    "Traefik, attempts to Payments.Api during the run:" | Out-Host
-    $after.Keys | Sort-Object | ForEach-Object {
-        [pscustomobject]@{ Code = $_; Attempts = $after[$_] - ($(if ($before.ContainsKey($_)) { $before[$_] } else { 0 })) }
-    } | Where-Object Attempts -gt 0 | Format-Table -AutoSize | Out-Host
+    # If Traefik itself was on the node, its pod is gone and the port-forward with it: no counters for this run.
+    try { $after = Get-TraefikCounts } catch { $after = $null }
+    if ($after) {
+        "Traefik, attempts to Payments.Api during the run:" | Out-Host
+        $after.Keys | Sort-Object | ForEach-Object {
+            [pscustomobject]@{ Code = $_; Attempts = $after[$_] - ($(if ($before.ContainsKey($_)) { $before[$_] } else { 0 })) }
+        } | Where-Object Attempts -gt 0 | Format-Table -AutoSize | Out-Host
+    } else {
+        "Traefik's counters are not available: its pod was restarted during the run." | Out-Host
+    }
     "Timeline: $Log" | Out-Host
 } finally {
     Stop-Job $metrics; Remove-Job $metrics
