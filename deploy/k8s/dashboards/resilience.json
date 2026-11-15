@@ -109,12 +109,12 @@
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
-            "fillOpacity": 25,
+            "fillOpacity": 10,
             "showPoints": "never",
             "spanNulls": false,
             "axisLabel": "",
             "stacking": {
-              "mode": "normal",
+              "mode": "none",
               "group": "A"
             }
           }
@@ -653,6 +653,10 @@
                   "mode": "fixed",
                   "fixedColor": "text"
                 }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
               }
             ]
           },
@@ -678,6 +682,10 @@
                   "mode": "fixed",
                   "fixedColor": "text"
                 }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
               }
             ]
           },
@@ -810,6 +818,10 @@
                   "mode": "fixed",
                   "fixedColor": "text"
                 }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
               }
             ]
           }

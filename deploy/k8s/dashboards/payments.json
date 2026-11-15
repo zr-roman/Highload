@@ -109,12 +109,12 @@
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
-            "fillOpacity": 25,
+            "fillOpacity": 10,
             "showPoints": "never",
             "spanNulls": false,
             "axisLabel": "",
             "stacking": {
-              "mode": "normal",
+              "mode": "none",
               "group": "A"
             }
           }
@@ -403,7 +403,7 @@
     {
       "type": "timeseries",
       "title": "Исходы платежей",
-      "description": "Решения по платежам, в секунду: из счётчиков Payments.Api.",
+      "description": "Решения по платежам, в секунду: из счётчиков Payments.Api. «Отклонены» — не только отказ банка: сюда же попадает платёж с неизвестным исходом (202), по которому восстановление не нашло решения банка.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -447,7 +447,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "отклонены банком"
+              "options": "отклонены"
             },
             "properties": [
               {
@@ -520,7 +520,7 @@
             "uid": "${datasource}"
           },
           "expr": "sum(rate(payments_declined_total[$__rate_interval]))",
-          "legendFormat": "отклонены банком",
+          "legendFormat": "отклонены",
           "range": true
         },
         {
@@ -613,6 +613,10 @@
                   "mode": "fixed",
                   "fixedColor": "text"
                 }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
               }
             ]
           },
@@ -638,6 +642,10 @@
                   "mode": "fixed",
                   "fixedColor": "text"
                 }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
               }
             ]
           }
