@@ -28,6 +28,7 @@ resources:
   - postgres.yaml
   - backup-store.yaml
   - backup-store-sealed.yaml
+  - backup-bucket.yaml
   - backups.yaml
   - network-policies.yaml
 

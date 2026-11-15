@@ -1,0 +1,73 @@
+# Creates the bucket pg-backups in the object store (backup-store.yaml) if it is not there yet. The archiver of WAL
+# does not create it: it writes into the bucket and fails with NoSuchBucket, and a base backup then fails too, since it
+# needs the archive working. Without this a new cluster would need the bucket made by hand.
+# An Argo CD hook: runs on every sync, deleted when it succeeds. Idempotent: an existing bucket is left as it is.
+# The image of the plugin's sidecar: it has the Python and boto3 that barman-cloud itself runs on.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: backup-bucket
+  labels:
+    app.kubernetes.io/name: backup-bucket
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: backup-bucket
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: create
+          # The version of the plugin in deploy/argocd/barman-cloud.yaml.
+          image: ghcr.io/cloudnative-pg/plugin-barman-cloud-sidecar:v0.16.0
+          command:
+            - python3
+            - -c
+            - |
+              import time, boto3, botocore
+              s3 = boto3.client("s3", endpoint_url="http://backup-store:9000", region_name="us-east-1")
+              for attempt in range(30):  # RustFS may still be starting
+                  try:
+                      s3.create_bucket(Bucket="pg-backups")
+                      print("pg-backups created")
+                      break
+                  except (s3.exceptions.BucketAlreadyOwnedByYou, s3.exceptions.BucketAlreadyExists):
+                      print("pg-backups exists")
+                      break
+                  except botocore.exceptions.EndpointConnectionError as e:
+                      print(e)
+                      time.sleep(5)
+              else:
+                  raise SystemExit("the object store did not answer")
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: backup-store
+                  key: ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-store
+                  key: ACCESS_SECRET_KEY
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
