@@ -315,6 +315,7 @@
         "defaults": {
           "unit": "ops",
           "min": 0,
+          "noValue": "0",
           "color": {
             "mode": "palette-classic"
           },
@@ -538,6 +539,7 @@
         "defaults": {
           "unit": "short",
           "min": 0,
+          "noValue": "0",
           "color": {
             "mode": "palette-classic"
           },
