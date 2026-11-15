@@ -98,7 +98,7 @@ spec:
       containers:
         - name: otel-collector
           # The core distribution: OTLP in and out, batch, memory_limiter, health_check are all in it.
-          image: otel/opentelemetry-collector:0.157.0
+          image: otel/opentelemetry-collector:0.165.0
           args: ["--config=/conf/config.yaml"]
           ports:
             - name: otlp-grpc

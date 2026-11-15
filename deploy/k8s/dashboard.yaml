@@ -45,7 +45,7 @@ spec:
             sizeLimit: 64Mi
       containers:
         - name: dashboard
-          image: mcr.microsoft.com/dotnet/aspire-dashboard:9.0
+          image: mcr.microsoft.com/dotnet/aspire-dashboard:13.6
           env:
             - name: DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS
               value: "true"
