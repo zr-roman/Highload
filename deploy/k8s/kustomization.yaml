@@ -45,9 +45,9 @@ configMapGenerator:
 # tag rebuilt would look unchanged. The tag is the commit the image was built from.
 images:
   - name: payments-api
-    newTag: d37f1a118c3b
+    newTag: b61eef536ff9
   - name: ledger-service
-    newTag: d37f1a118c3b
+    newTag: b61eef536ff9
   - name: bank-emulator
     newTag: dev
   - name: antifraud
