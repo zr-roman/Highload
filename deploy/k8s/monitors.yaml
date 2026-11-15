@@ -1,0 +1,33 @@
+# What Prometheus scrapes besides the cluster itself. The monitors live in namespace highload with the rest of the
+# stand (kustomization.yaml moves every resource there), and reach into other namespaces with namespaceSelector.
+# Prometheus picks them up from any namespace (serviceMonitorSelectorNilUsesHelmValues in deploy/monitoring/values.yaml).
+
+# Traefik, the entry point of the stand: requests and retries by status code per service, the 504 of a dead pod.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: traefik
+spec:
+  namespaceSelector:
+    matchNames: [kube-system]
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: traefik
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 15s
+---
+# Argo CD: syncs, their results and how long they take, the state of the applications.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: argocd
+spec:
+  namespaceSelector:
+    matchNames: [argocd]
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: argocd
+  endpoints:
+    - port: metrics
+      interval: 30s

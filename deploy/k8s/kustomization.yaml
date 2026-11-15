@@ -23,6 +23,8 @@ resources:
   - ledger-service.yaml
   - ingress.yaml
   - traefik.yaml
+  - otel-collector.yaml
+  - monitors.yaml
 
 # The version of each service's image. The manifests say <name>:dev; the tag here replaces dev. A release changes it
 # here and nowhere else (deploy/release.ps1): a new tag in git is what makes Argo CD roll the pods, since the same

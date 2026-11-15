@@ -75,8 +75,13 @@ spec:
               value: redis:6379,connectTimeout=2000,syncTimeout=100,asyncTimeout=100
             - name: Acquirer__BaseAddress
               value: http://bank-emulator:5300/
+            # To the OpenTelemetry Collector (otel-collector.yaml), which sends metrics on to Prometheus and everything
+            # to the Aspire dashboard.
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: http://dashboard:18889
+              value: http://otel-collector:4317
+            # Metrics every 15 s, as often as Prometheus scrapes the rest; the default of 60 s draws one point a minute.
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "15000"
             # 1 % of traces, as the load matrix runs the services (load/Matrix/Stand.cs): a trace of every request
             # is thousands of spans a second for the dashboard on the same laptop, and it shows in the latency.
             - name: OTEL_TRACES_SAMPLER

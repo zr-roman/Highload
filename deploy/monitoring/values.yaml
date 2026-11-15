@@ -25,6 +25,11 @@ kubeEtcd:
 prometheus:
   prometheusSpec:
     # Enough to look at a run and compare it with the previous one; the disk of the laptop is tight.
+    # Metrics of the services arrive pushed over OTLP from the OpenTelemetry Collector (deploy/k8s/otel-collector.yaml),
+    # not scraped. OTLP batches can arrive a little late: without the out-of-order window Prometheus drops such points.
+    enableOTLPReceiver: true
+    tsdb:
+      outOfOrderTimeWindow: 5m
     retention: 12h
     retentionSize: 1GB
     scrapeInterval: 15s
