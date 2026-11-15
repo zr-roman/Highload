@@ -81,8 +81,12 @@ spec:
                 secretKeyRef:
                   name: pg-app
                   key: password
+            # Timeout and Command Timeout: client-side limits of Npgsql, in seconds. When the primary's node dies, its
+            # packets are dropped, not refused: without them a query on an open connection waits 30 s (the default
+            # Command Timeout), and opening one waits 15 s; statement_timeout cannot help, the server is gone. With them
+            # a request fails within seconds and frees its connection (docs/postgres-failover.md, «Опыт 3»).
             - name: ConnectionStrings__Payments
-              value: Host=pg-rw;Port=5432;Database=payments;Username=app;Password=$(PG_PASSWORD);Maximum Pool Size=16;Minimum Pool Size=16;Options=-c idle_in_transaction_session_timeout=15s -c statement_timeout=5s
+              value: Host=pg-rw;Port=5432;Database=payments;Username=app;Password=$(PG_PASSWORD);Maximum Pool Size=16;Minimum Pool Size=16;Timeout=3;Command Timeout=5;Options=-c idle_in_transaction_session_timeout=15s -c statement_timeout=5s
             - name: ConnectionStrings__Kafka
               value: kafka:9092
             - name: ConnectionStrings__Redis
@@ -126,12 +130,13 @@ spec:
             failureThreshold: 30
           # readiness: Postgres only (Platform/HealthCheckEndpoints.cs): Redis has a local fallback and Kafka the outbox.
           # While it fails the pod gets no requests but keeps running; three failures in a row, so one slow check
-          # under load does not take the pod out.
+          # under load does not take the pod out. Every 2 s, not 5: after a failover of Postgres the pod is back in
+          # the balancer within ~2 s of the new primary instead of ~5-7 (docs/postgres-failover.md, «Опыт 3»).
           readinessProbe:
             httpGet:
               path: /health/ready
               port: http
-            periodSeconds: 5
+            periodSeconds: 2
             timeoutSeconds: 3
             failureThreshold: 3
           # liveness: the process answers, no dependency checks: with Postgres down it would restart every pod at once,
