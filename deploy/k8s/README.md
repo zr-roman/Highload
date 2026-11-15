@@ -19,7 +19,7 @@
 | `monitors.yaml` | что ещё собирает Prometheus: Traefik и Argo CD | — |
 | `alerts.yaml` | правила алертов Prometheus | — |
 | `postgres-sealed.yaml` | строки подключения к Postgres с паролем, зашифрованные (SealedSecret) | — |
-| `network-policies.yaml` | кто к кому может подключаться внутри `highload`: всё закрыто, открыто только нужное | — |
+| `network-policies.yaml` | кто к кому может подключаться внутри `highload`: всё закрыто, открыто только нужное ([docs/security.md](../../docs/security.md)) | — |
 | `pdb.yaml` | PodDisruptionBudget Payments.Api: при `kubectl drain` одна реплика всегда в работе | — |
 
 ## Запуск
