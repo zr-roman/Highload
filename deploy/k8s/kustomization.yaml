@@ -26,6 +26,20 @@ resources:
   - otel-collector.yaml
   - monitors.yaml
 
+# Grafana dashboards of the stand, from the JSON files in dashboards/. The Grafana sidecar picks up any ConfigMap
+# labelled grafana_dashboard: "1" in any namespace (deploy/monitoring/values.yaml) and loads it without a restart.
+# A dashboard changed in the Grafana UI cannot be saved there: export its JSON into dashboards/ and commit it.
+configMapGenerator:
+  - name: grafana-dashboards
+    files:
+      - dashboards/payments.json
+      - dashboards/resilience.json
+    options:
+      # A fixed name: nothing refers to it, and a new name on every change would only leave old ConfigMaps behind.
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"
+
 # The version of each service's image. The manifests say <name>:dev; the tag here replaces dev. A release changes it
 # here and nowhere else (deploy/release.ps1): a new tag in git is what makes Argo CD roll the pods, since the same
 # tag rebuilt would look unchanged. The tag is the commit the image was built from.

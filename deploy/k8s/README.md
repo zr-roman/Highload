@@ -15,6 +15,7 @@
 | `traefik.yaml` | Traefik: таймаут подключения 1 с вместо 30 и повтор запроса на другом поде | — |
 | `hpa.yaml` | HorizontalPodAutoscaler Payments.Api: 2–4 реплики по CPU | — |
 | `otel-collector.yaml` | OpenTelemetry Collector: телеметрия сервисов — метрики в Prometheus, всё в Aspire dashboard | `otel-collector:4317` |
+| `dashboards/` | дашборды Grafana «Платежи» и «Устойчивость»: JSON, из которого kustomize делает ConfigMap | — |
 | `monitors.yaml` | что ещё собирает Prometheus: Traefik и Argo CD | — |
 | `pdb.yaml` | PodDisruptionBudget Payments.Api: при `kubectl drain` одна реплика всегда в работе | — |
 
@@ -132,6 +133,8 @@ kubectl create namespace monitoring
 kubectl -n monitoring create secret generic grafana-admin --from-literal=admin-user=admin --from-literal=admin-password='<пароль>'
 kubectl apply -f deploy/argocd/monitoring.yaml
 ```
+Дашборды стенда — «Highload · Платежи» и «Highload · Устойчивость» — лежат в `deploy/k8s/dashboards/` и попадают в Grafana сами. В интерфейсе Grafana их можно менять, но не сохранять: изменённый дашборд — Export → JSON → файл в `dashboards/` → коммит.
+
 Grafana наружу не опубликована:
 ```powershell
 kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80     # http://localhost:3000, admin и пароль из Secret
