@@ -38,6 +38,13 @@ prometheus:
     serviceMonitorSelectorNilUsesHelmValues: false
     podMonitorSelectorNilUsesHelmValues: false
     ruleSelectorNilUsesHelmValues: false
+    # The load experiments stop or drain an agent node (load/node-failure.ps1). Prometheus on that node would leave a
+    # hole in the graphs exactly where the failure is, so it stays on the server node: without that node the cluster
+    # has no API, so no experiment takes it down. kube-state-metrics, Grafana and the OpenTelemetry Collector
+    # (deploy/k8s/otel-collector.yaml) live there too. In production: nodes of their own for monitoring, or Prometheus
+    # in HA.
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: "true"
     resources:
       requests:
         cpu: 100m
@@ -71,6 +78,9 @@ grafana:
       env:
         REQ_BASIC_AUTH_ENCODING: utf-8
   defaultDashboardsTimezone: browser
+  # On the server node, like Prometheus (prometheusSpec.nodeSelector).
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: "true"
   resources:
     requests:
       cpu: 50m
@@ -87,6 +97,9 @@ prometheusOperator:
       memory: 256Mi
 
 kube-state-metrics:
+  # On the server node, like Prometheus (prometheusSpec.nodeSelector): the panels of nodes, replicas and HPA come from it.
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: "true"
   resources:
     requests:
       cpu: 20m

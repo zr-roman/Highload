@@ -86,6 +86,10 @@ spec:
         # Bump the number together with any change of the ConfigMap above.
         config-version: "1"
     spec:
+      # On the server node, with Prometheus: an experiment that stops an agent node must not take the metrics with it
+      # (deploy/monitoring/values.yaml, prometheusSpec.nodeSelector).
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: "true"
       containers:
         - name: otel-collector
           # The core distribution: OTLP in and out, batch, memory_limiter, health_check are all in it.
