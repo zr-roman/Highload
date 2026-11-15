@@ -41,6 +41,13 @@ prometheus:
         memory: 1500Mi
 
 grafana:
+  # The admin password from a Secret created by hand (deploy/k8s/README.md), not from the chart: the chart generates
+  # a random one when none is given, and Argo CD renders the chart again for every new commit on main, so the password
+  # would change, and Grafana would roll, with every push.
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
   # Dashboards come from git as ConfigMaps (label grafana_dashboard: "1"), so nothing in Grafana needs a disk.
   persistence:
     enabled: false

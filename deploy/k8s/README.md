@@ -122,3 +122,16 @@ kubectl -n kube-system get pods -l k8s-app=kube-dns -o wide     # реплики
 ```
 CoreDNS — системный компонент k3s, не часть `deploy/k8s`; после перезапуска сервера k3s может вернуть одну реплику — тогда команду повторить.
 
+## Мониторинг
+
+Prometheus и Grafana (чарт kube-prometheus-stack) ставит Argo CD: `deploy/argocd/monitoring.yaml`, настройки — `deploy/monitoring/values.yaml`. Пароль администратора Grafana — в Secret, который создаётся руками до установки, как пароль Postgres:
+```powershell
+kubectl create namespace monitoring
+kubectl -n monitoring create secret generic grafana-admin --from-literal=admin-user=admin --from-literal=admin-password='<пароль>'
+kubectl apply -f deploy/argocd/monitoring.yaml
+```
+Grafana наружу не опубликована:
+```powershell
+kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80     # http://localhost:3000, admin и пароль из Secret
+```
+
