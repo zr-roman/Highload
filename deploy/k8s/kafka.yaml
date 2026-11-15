@@ -62,7 +62,8 @@ spec:
     metadataVersion: 4.3-IV0
     listeners:
       # Plain text inside the cluster, as before. Strimzi makes a NetworkPolicy for every listener; the peers below
-      # narrow it to the two services (docs/security.md).
+      # narrow it to the two services (docs/security.md), and to the brokers themselves: the Kafka tools run in a
+      # broker's pod (kafka-topics.sh, kafka-consumer-groups.sh) reach the other brokers through this listener.
       - name: plain
         port: 9092
         type: internal
@@ -73,6 +74,10 @@ spec:
                 - key: app.kubernetes.io/name
                   operator: In
                   values: [payments-api, ledger-service]
+          - podSelector:
+              matchLabels:
+                strimzi.io/cluster: kafka
+                strimzi.io/pool-name: broker
     config:
       default.replication.factor: 3
       min.insync.replicas: 2
