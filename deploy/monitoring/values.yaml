@@ -57,9 +57,19 @@ grafana:
   persistence:
     enabled: false
   sidecar:
+    # The sidecars that collect dashboards and data sources ask Grafana to reload them after each change, signing the
+    # request with the admin login from grafana-admin. They encode it in Latin-1 by default, so a password with
+    # non-Latin letters (Cyrillic, say) breaks the request with UnicodeEncodeError; Grafana expects UTF-8 there.
+    # Without the reload a changed dashboard still shows up within 30 seconds, when Grafana rescans the folder, but a
+    # data source would not: Grafana reads data sources only at startup and on reload.
     dashboards:
       # The dashboards of the stand live in deploy/k8s, in namespace highload.
       searchNamespace: ALL
+      env:
+        REQ_BASIC_AUTH_ENCODING: utf-8
+    datasources:
+      env:
+        REQ_BASIC_AUTH_ENCODING: utf-8
   defaultDashboardsTimezone: browser
   resources:
     requests:
