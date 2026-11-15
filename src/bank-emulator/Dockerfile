@@ -2,7 +2,7 @@
 #   docker build -t bank-emulator:dev -f src/bank-emulator/Dockerfile .
 
 # Alpine is enough to build: CGO is off, the binary needs no C library.
-FROM golang:1.24-alpine AS build
+FROM golang:1.25-alpine AS build
 WORKDIR /src
 COPY src/bank-emulator/go.mod ./
 RUN go mod download
