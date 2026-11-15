@@ -143,18 +143,25 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: main
+          fetch-depth: 0 # deploy/ci-release.py compares the new commit with the commit of the current image
       - name: Commit the new tags
         run: |
           tag="${GITHUB_SHA::12}"
-          python3 deploy/ci-release.py apply "$tag" ${{ needs.plan.outputs.services }}
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           services="${{ needs.plan.outputs.services }}"
-          git commit -m "Release: ${services// /, } $tag (CI)" -- deploy/k8s/kustomization.yaml
-          # Someone may have pushed in the meantime: put the release on top and try again.
+          # The tags are written onto the latest main, again on every attempt: someone, or a run of a newer commit,
+          # may have pushed in the meantime. ci-release.py leaves a service alone if its current image is from a newer
+          # commit than this run's, so a run that finishes late never rolls an image back.
           # A push made with GITHUB_TOKEN starts no new workflow run, so the release does not trigger CI again.
           for attempt in 1 2 3; do
+            git fetch origin main && git reset --hard origin/main
+            python3 deploy/ci-release.py apply "$tag" $services
+            if git diff --quiet -- deploy/k8s/kustomization.yaml; then
+              echo "Nothing to release: the images are from this commit or a newer one"
+              exit 0
+            fi
+            git commit -m "Release: ${services// /, } $tag (CI)" -- deploy/k8s/kustomization.yaml
             git push && exit 0
-            git pull --rebase origin main
           done
           exit 1

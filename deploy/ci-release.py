@@ -30,9 +30,9 @@ CATALOG = {
 
 # An entry of the images block: "- name: <service>", then newTag, then newName if the image is in the registry.
 ENTRY = (
-    r"^(?P<indent>[ \t]*)- name: {name}[ \t]*\n"
-    r"(?P<inner>[ \t]*)newTag:[ \t]*(?P<tag>\S+)[ \t]*"
-    r"(?:\n[ \t]*newName:[ \t]*\S+[ \t]*)?$"
+    r"^(?P<indent>[ \t]*)- name: {name}[ \t]*\r?\n"
+    r"(?P<inner>[ \t]*)newTag:[ \t]*(?P<tag>\S+)"
+    r"(?:[ \t]*\r?\n[ \t]*newName:[ \t]*\S+)?"
 )
 
 
@@ -77,15 +77,33 @@ def plan() -> None:
         output.write(f"services={' '.join(item['service'] for item in include)}\n")
 
 
+def is_older(tag: str, current: str) -> bool:
+    """Whether the commit of tag is not a descendant of the commit of the current image: a run of an older commit
+    that finished after a newer one. Runs of four merges a few seconds apart released in reverse order once: the last
+    tag written was the oldest commit, and the newest build was silently replaced by an older one."""
+    current_commit = built_from(current)
+    if current_commit is None:
+        return False  # dev: not a release yet, anything is newer
+    new_commit = built_from(tag)
+    if new_commit is None:
+        sys.exit(f"{tag} is not a commit of this repository")
+    return subprocess.run(["git", "merge-base", "--is-ancestor", current_commit, new_commit]).returncode != 0
+
+
 def apply(tag: str, services: list[str]) -> None:
     text = read()
     for service in services:
         pattern = entry(service)
-        if not pattern.search(text):
+        match = pattern.search(text)
+        if not match:
             sys.exit(f"No images entry for {service} in {KUSTOMIZATION}")
+        if is_older(tag, match["tag"]):
+            print(f"{service}: {match['tag']} is newer than {tag}, left as it is", file=sys.stderr)
+            continue
+        nl = "\r\n" if "\r\n" in text else "\n"  # CRLF in a Windows working copy, LF in CI
         text = pattern.sub(
             lambda m, s=service: (
-                f"{m['indent']}- name: {s}\n{m['inner']}newTag: {tag}\n{m['inner']}newName: {REGISTRY}/{s}"
+                f"{m['indent']}- name: {s}{nl}{m['inner']}newTag: {tag}{nl}{m['inner']}newName: {REGISTRY}/{s}"
             ),
             text,
             count=1,
