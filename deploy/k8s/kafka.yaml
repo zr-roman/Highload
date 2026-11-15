@@ -36,6 +36,14 @@ spec:
       # Without this Kubernetes adds KAFKA_PORT, KAFKA_SERVICE_HOST and the like for the Service named kafka,
       # and the image turns every KAFKA_* variable into a broker setting.
       enableServiceLinks: false
+      # Restricted, as the Pod Security Standard of the namespace demands (namespace.yaml, docs/security.md).
+      # appuser of the image, the owner of the files on the data volume.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: kafka
           # Not 4.0.0: see docker-compose.yml (KAFKA-19888).
@@ -88,6 +96,13 @@ spec:
             tcpSocket:
               port: broker
             periodSeconds: 5
+          # Restricted (docs/security.md): the process cannot gain privileges beyond those it starts with.
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The image writes its broker config into /opt/kafka/config at start: the root file system stays writable.
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: [ALL]
           resources:
             requests:
               cpu: 250m

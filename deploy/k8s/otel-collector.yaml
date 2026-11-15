@@ -90,6 +90,11 @@ spec:
       # (deploy/monitoring/values.yaml, prometheusSpec.nodeSelector).
       nodeSelector:
         node-role.kubernetes.io/control-plane: "true"
+      # Restricted, as the Pod Security Standard of the namespace demands (namespace.yaml, docs/security.md).
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: otel-collector
           # The core distribution: OTLP in and out, batch, memory_limiter, health_check are all in it.
@@ -112,6 +117,12 @@ spec:
               path: /
               port: health
             periodSeconds: 10
+          # Restricted (docs/security.md): the process cannot gain privileges beyond those it starts with.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           resources:
             requests:
               cpu: 50m

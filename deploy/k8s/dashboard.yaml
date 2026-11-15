@@ -32,6 +32,17 @@ spec:
       labels:
         app.kubernetes.io/name: dashboard
     spec:
+      # Restricted, as the Pod Security Standard of the namespace demands (namespace.yaml, docs/security.md).
+      # The image names its user (app, uid 1654 in .NET images), Kubernetes needs the number.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1654
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
       containers:
         - name: dashboard
           image: mcr.microsoft.com/dotnet/aspire-dashboard:9.0
@@ -43,6 +54,16 @@ spec:
               containerPort: 18888
             - name: otlp-grpc
               containerPort: 18889
+          # Restricted (docs/security.md): the process cannot gain privileges beyond those it starts with.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          # The one writable place: /tmp, for the runtime's own files (.NET diagnostics, Python temp files).
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           resources:
             requests:
               cpu: 50m

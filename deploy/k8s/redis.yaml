@@ -29,6 +29,15 @@ spec:
       labels:
         app.kubernetes.io/name: redis
     spec:
+      # Restricted, as the Pod Security Standard of the namespace demands (namespace.yaml, docs/security.md).
+      # The image starts as root and drops to user redis (999) itself; here it starts as redis right away.
+      # With --save "" Redis writes nothing to disk, so the root file system stays read-only.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: redis
           image: redis:7.4-alpine
@@ -40,6 +49,12 @@ spec:
             tcpSocket:
               port: redis
             periodSeconds: 5
+          # Restricted (docs/security.md): the process cannot gain privileges beyond those it starts with.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           resources:
             requests:
               cpu: 50m

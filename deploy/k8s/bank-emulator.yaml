@@ -31,6 +31,11 @@ spec:
       labels:
         app.kubernetes.io/name: bank-emulator
     spec:
+      # Restricted, as the Pod Security Standard of the namespace demands (namespace.yaml, docs/security.md).
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: bank-emulator
           # Built locally and imported into the nodes (k3d image import): IfNotPresent, never pulled.
@@ -52,6 +57,12 @@ spec:
               path: /healthz
               port: http
             periodSeconds: 10
+          # Restricted (docs/security.md): the process cannot gain privileges beyond those it starts with.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           resources:
             requests:
               cpu: 100m

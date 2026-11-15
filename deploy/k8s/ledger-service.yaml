@@ -37,6 +37,15 @@ spec:
       # Counted from the start of preStop: 5 s of the pause, then up to 30 s for the app to stop (HostOptions.ShutdownTimeout
       # is 25 s in Platform, a margin before SIGKILL).
       terminationGracePeriodSeconds: 35
+      # Restricted, as the Pod Security Standard of the namespace demands (namespace.yaml, docs/security.md).
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
       containers:
         - name: ledger-service
           image: ledger-service:dev
@@ -105,6 +114,16 @@ spec:
             preStop:
               sleep:
                 seconds: 5
+          # Restricted (docs/security.md): the process cannot gain privileges beyond those it starts with.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          # The one writable place: /tmp, for the runtime's own files (.NET diagnostics, Python temp files).
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           resources:
             requests:
               cpu: 250m
