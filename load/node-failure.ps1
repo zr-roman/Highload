@@ -73,15 +73,15 @@ try {
         param($n, $mode)
         Start-Sleep 30
         if ($mode -eq "Stop") {
-            docker stop $n | Out-Null; "stopped  $(Get-Date -Format HH:mm:ss)"
+            docker stop $n | Out-Null; "node $n stopped at     $(Get-Date -Format HH:mm:ss)"
             Start-Sleep 90
-            docker start $n | Out-Null; "started  $(Get-Date -Format HH:mm:ss)"
+            docker start $n | Out-Null; "node $n started again at $(Get-Date -Format HH:mm:ss)"
         } else {
-            "drain    $(Get-Date -Format HH:mm:ss)"
+            "node $n drain from  $(Get-Date -Format HH:mm:ss)"
             kubectl drain $n --ignore-daemonsets --delete-emptydir-data --timeout=90s 2>&1
-            "drained  $(Get-Date -Format HH:mm:ss)"
+            "node $n drained at  $(Get-Date -Format HH:mm:ss)"
             Start-Sleep 60
-            kubectl uncordon $n | Out-Null; "uncordoned $(Get-Date -Format HH:mm:ss)"
+            kubectl uncordon $n | Out-Null; "node $n uncordoned at $(Get-Date -Format HH:mm:ss)"
         }
     }
     $watch = Start-Job -ArgumentList $ns, $app {
@@ -93,7 +93,7 @@ try {
             Start-Sleep 5
         }
     }
-    "load from $(Get-Date -Format HH:mm:ss)" | Out-Host
+    "load (k6, 150 s) from $(Get-Date -Format HH:mm:ss)" | Out-Host
     k6 run -e BASE_URL=http://localhost:8080 -e RATE=$Rate -e DURATION=150s load/payments.js
 
     Receive-Job $outage -Wait | Out-Host
