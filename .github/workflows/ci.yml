@@ -92,6 +92,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write # the OIDC token of this run, which cosign signs with instead of a key
+    env:
+      TRIVY_VERSION: "0.72.0"
     strategy:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
@@ -128,10 +131,31 @@ jobs:
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/trivy aquasec/trivy:${TRIVY_VERSION} image \
             --severity CRITICAL --ignore-unfixed --exit-code 1 --quiet --skip-db-update \
             "$REGISTRY/${{ matrix.service }}:${{ steps.tag.outputs.tag }}"
-        env:
-          TRIVY_VERSION: "0.72.0"
       - name: Push
-        run: docker push "$REGISTRY/${{ matrix.service }}:${{ steps.tag.outputs.tag }}"
+        id: push
+        run: |
+          image="$REGISTRY/${{ matrix.service }}:${{ steps.tag.outputs.tag }}"
+          docker push "$image"
+          # The signature and the SBOM name the image by its digest, not by its tag: a tag can be moved to another image.
+          echo "ref=$(docker inspect --format '{{index .RepoDigests 0}}' "$image")" >> "$GITHUB_OUTPUT"
+      - uses: sigstore/cosign-installer@v4
+        with:
+          cosign-release: v3.1.4
+      # Keyless signature: no key to keep or leak. cosign trades the OIDC token of this run for a short-lived
+      # certificate from Fulcio that names this repository, this workflow and this branch, signs the digest with it and
+      # writes the signature to the public log Rekor. The signature goes to GHCR next to the image. Checking it
+      # (docs/security.md): cosign verify with the identity of this workflow.
+      - name: Sign
+        run: cosign sign --yes "${{ steps.push.outputs.ref }}"
+      # SBOM: the packages of the image, from the OS to NuGet, pip and Go modules, as CycloneDX. Attached to the image
+      # as a signed attestation, so when a new CVE comes out the question "which images have this package" is answered
+      # from the registry, without pulling and scanning every image again.
+      - name: SBOM
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/trivy -v "$PWD:/out" \
+            aquasec/trivy:${TRIVY_VERSION} image --format cyclonedx --output /out/sbom.cdx.json --quiet \
+            "$REGISTRY/${{ matrix.service }}:${{ steps.tag.outputs.tag }}"
+          cosign attest --yes --type cyclonedx --predicate sbom.cdx.json "${{ steps.push.outputs.ref }}"
 
   release:
     name: Tags to git
