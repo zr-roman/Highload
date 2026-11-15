@@ -73,11 +73,16 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             # Environment variables override appsettings.json: __ stands for the : of a configuration key.
-            - name: ConnectionStrings__Payments
+            # PostgreSQL in the cluster (postgres.yaml): pg-rw always points at the current primary. The password is the
+            # one CloudNativePG generated for the owner app (Secret pg-app): it never leaves the cluster. Kubernetes puts
+            # it into the connection string below through $(PG_PASSWORD).
+            - name: PG_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: postgres
-                  key: ConnectionStrings__Payments
+                  name: pg-app
+                  key: password
+            - name: ConnectionStrings__Payments
+              value: Host=pg-rw;Port=5432;Database=payments;Username=app;Password=$(PG_PASSWORD);Maximum Pool Size=16;Minimum Pool Size=16;Options=-c idle_in_transaction_session_timeout=15s -c statement_timeout=5s
             - name: ConnectionStrings__Kafka
               value: kafka:9092
             - name: ConnectionStrings__Redis

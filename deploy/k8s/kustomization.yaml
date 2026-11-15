@@ -1,5 +1,4 @@
-# Stage 1 of the stand in Kubernetes (k3d): the four services, Kafka, Redis and the telemetry dashboard.
-# PostgreSQL stays on the host (port 5433) and is reached as host.docker.internal.
+# The stand in Kubernetes (k3d): the four services, PostgreSQL (CloudNativePG), Kafka, Redis and the telemetry dashboard.
 #   synced by Argo CD from git (deploy/argocd/highload.yaml); by hand: kubectl apply -k deploy/k8s
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -26,7 +25,6 @@ resources:
   - otel-collector.yaml
   - monitors.yaml
   - alerts.yaml
-  - postgres-sealed.yaml
   - postgres.yaml
   - network-policies.yaml
 
@@ -61,6 +59,5 @@ images:
     newTag: f63d36eaa6d7
     newName: ghcr.io/zr-roman/antifraud
 
-# The Postgres password is in git only encrypted: postgres-sealed.yaml is a SealedSecret that the Sealed Secrets
-# controller (deploy/argocd/sealed-secrets.yaml) turns into the Secret postgres the Deployments refer to. It is sealed
-# from postgres.env, which stays out of git (README, step 3).
+# The Postgres password is not in git at all: CloudNativePG generates it in the cluster (Secret pg-app, postgres.yaml),
+# and the Deployments read it from there.
