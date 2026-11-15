@@ -13,7 +13,7 @@
                                                    Grafana: «Highload · Платежи», «Highload · Устойчивость»
 ```
 
-- **kube-prometheus-stack** ставит Argo CD из Helm-чарта: [deploy/argocd/monitoring.yaml](../deploy/argocd/monitoring.yaml), значения — [deploy/monitoring/values.yaml](../deploy/monitoring/values.yaml). Alertmanager и правила алертов выключены: на ноутбуке будить некого.
+- **kube-prometheus-stack** ставит Argo CD из Helm-чарта: [deploy/argocd/monitoring.yaml](../deploy/argocd/monitoring.yaml), значения — [deploy/monitoring/values.yaml](../deploy/monitoring/values.yaml). Правила алертов — [deploy/k8s/alerts.yaml](../deploy/k8s/alerts.yaml); Alertmanager без получателей: на ноутбуке будить некого, сработавшие алерты видны в его интерфейсе и в Grafana. Стандартные правила чарта выключены: они написаны для kubeadm, и на k3s часть из них горит постоянно.
 - **Метрики сервисов приходят по OTLP**, а не через scrape. Сервисы отправляют их в Collector ([deploy/k8s/otel-collector.yaml](../deploy/k8s/otel-collector.yaml)), тот — в OTLP-приёмник Prometheus и в Aspire dashboard. Имена при переводе: точки → `_`, у счётчиков `_total`, единица — суффиксом (`ledger.payment.delay`, мс → `ledger_payment_delay_milliseconds`), `service.name` → `job`, `service.instance.id` → `instance`.
 - **Traefik и Argo CD** Prometheus опрашивает сам: PodMonitor и ServiceMonitor в [deploy/k8s/monitors.yaml](../deploy/k8s/monitors.yaml).
 - **Дашборды — JSON в [deploy/k8s/dashboards](../deploy/k8s/dashboards)**, kustomize собирает из них ConfigMap с меткой `grafana_dashboard: "1"`, sidecar Grafana находит его и кладёт файлы на диск. Правка дашборда — коммит, как и всё остальное. Изменённый в интерфейсе дашборд при следующей синхронизации вернётся к версии из git.
@@ -120,6 +120,34 @@
 - **На 100/с отказ ноды почти не виден клиенту:** 37 пропусков, 28 ошибок из 14 963, p99 2,3 с.
 - **Цена короткого срока.** Нода, которая молчит дольше 20 с, считается мёртвой. Перезапуск контейнера server-0 это показал: пока он поднимался, Traefik, Redis, bank-emulator и CoreDNS выселили на agent-1. В продакшене та же цена — ложные отказы при перегрузке ноды или коротком сбое сети, поэтому срок подбирают под сеть, а не ставят минимальный.
 
+### Алерты в том же опыте
+
+Пять правил, каждое отвечает на вопрос «кто-то уже пострадал или вот-вот пострадает», а не «что-то необычно»:
+
+| Алерт | Условие | Важность |
+|---|---|---|
+| `PaymentsApiAttemptsFailing` | попытки Traefik к Payments.Api с 502/504 чаще 1/с, 15 с | warning |
+| `ClientErrorsHigh` | больше 1 % ответов клиентам — 5xx, 1 мин | critical |
+| `OutboxBacklog` | самое старое сообщение в outbox ждёт больше 60 с, 30 с | critical |
+| `NodeNotReady` | нода не Ready, 30 с | critical |
+| `PodCrashLooping` | контейнер в `CrashLoopBackOff`, 1 мин | warning |
+
+Отказ agent-1 с Kafka, 200 платежей в секунду, срок обнаружения 20 с. Нода остановлена в 16:26:58, запущена в 16:28:29. Время — по `ALERTS_FOR_STATE` (переход в pending) и `ALERTS{alertstate="firing"}`; правила вычисляются раз в 30 с, отсюда шаг:
+
+| Алерт | Pending | Firing | Погас |
+|---|---|---|---|
+| `PaymentsApiAttemptsFailing` | +23 с | +53 с | +83 с |
+| `NodeNotReady` | +24 с | +55 с | +115 с |
+| `OutboxBacklog` | +85 с | +115 с | +175 с |
+| `ClientErrorsHigh` | +23 с | — | — |
+| `PodCrashLooping` | — | — | — |
+
+- **Ранний сигнал перестал быть ранним.** `PaymentsApiAttemptsFailing` задумывался как алерт, который опережает Kubernetes: попытки к мёртвому поду падают сразу, а NotReady приходил через 49 с. С 20-секундным сроком нода стала NotReady через ~21 с, и оба алерта сработали с разницей в две секунды. Погас он раньше всех: через 30 с после NotReady под выселили, и попытки к нему кончились.
+- **Задержку алерта задают `for` и шаг вычисления, а не метрика.** Условие выполнилось через 23 с, алерт сработал через 53: 15–30 с ожидания `for` и до 30 с до следующего вычисления. Быстрее — `evaluationInterval: 15s` и короче `for`, ценой ложных срабатываний.
+- **`ClientErrorsHigh` не сработал — и это верно.** 5xx клиентам на мгновение превысили 1 %, но не держались минуту: повторы Traefik прятали почти всё, за прогон клиент получил 0,43 % ошибок. Алерт, который сработал бы на этот всплеск, будил бы дежурного при каждом выкате.
+- **`OutboxBacklog` погас примерно через полторы минуты после возврата ноды:** пока Kafka поднималась и relay разбирал очередь.
+- **`PodCrashLooping` молчал:** после исправлений реплики при отказе не падают.
+
 ## Чему научил мониторинг
 
 1. **Наблюдатель падает вместе с наблюдаемым.** В первом опыте kube-state-metrics был на остановленной ноде: панели нод, реплик и HPA оборвались ровно в момент отказа, нода так и не покраснела. Мониторинг закреплён за server-0; в продакшене — отдельные ноды или Prometheus в HA.
@@ -139,7 +167,7 @@
 ## Что упрощено по сравнению с продакшеном
 
 - Один Prometheus без диска и без HA; в продакшене — постоянное хранилище, две реплики или Thanos/Mimir.
-- Нет алертов: Alertmanager выключен, правила не созданы.
+- Алерты никуда не отправляются: у Alertmanager нет получателей. В продакшене — дежурный канал, разные маршруты для warning и critical, runbook в каждом алерте.
 - Мониторинг закреплён за control-plane, а не за отдельными нодами.
 - Логи и трейсы — в Aspire dashboard в памяти, а не в Loki и Tempo.
 
@@ -159,6 +187,9 @@ kubectl get pods -A -o wide --field-selector spec.nodeName=k3d-highload-agent-0
 .\load\node-failure.ps1 -Node k3d-highload-agent-0 -Log node-failure-agent0.log
 .\load\node-failure.ps1 -Node k3d-highload-agent-1 -Log node-failure-agent1.log
 .\load\node-failure.ps1 -Rate 100 -Log node-failure-rate100.log      # половина нагрузки: отказ без нехватки CPU
+# Алерты: правила и их состояние на http://localhost:9090/alerts, время срабатывания — запросом
+kubectl -n monitoring port-forward svc/monitoring-prometheus 9090:9090
+#   min_over_time(timestamp(ALERTS{alertstate="firing"})[30m:5s])
 ```
 
 Скриншоты для документации удобнее снимать в режиме киоска: `&kiosk` в конце адреса дашборда.
