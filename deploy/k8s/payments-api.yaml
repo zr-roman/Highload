@@ -79,7 +79,7 @@ spec:
             # For the catch-up experiment: "1000" with batches of 500 is about 250 messages a second,
             # still above the 200 a second that come in.
             - name: Outbox__BusyDelayMs
-              value: "0"
+              value: "1000"
             # To the OpenTelemetry Collector (otel-collector.yaml), which sends metrics on to Prometheus and everything
             # to the Aspire dashboard.
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
