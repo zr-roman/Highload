@@ -50,11 +50,14 @@ images:
   - name: payments-api
     newTag: dc297256aaaa
   - name: ledger-service
-    newTag: b61eef536ff9
+    newTag: f63d36eaa6d7
+    newName: ghcr.io/zr-roman/ledger-service
   - name: bank-emulator
-    newTag: dev
+    newTag: f63d36eaa6d7
+    newName: ghcr.io/zr-roman/bank-emulator
   - name: antifraud
-    newTag: dev
+    newTag: f63d36eaa6d7
+    newName: ghcr.io/zr-roman/antifraud
 
 # The Postgres password is in git only encrypted: postgres-sealed.yaml is a SealedSecret that the Sealed Secrets
 # controller (deploy/argocd/sealed-secrets.yaml) turns into the Secret postgres the Deployments refer to. It is sealed
