@@ -28,6 +28,14 @@ spec:
       # time the transactions in it are not in the backup. archive_timeout closes the segment after a minute at most,
       # if anything was written: the RPO of a recovery from backup is about a minute (backups.yaml).
       archive_timeout: 60s
+      # A client on a node that died does not close its connections: no FIN, no RST, the server sees them as idle.
+      # A session advisory lock on such a connection, the leader lock of the outbox relay (Payments.Api,
+      # AdvisoryLeaderLock), then stays taken, and no other replica becomes the leader: the outbox stopped for as
+      # long as the node was down (docs/kafka-failover.md). Keepalives find a dead peer after 10 + 3 x 5 = 25 s
+      # instead of the two hours of the Linux default, and the server ends the session and frees its locks.
+      tcp_keepalives_idle: "10"
+      tcp_keepalives_interval: "5"
+      tcp_keepalives_count: "3"
     synchronous:
       method: any
       number: 1
