@@ -1,0 +1,58 @@
+# Backups of PostgreSQL (postgres.yaml): replication keeps the data when a node is lost, but a DELETE without WHERE
+# reaches all three instances within milliseconds. Only a copy from before the mistake brings the data back.
+#
+# Two parts, both to the object store backup-store.yaml through the Barman Cloud plugin (deploy/argocd/barman-cloud.yaml):
+#   - the WAL archive: every finished WAL segment of the primary goes to the store. archive_timeout in postgres.yaml
+#     closes a segment at least once a minute, so at most about a minute of transactions is not in the store yet:
+#     that is the RPO of a recovery from backup (RPO of a failover is 0, docs/postgres-failover.md);
+#   - base backups: a full physical copy of the data directory, taken from a replica, once a day. Recovery starts
+#     from the latest base backup before the target time and replays the archived WAL up to that time
+#     (point-in-time recovery, the drill in docs/postgres-failover.md).
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: pg-backups
+spec:
+  configuration:
+    destinationPath: s3://pg-backups/
+    endpointURL: http://backup-store:9000
+    s3Credentials:
+      accessKeyId:
+        name: backup-store
+        key: ACCESS_KEY_ID
+      secretAccessKey:
+        name: backup-store
+        key: ACCESS_SECRET_KEY
+    wal:
+      # A forced switch every minute leaves mostly empty 16 MB segments: compressed, they are a few KB.
+      compression: gzip
+      maxParallel: 2
+    data:
+      compression: gzip
+  # Base backups older than this, and the WAL only they need, are deleted. Recovery reaches back as far as this.
+  retentionPolicy: "7d"
+  # The sidecar the plugin adds to every PostgreSQL pod: idle between segments, busy during a base backup.
+  instanceSidecarConfiguration:
+    resources:
+      requests:
+        cpu: 20m
+        memory: 64Mi
+      limits:
+        memory: 512Mi
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: pg-daily
+spec:
+  cluster:
+    name: pg
+  # Six fields, the first is seconds: every day at 03:00 UTC.
+  schedule: "0 0 3 * * *"
+  # One right away, when the schedule is created: recovery needs a base backup to start from.
+  immediate: true
+  # The Backup objects belong to the schedule, not to Argo CD: they are not in git, and Argo CD does not prune them.
+  backupOwnerReference: self
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io

@@ -1,0 +1,130 @@
+# The object store for the backups of PostgreSQL (backups.yaml): RustFS, an S3-compatible server, the one the Barman
+# Cloud plugin is tested with. MinIO, the usual choice, stopped publishing community images in October 2025.
+#
+# In the same cluster, on the same disks as the database: this shows how backups and recovery work, it is not a
+# backup that survives losing the laptop. In production the store is outside the cluster, in another region or
+# account (S3, GCS, Azure Blob), and the cluster can write to it but not delete from it (docs/postgres-failover.md).
+#
+# The access keys: Secret backup-store, from the SealedSecret backup-store-sealed.yaml (deploy/k8s/README.md).
+# The same Secret gives RustFS its root keys and the plugin its keys to it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: backup-store
+  labels:
+    app.kubernetes.io/name: backup-store
+spec:
+  selector:
+    app.kubernetes.io/name: backup-store
+  ports:
+    - name: s3
+      port: 9000
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backup-store
+  labels:
+    app.kubernetes.io/name: backup-store
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backup-store
+  labels:
+    app.kubernetes.io/name: backup-store
+spec:
+  replicas: 1
+  # One volume on one node: the old pod lets go of it before the new one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backup-store
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: backup-store
+    spec:
+      # Restricted (namespace.yaml, docs/security.md). 10001 is the user of the image. The volume of local-path is
+      # created world-writable, so no root init container is needed to hand it over.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: rustfs
+          # The glibc build: the musl one is noticeably slower (rustfs/rustfs#1662). The version the plugin's
+          # end-to-end tests run against.
+          image: rustfs/rustfs:1.0.4-glibc
+          command: ["/usr/bin/rustfs"]
+          env:
+            - name: RUSTFS_ADDRESS
+              value: ":9000"
+            - name: RUSTFS_VOLUMES
+              value: /data/rustfs
+            - name: RUSTFS_REGION
+              value: us-east-1
+            - name: RUSTFS_CONSOLE_ENABLE
+              value: "false"
+            - name: RUSTFS_OBS_LOG_DIRECTORY
+              value: /logs
+            - name: RUSTFS_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-store
+                  key: ACCESS_KEY_ID
+            - name: RUSTFS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-store
+                  key: ACCESS_SECRET_KEY
+          ports:
+            - name: s3
+              containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: s3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: s3
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: logs
+              mountPath: /logs
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: backup-store
+        - name: logs
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

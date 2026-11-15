@@ -1,0 +1,45 @@
+# Barman Cloud plugin of CloudNativePG: backups of PostgreSQL to object storage. It replaces the barmanObjectStore
+# built into the operator, which is deprecated. The plugin puts a sidecar into every PostgreSQL pod; the sidecar sends
+# each finished WAL segment to the object store and takes the base backups (deploy/k8s/backups.yaml).
+# Needs cert-manager (deploy/argocd/cert-manager.yaml) and lives next to the operator, in cnpg-system.
+# Installed by Argo CD from the Helm chart. Applied once by hand, after cert-manager.yaml is Healthy:
+#   kubectl apply -f deploy/argocd/barman-cloud.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: barman-cloud
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://cloudnative-pg.github.io/charts
+    chart: plugin-barman-cloud
+    # A fixed version, like the operator: chart 0.9.0 is plugin v0.16.0.
+    targetRevision: 0.9.0
+    helm:
+      releaseName: plugin-barman-cloud
+      valuesObject:
+        nodeSelector:
+          node-role.kubernetes.io/control-plane: "true"
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 128Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cnpg-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    # The first sync can come before cert-manager has its webhook up: the Certificates are refused, the next try works.
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

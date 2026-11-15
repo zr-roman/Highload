@@ -70,6 +70,15 @@
    ```
    Затем коммит и push: Argo CD применит SealedSecret, контроллер обновит Secret. Grafana читает пароль при старте: после смены — `kubectl -n monitoring rollout restart deployment/monitoring-grafana`.
 
+   Ключи хранилища резервных копий PostgreSQL (`backup-store.yaml`) — тоже SealedSecret. Ключи случайные, помнить их не нужно: их читают только RustFS и плагин Barman Cloud из одного Secret.
+   ```powershell
+   $key = -join ((48..57) + (97..122) | Get-Random -Count 20 | % { [char]$_ })
+   $secret = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 40 | % { [char]$_ })
+   kubectl -n highload create secret generic backup-store --from-literal=ACCESS_KEY_ID=$key --from-literal=ACCESS_SECRET_KEY=$secret --dry-run=client -o yaml |
+       kubeseal -o yaml > deploy/k8s/backup-store-sealed.yaml
+   ```
+   Резервные копии делает плагин Barman Cloud (`deploy/argocd/barman-cloud.yaml`), ему нужен cert-manager (`deploy/argocd/cert-manager.yaml`). Оба ставит Argo CD, и оба нужны раньше, чем `kubectl apply -k`: без плагина тип `ObjectStore` кластеру неизвестен. Порядок: `cert-manager.yaml`, дождаться Healthy, затем `barman-cloud.yaml`.
+
    **Ключ контроллера** — единственное, чего нет в git, и без него файлы в git не открыть. Сохранить вне репозитория (менеджер паролей):
    ```powershell
    kubectl -n kube-system get secret -l sealedsecrets.bitnami.com/sealed-secrets-key -o yaml > "$HOME\sealed-secrets-key.yaml"

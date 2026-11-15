@@ -26,6 +26,9 @@ resources:
   - monitors.yaml
   - alerts.yaml
   - postgres.yaml
+  - backup-store.yaml
+  - backup-store-sealed.yaml
+  - backups.yaml
   - network-policies.yaml
 
 # Grafana dashboards of the stand, from the JSON files in dashboards/. The Grafana sidecar picks up any ConfigMap

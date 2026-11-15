@@ -149,9 +149,11 @@ kind: NetworkPolicy
 metadata:
   name: postgres
 spec:
+  # Every CloudNativePG cluster in the namespace: pg, and pg-restore during the recovery drill (load/pg-restore.yaml).
   podSelector:
-    matchLabels:
-      cnpg.io/cluster: pg
+    matchExpressions:
+      - key: cnpg.io/cluster
+        operator: Exists
   policyTypes: [Ingress]
   ingress:
     - from:
@@ -164,8 +166,9 @@ spec:
         - port: 5432
     - from:
         - podSelector:
-            matchLabels:
-              cnpg.io/cluster: pg
+            matchExpressions:
+              - key: cnpg.io/cluster
+                operator: Exists
       ports:
         - port: 5432
         - port: 8000
@@ -181,3 +184,23 @@ spec:
               kubernetes.io/metadata.name: monitoring
       ports:
         - port: 9187
+---
+# The object store of the backups (backup-store.yaml): only the PostgreSQL pods, where the Barman Cloud sidecar sends
+# the WAL and the base backups, and the recovery job of a restored cluster, which reads them (cnpg.io/cluster on both).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backup-store
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: backup-store
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: cnpg.io/cluster
+                operator: Exists
+      ports:
+        - port: 9000

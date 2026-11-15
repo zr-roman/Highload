@@ -1,0 +1,39 @@
+# The recovery drill (docs/postgres-failover.md): a new cluster pg-restore, rebuilt from the backups of pg up to a
+# point in time — the latest base backup before it, then the archived WAL replayed up to it. Not in Argo CD: applied by
+# hand for the drill and deleted after it.
+#   (Get-Content load/pg-restore.yaml) -replace 'TARGET_TIME', '<time>' | kubectl -n highload apply -f -
+#   kubectl -n highload delete cluster pg-restore
+# A new cluster next to the old one, not the old one rewound: first check what came back, then move the services.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: pg-restore
+spec:
+  # One instance: enough to check the data, and the laptop has no memory for three more.
+  instances: 1
+  bootstrap:
+    recovery:
+      source: pg
+      recoveryTarget:
+        # UTC, as SELECT now() at time zone 'utc' gives it, with Z at the end: 2026-11-16T12:34:56Z.
+        targetTime: "TARGET_TIME"
+  # Reads the backups of pg. No plugins section: the restored cluster archives nothing, so it cannot write over the
+  # WAL archive of pg in the same store.
+  externalClusters:
+    - name: pg
+      plugin:
+        name: barman-cloud.cloudnative-pg.io
+        parameters:
+          barmanObjectName: pg-backups
+          serverName: pg
+  postgresql:
+    parameters:
+      shared_buffers: 128MB
+  storage:
+    size: 2Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi

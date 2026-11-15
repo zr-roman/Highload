@@ -1,0 +1,51 @@
+# cert-manager: issues TLS certificates inside the cluster. Here it has one client, the Barman Cloud plugin of
+# CloudNativePG (deploy/argocd/barman-cloud.yaml): the operator and the plugin talk over mutual TLS, and the plugin's
+# chart asks cert-manager for both certificates. Installed by Argo CD from the Helm chart. Applied once by hand, before
+# barman-cloud.yaml, like the other applications:
+#   kubectl apply -f deploy/argocd/cert-manager.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    # A fixed version, like the other charts.
+    targetRevision: v1.21.3
+    helm:
+      releaseName: cert-manager
+      valuesObject:
+        crds:
+          enabled: true
+          keep: true
+        # On the server node with the rest of the infrastructure: the experiments stop agent nodes.
+        nodeSelector: &server
+          node-role.kubernetes.io/control-plane: "true"
+        resources: &small
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 128Mi
+        webhook:
+          nodeSelector: *server
+          resources: *small
+        cainjector:
+          nodeSelector: *server
+          resources: *small
+        # A Helm hook job that waits for the API to come up: Argo CD shows the health of the application itself.
+        startupapicheck:
+          enabled: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

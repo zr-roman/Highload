@@ -54,6 +54,20 @@ spec:
             summary: "The oldest payment in the outbox has waited {{ $value | humanizeDuration }}"
             description: Balances lag behind payments. Check Kafka and the outbox relay of Payments.Api.
 
+    - name: highload.backups
+      rules:
+        # WAL segments that do not reach the object store: the backups stop at the last archived segment, and the
+        # segments pile up on the primary's disk until it is full (deploy/k8s/backups.yaml). From pg_stat_archiver,
+        # through the exporter of CloudNativePG.
+        - alert: PostgresWalArchivingFailing
+          expr: increase(cnpg_pg_stat_archiver_failed_count[5m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.pod }} cannot archive WAL"
+            description: "Recovery from backup reaches only to the last archived segment. kubectl -n highload logs {{ $labels.pod }} -c plugin-barman-cloud"
+
     - name: highload.cluster
       rules:
         # From kube-state-metrics, which stays on the server node (deploy/monitoring/values.yaml): a stopped agent
