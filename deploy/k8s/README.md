@@ -23,10 +23,18 @@
 
 1. **Кластер** (один раз):
    ```powershell
-   k3d cluster create highload --agents 2 --api-port 127.0.0.1:6550 -p "8080:80@loadbalancer"
+   k3d cluster create highload --agents 2 --api-port 127.0.0.1:6550 -p "8080:80@loadbalancer" `
+     --k3s-arg "--kube-controller-manager-arg=node-monitor-grace-period=20s@server:0"
    kubectl -n kube-system scale deployment/coredns --replicas=2
    ```
    Порт API задан явно и ниже 49152. Без `--api-port` k3d берёт случайный порт из динамического диапазона, а Windows (WinNAT, Hyper-V) после перезагрузки резервирует в этом диапазоне свои блоки: если порт кластера попал в такой блок, балансировщик k3d не стартует с ошибкой `bind: An attempt was made to access a socket in a way forbidden by its access permissions`, и `kubectl` не подключается. Занятые блоки: `netsh interface ipv4 show excludedportrange protocol=tcp`. Вторая реплика CoreDNS — см. [ниже](#coredns-в-двух-экземплярах).
+
+   `node-monitor-grace-period=20s` вместо 50 с по умолчанию: остановленную ноду Kubernetes замечает за ~15 с, а не за ~50, и Traefik раньше перестаёт слать запросы в поды на ней ([опыт](../../docs/observability.md#время-обнаружения-отказа-50-с--20-с)). Цена: нода, которая молчит дольше 20 с, считается мёртвой, и поды с неё выселяются — так бывает и при перезапуске контейнера server-0. На уже созданном кластере:
+   ```powershell
+   docker exec k3d-highload-server-0 sh -c "printf 'kube-controller-manager-arg:\n  - node-monitor-grace-period=20s\n' > /etc/rancher/k3s/config.yaml"
+   docker restart k3d-highload-server-0
+   ```
+   Файл живёт в контейнере ноды: `k3d cluster delete` его стирает.
 
    После перезагрузки ноутбука или перезапуска Docker Desktop кластер сам не стартует: `k3d cluster start highload`.
 2. **Образы сервисов** — собрать и загрузить в ноды. Тег `:dev`, `imagePullPolicy: IfNotPresent`: кластер берёт образ из нод и не ходит за ним в реестр.
