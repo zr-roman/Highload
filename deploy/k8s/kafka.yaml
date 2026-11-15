@@ -78,6 +78,10 @@ spec:
               matchLabels:
                 strimzi.io/cluster: kafka
                 strimzi.io/pool-name: broker
+          # The pod of the Kafka tools that load/Failover starts for the length of a run (KafkaProbe.cs).
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: kafka-probe
     config:
       default.replication.factor: 3
       min.insync.replicas: 2

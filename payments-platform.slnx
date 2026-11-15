@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/load/">
+    <Project Path="load/Failover/Failover.csproj" />
     <Project Path="load/Matrix/Matrix.csproj" />
   </Folder>
   <Folder Name="/src/">
