@@ -90,6 +90,9 @@ try {
             "---- $(Get-Date -Format HH:mm:ss)"
             kubectl get nodes --no-headers
             kubectl -n $ns get pods -l $app -o wide --no-headers
+            # PostgreSQL (deploy/k8s/postgres.yaml): which instance is the primary, and on which node.
+            kubectl -n $ns get cluster pg --no-headers 2>$null
+            kubectl -n $ns get pods -l cnpg.io/cluster=pg -L cnpg.io/instanceRole -o wide --no-headers 2>$null
             Start-Sleep 5
         }
     }
