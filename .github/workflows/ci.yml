@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
 
 # A newer push to the same branch cancels the older run: the newer one releases everything the older one would have
-# (.github/scripts/release.py compares with the commit of each current image, not with the previous push).
+# (deploy/ci-release.py compares with the commit of each current image, not with the previous push).
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -82,7 +82,7 @@ jobs:
         with:
           fetch-depth: 0 # the commits the current tags name
       - id: plan
-        run: python3 .github/scripts/release.py plan
+        run: python3 deploy/ci-release.py plan
 
   images:
     name: Image ${{ matrix.service }}
@@ -128,7 +128,7 @@ jobs:
       - name: Commit the new tags
         run: |
           tag="${GITHUB_SHA::12}"
-          python3 .github/scripts/release.py apply "$tag" ${{ needs.plan.outputs.services }}
+          python3 deploy/ci-release.py apply "$tag" ${{ needs.plan.outputs.services }}
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           services="${{ needs.plan.outputs.services }}"

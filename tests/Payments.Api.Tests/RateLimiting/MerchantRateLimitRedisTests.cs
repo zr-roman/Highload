@@ -61,7 +61,11 @@ public sealed class MerchantRateLimitRedisTests : IDisposable
         for (var i = 0; i < 20; i++)
             Assert.Equal(StatusCodes.Status201Created, (await PayAsync(merchantId: 2)).Status);
 
-        await Task.Delay(TimeSpan.FromMilliseconds(250), TestContext.Current.CancellationToken);
+        // 200 ms refill Redis's bucket, but not always the local one (LocalMerchantLimiter): it gets its tokens from a timer
+        // every 100 ms, so in a 250 ms pause it may have refilled for only 150 ms, 15 tokens, and the 16th payment got 429
+        // (it did on the CI runner). 400 ms cover the 200 ms, a tick of the timer and a late one. The default limit would
+        // give 0.4 of a token in that time: the test still tells the quota from the default.
+        await Task.Delay(TimeSpan.FromMilliseconds(400), TestContext.Current.CancellationToken);
 
         for (var i = 0; i < 20; i++)
             Assert.Equal(StatusCodes.Status201Created, (await PayAsync(merchantId: 2)).Status);
