@@ -18,6 +18,7 @@
 | `dashboards/` | дашборды Grafana «Платежи» и «Устойчивость»: JSON, из которого kustomize делает ConfigMap | — |
 | `monitors.yaml` | что ещё собирает Prometheus: Traefik и Argo CD | — |
 | `alerts.yaml` | правила алертов Prometheus | — |
+| `postgres-sealed.yaml` | строки подключения к Postgres с паролем, зашифрованные (SealedSecret) | — |
 | `pdb.yaml` | PodDisruptionBudget Payments.Api: при `kubectl drain` одна реплика всегда в работе | — |
 
 ## Запуск
@@ -50,21 +51,33 @@
    ```powershell
    k3d image import apache/kafka:4.3.2 redis:7.4-alpine mcr.microsoft.com/dotnet/aspire-dashboard:9.0 -c highload
    ```
-3. **Пароль Postgres** (один раз). Строки подключения с паролем — в `postgres.env`, его нет в git:
+3. **Пароли** лежат в git зашифрованными: `postgres-sealed.yaml` здесь и `deploy/monitoring/secrets/grafana-admin-sealed.yaml` — это SealedSecret. Открыть их может только контроллер Sealed Secrets в кластере (`deploy/argocd/sealed-secrets.yaml`, ставит Argo CD): у него закрытый ключ, а `kubeseal` на ноутбуке шифрует открытым. Контроллер нужен раньше, чем `kubectl apply -k`: без него тип `SealedSecret` кластеру неизвестен.
+
+   **kubeseal** (один раз):
    ```powershell
-   Copy-Item deploy\k8s\postgres.env.example deploy\k8s\postgres.env
-   notepad deploy\k8s\postgres.env
+   $v = "0.41.2"
+   Invoke-WebRequest "https://github.com/bitnami/sealed-secrets/releases/download/v$v/kubeseal-$v-windows-amd64.tar.gz" -OutFile "$env:TEMP\kubeseal.tar.gz"
+   New-Item -ItemType Directory -Force "$HOME\bin" | Out-Null
+   tar -xzf "$env:TEMP\kubeseal.tar.gz" -C "$HOME\bin" kubeseal.exe
+   [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";$HOME\bin", "User")
    ```
-   Заменить `CHANGE_ME` в обеих строках и создать из файла Secret:
+
+   **Зашифровать заново** — на новом кластере (у его контроллера новый ключ, старые файлы он не откроет) или при смене пароля. Строки подключения с паролем — в `postgres.env`, его нет в git:
    ```powershell
-   kubectl create namespace highload
-   kubectl -n highload create secret generic postgres --from-env-file=deploy/k8s/postgres.env
+   Copy-Item deploy\k8s\postgres.env.example deploy\k8s\postgres.env   # и заменить CHANGE_ME в обеих строках
+   kubectl -n highload create secret generic postgres --from-env-file=deploy/k8s/postgres.env --dry-run=client -o yaml |
+       kubeseal -o yaml > deploy/k8s/postgres-sealed.yaml
+   kubectl -n monitoring create secret generic grafana-admin --from-literal=admin-user=admin --from-literal=admin-password='<пароль>' --dry-run=client -o yaml |
+       kubeseal -o yaml > deploy/monitoring/secrets/grafana-admin-sealed.yaml
    ```
-   Secret создаётся руками, а не из `kustomization.yaml`: кластер синхронизирует из git Argo CD, а пароля в git нет. Сменился пароль — пересоздать Secret и перезапустить поды:
+   Затем коммит и push: Argo CD применит SealedSecret, контроллер обновит Secret. Поды читают пароль из переменных окружения только при старте, поэтому после смены пароля: `kubectl -n highload rollout restart deployment/payments-api deployment/ledger-service`.
+
+   **Ключ контроллера** — единственное, чего нет в git, и без него файлы в git не открыть. Сохранить вне репозитория (менеджер паролей):
    ```powershell
-   kubectl -n highload create secret generic postgres --from-env-file=deploy/k8s/postgres.env --dry-run=client -o yaml | kubectl apply -f -
-   kubectl -n highload rollout restart deployment/payments-api deployment/ledger-service
+   kubectl -n kube-system get secret -l sealedsecrets.bitnami.com/sealed-secrets-key -o yaml > "$HOME\sealed-secrets-key.yaml"
    ```
+   Восстановить на новом кластере: `kubectl apply -f "$HOME\sealed-secrets-key.yaml"`, затем `kubectl -n kube-system rollout restart deployment/sealed-secrets-controller` — контроллер читает ключи при старте; шифровать заново не нужно. Контроллер выпускает новый ключ раз в 30 дней (старые хранит и ими же открывает старые файлы): сохранять ключи стоит заново после каждого нового.
+
 4. **Остановить стенд docker compose** — на два стенда сразу памяти не хватит:
    ```powershell
    docker compose down
@@ -136,10 +149,8 @@ CoreDNS — системный компонент k3s, не часть `deploy/k
 
 ## Мониторинг
 
-Prometheus и Grafana (чарт kube-prometheus-stack) ставит Argo CD: `deploy/argocd/monitoring.yaml`, настройки — `deploy/monitoring/values.yaml`. Пароль администратора Grafana — в Secret, который создаётся руками до установки, как пароль Postgres:
+Prometheus и Grafana (чарт kube-prometheus-stack) ставит Argo CD: `deploy/argocd/monitoring.yaml`, настройки — `deploy/monitoring/values.yaml`. Пароль администратора Grafana — SealedSecret `deploy/monitoring/secrets/grafana-admin-sealed.yaml`, третий источник приложения `monitoring` (как его зашифровать — шаг 3 выше):
 ```powershell
-kubectl create namespace monitoring
-kubectl -n monitoring create secret generic grafana-admin --from-literal=admin-user=admin --from-literal=admin-password='<пароль>'
 kubectl apply -f deploy/argocd/monitoring.yaml
 ```
 Дашборды стенда — «Highload · Платежи» и «Highload · Устойчивость» — лежат в `deploy/k8s/dashboards/` и попадают в Grafana сами. В интерфейсе Grafana их можно менять, но не сохранять: изменённый дашборд — Export → JSON → файл в `dashboards/` → коммит.
