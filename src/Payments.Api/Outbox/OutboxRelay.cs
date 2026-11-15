@@ -32,6 +32,7 @@ public sealed class OutboxRelay(
 
         var minIdleDelay = TimeSpan.FromMilliseconds(options.Value.IdleDelayMs);
         var maxIdleDelay = TimeSpan.FromMilliseconds(options.Value.MaxIdleDelayMs);
+        var busyDelay = TimeSpan.FromMilliseconds(options.Value.BusyDelayMs);
         var idleDelay = TimeSpan.Zero;
 
         while (!stoppingToken.IsCancellationRequested)
@@ -41,6 +42,11 @@ public sealed class OutboxRelay(
                 if (await PublishBatchAsync(stoppingToken) > 0)
                 {
                     idleDelay = TimeSpan.Zero; // under load the outbox is never empty and the relay never sleeps
+
+                    // Unless it is told to: BusyDelayMs slows the catch-up down (OutboxOptions).
+                    if (busyDelay > TimeSpan.Zero)
+                        await Task.Delay(busyDelay, stoppingToken);
+
                     continue;
                 }
 
