@@ -33,8 +33,8 @@ jobs:
     name: .NET tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
       # Testcontainers starts Postgres, Kafka and Redis in the Docker of the runner, as on the laptop.
@@ -47,8 +47,8 @@ jobs:
       run:
         working-directory: src/bank-emulator
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: src/bank-emulator/go.mod
           cache: false # standard library only: nothing to cache
@@ -63,7 +63,7 @@ jobs:
       run:
         working-directory: src/antifraud-service
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
       - run: uv run ruff check .
@@ -78,7 +78,7 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       services: ${{ steps.plan.outputs.services }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # the commits the current tags name
       - id: plan
@@ -95,7 +95,7 @@ jobs:
     strategy:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -140,7 +140,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: main
       - name: Commit the new tags
