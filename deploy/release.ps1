@@ -1,7 +1,9 @@
 # Release of services to the k3d stand through git: build the image tagged with the commit, load it into the nodes,
 # write the tag into deploy/k8s/kustomization.yaml, commit and push, then wait until Argo CD has applied the commit
 # and the pods have rolled.
-# On this stand the script stands in for CI and an image registry.
+# The usual way is CI (.github/workflows/ci.yml): it builds the images in GitHub Actions, pushes them to ghcr.io and
+# commits the tags. This script is the way without CI or without the internet: the image gets the same name as from
+# CI, but it is built here and loaded into the nodes; imagePullPolicy IfNotPresent keeps the cluster from pulling it.
 #
 #   .\deploy\release.ps1 -Services payments-api                  # one service
 #   .\deploy\release.ps1 -Services payments-api,ledger-service
@@ -20,6 +22,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# The same names as the images CI pushes (deploy/ci-release.py).
+$registry = "ghcr.io/zr-roman"
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
 
@@ -50,7 +54,7 @@ Write-Host "Release $($Services -join ', ') as $tag"
 # 2. Build. The layers of an unchanged service come from the cache: only the tag is new.
 # @(...): with one service the loop yields a single string, and @images would then pass it to k3d letter by letter.
 $images = @(foreach ($service in $Services) {
-    $image = "${service}:$tag"
+    $image = "$registry/${service}:$tag"
     # Out-Host: the build log goes to the screen, not into $images (in PowerShell all output of the loop is its result).
     Invoke-Checked "docker build $image" { docker build -t $image -f $catalog[$service].Dockerfile . | Out-Host }
     $image
@@ -59,13 +63,19 @@ $images = @(foreach ($service in $Services) {
 # 3. Into the nodes before the tag reaches git: once Argo CD sees the tag, the pods must find the image at once.
 Invoke-Checked "k3d image import" { k3d image import $images -c $Cluster | Out-Host }
 
-# 4. The tag in kustomization.yaml: the newTag line right after "- name: <service>" in the images block.
+# 4. The image in kustomization.yaml: after "- name: <service>" in the images block, newTag and then newName, the same
+# lines CI writes (deploy/ci-release.py).
 $path = "deploy/k8s/kustomization.yaml"
 $text = Get-Content $path -Raw
+$nl = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
 foreach ($service in $Services) {
-    $pattern = "(?m)(^\s*- name: $([regex]::Escape($service))\s*\r?\n\s*newTag:\s*)\S+"
+    $pattern = "(?m)^(?<indent>[ \t]*)- name: $([regex]::Escape($service))[ \t]*\r?\n(?<inner>[ \t]*)newTag:[ \t]*\S+(?:\r?\n[ \t]*newName:[ \t]*\S+)?"
     if ($text -notmatch $pattern) { throw "No images entry for $service in $path" }
-    $text = [regex]::Replace($text, $pattern, "`${1}$tag")
+    $text = [regex]::Replace($text, $pattern, {
+        param($m)
+        $indent = $m.Groups["indent"].Value; $inner = $m.Groups["inner"].Value
+        "$indent- name: $service$nl${inner}newTag: $tag$nl${inner}newName: $registry/$service"
+    })
 }
 Set-Content $path $text -NoNewline
 

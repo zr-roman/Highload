@@ -1,0 +1,142 @@
+# CI of the platform: tests of all four services on every push and pull request; on main also the images of the
+# services whose sources changed, pushed to GitHub Container Registry, and their new tags committed to
+# deploy/k8s/kustomization.yaml. Argo CD picks the commit up and rolls the pods (docs/gitops.md): CI never talks to
+# the cluster, git is the only way in.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    # Documentation and manifests alone need no tests and no images. Argo CD applies manifests by itself.
+    paths-ignore:
+      - "docs/**"
+      - "deploy/**"
+      - "**/*.md"
+  pull_request:
+  # By hand, from the Actions tab: releases every service whose image is behind its sources, like a push would.
+  workflow_dispatch:
+
+# A newer push to the same branch cancels the older run: the newer one releases everything the older one would have
+# (.github/scripts/release.py compares with the commit of each current image, not with the previous push).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io/zr-roman
+
+jobs:
+  dotnet:
+    name: .NET tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      # Testcontainers starts Postgres, Kafka and Redis in the Docker of the runner, as on the laptop.
+      - run: dotnet test
+
+  go:
+    name: Bank emulator tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/bank-emulator
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: src/bank-emulator/go.mod
+          cache: false # standard library only: nothing to cache
+      - run: go vet ./...
+      # -race needs a C compiler: there is none on the laptop, here there is.
+      - run: go test -race ./...
+
+  python:
+    name: Antifraud tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/antifraud-service
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest
+
+  plan:
+    name: What to release
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      services: ${{ steps.plan.outputs.services }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # the commits the current tags name
+      - id: plan
+        run: python3 .github/scripts/release.py plan
+
+  images:
+    name: Image ${{ matrix.service }}
+    needs: [dotnet, go, python, plan]
+    if: needs.plan.outputs.services != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v4
+      # The tag is the commit, as with deploy/release.ps1: 12 characters of the SHA.
+      - id: tag
+        run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ matrix.service }}:${{ steps.tag.outputs.tag }}
+          # Layers between runs in the GitHub Actions cache, one scope per service.
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+
+  release:
+    name: Tags to git
+    needs: [plan, images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+      - name: Commit the new tags
+        run: |
+          tag="${GITHUB_SHA::12}"
+          python3 .github/scripts/release.py apply "$tag" ${{ needs.plan.outputs.services }}
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          services="${{ needs.plan.outputs.services }}"
+          git commit -m "Release: ${services// /, } $tag (CI)" -- deploy/k8s/kustomization.yaml
+          # Someone may have pushed in the meantime: put the release on top and try again.
+          # A push made with GITHUB_TOKEN starts no new workflow run, so the release does not trigger CI again.
+          for attempt in 1 2 3; do
+            git push && exit 0
+            git pull --rebase origin main
+          done
+          exit 1
