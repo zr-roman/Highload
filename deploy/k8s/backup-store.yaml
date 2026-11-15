@@ -68,12 +68,16 @@ spec:
           env:
             - name: RUSTFS_ADDRESS
               value: ":9000"
+            # The root of the volume itself: RustFS does not create the directory it is given, and a subdirectory
+            # of the volume would need a root init container, which the restricted namespace does not allow.
             - name: RUSTFS_VOLUMES
-              value: /data/rustfs
+              value: /data
             - name: RUSTFS_REGION
               value: us-east-1
             - name: RUSTFS_CONSOLE_ENABLE
               value: "false"
+            # Logs to stdout, where kubectl logs and the cluster's tooling read them: RustFS falls back to stdout
+            # anyway when it cannot make the log directory its own, as with an emptyDir.
             - name: RUSTFS_OBS_LOG_DIRECTORY
               value: /logs
             - name: RUSTFS_ACCESS_KEY
