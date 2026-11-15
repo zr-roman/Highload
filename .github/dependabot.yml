@@ -1,0 +1,59 @@
+# Dependabot: pull requests with new versions of the dependencies, once a week. Each pull request runs the tests of
+# CI (.github/workflows/ci.yml); merged, it goes out like any other change. Security fixes come at once, outside
+# the schedule.
+#
+# cooldown: a release must be a few days old before Dependabot offers it. Most hijacked packages are found and pulled
+# within days (as the Trivy action in March 2026); a cooldown keeps them from reaching main in that window.
+version: 2
+updates:
+  # The actions of the workflow: checkout, setup-*, docker/*.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # NuGet: central versions in Directory.Packages.props, one pull request for all of them.
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      nuget:
+        patterns: ["*"]
+
+  # The antifraud check: pyproject.toml and uv.lock.
+  - package-ecosystem: uv
+    directory: /src/antifraud-service
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        patterns: ["*"]
+
+  # Base images of the Dockerfiles (sdk, aspnet, golang, python, distroless) and the images of the manifests
+  # (Redis, Kafka, the Collector, the dashboard). The base image is where most of the vulnerabilities Trivy finds come
+  # from. The services' own images (payments-api:dev and so on) are not in any registry under those names:
+  # Dependabot skips them.
+  - package-ecosystem: docker
+    directories:
+      - /src/Payments.Api
+      - /src/Ledger.Service
+      - /src/bank-emulator
+      - /src/antifraud-service
+      - /deploy/k8s
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      images:
+        patterns: ["*"]

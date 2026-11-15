@@ -105,15 +105,33 @@ jobs:
       # The tag is the commit, as with deploy/release.ps1: 12 characters of the SHA.
       - id: tag
         run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      # Built into the local Docker first, not pushed: the scan below decides whether the image goes to the registry.
       - uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          push: true
+          load: true
           tags: ${{ env.REGISTRY }}/${{ matrix.service }}:${{ steps.tag.outputs.tag }}
           # Layers between runs in the GitHub Actions cache, one scope per service.
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,scope=${{ matrix.service }},mode=max
+      # Known vulnerabilities of the image: its base and its packages. A critical one that has a fix stops the
+      # release; one without a fix only shows in the log, since nothing could be done about it yet.
+      # Trivy runs from its image at a fixed version, not from trivy-action and not latest: in March 2026 the action's
+      # tags and the latest image were replaced with ones that stole CI secrets. The first run shows HIGH and CRITICAL,
+      # the second fails on CRITICAL alone; the vulnerability database is downloaded once, into a shared cache.
+      - name: Scan with Trivy
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/trivy aquasec/trivy:${TRIVY_VERSION} image \
+            --severity HIGH,CRITICAL --ignore-unfixed --no-progress \
+            "$REGISTRY/${{ matrix.service }}:${{ steps.tag.outputs.tag }}"
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/trivy aquasec/trivy:${TRIVY_VERSION} image \
+            --severity CRITICAL --ignore-unfixed --exit-code 1 --quiet --skip-db-update \
+            "$REGISTRY/${{ matrix.service }}:${{ steps.tag.outputs.tag }}"
+        env:
+          TRIVY_VERSION: "0.72.0"
+      - name: Push
+        run: docker push "$REGISTRY/${{ matrix.service }}:${{ steps.tag.outputs.tag }}"
 
   release:
     name: Tags to git
