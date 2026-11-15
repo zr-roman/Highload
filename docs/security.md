@@ -11,7 +11,7 @@
 | Namespace | API-сервер отказывает поду, нарушающему профиль `restricted` (Pod Security Admission) | [deploy/k8s/namespace.yaml](../deploy/k8s/namespace.yaml) |
 | Образ | Trivy проверяет образ до push в ghcr.io: критическая уязвимость с исправлением останавливает релиз | [.github/workflows/ci.yml](../.github/workflows/ci.yml) |
 | Зависимости | Dependabot: actions, NuGet, uv, базовые образы — раз в неделю, не раньше 7 дней после выхода версии | [.github/dependabot.yml](../.github/dependabot.yml) |
-| Секреты | Пароли в git только зашифрованными (Sealed Secrets) | [gitops.md](gitops.md) |
+| Секреты | Пароль PostgreSQL генерирует оператор в кластере и в git его нет; пароль Grafana в git только зашифрованным (Sealed Secrets) | [gitops.md](gitops.md) |
 
 ## Сеть: NetworkPolicy
 

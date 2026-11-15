@@ -1,6 +1,6 @@
 # Стенд в Kubernetes (k3d), этап 1
 
-Четыре сервиса, Kafka, Redis и дашборд телеметрии — в кластере k3d; PostgreSQL — нативно на хосте (порт 5433), поды ходят к нему по имени `host.docker.internal`.
+Четыре сервиса, PostgreSQL, Kafka, Redis и дашборд телеметрии — в кластере k3d. PostgreSQL — три экземпляра под оператором CloudNativePG, с синхронной репликацией; как он переживает отказ ноды с основной базой — в [docs/postgres-failover.md](../../docs/postgres-failover.md).
 
 | Манифест | Что | Порт в кластере |
 |---|---|---|
@@ -18,7 +18,7 @@
 | `dashboards/` | дашборды Grafana «Платежи» и «Устойчивость»: JSON, из которого kustomize делает ConfigMap | — |
 | `monitors.yaml` | что ещё собирает Prometheus: Traefik и Argo CD | — |
 | `alerts.yaml` | правила алертов Prometheus | — |
-| `postgres-sealed.yaml` | строки подключения к Postgres с паролем, зашифрованные (SealedSecret) | — |
+| `postgres.yaml` | PostgreSQL: кластер CloudNativePG из трёх экземпляров и база `ledger`; пароль генерирует оператор (Secret `pg-app`) | `pg-rw:5432` — основной экземпляр |
 | `network-policies.yaml` | кто к кому может подключаться внутри `highload`: всё закрыто, открыто только нужное ([docs/security.md](../../docs/security.md)) | — |
 | `pdb.yaml` | PodDisruptionBudget Payments.Api: при `kubectl drain` одна реплика всегда в работе | — |
 
@@ -52,7 +52,7 @@
    ```powershell
    k3d image import apache/kafka:4.3.2 redis:7.4-alpine mcr.microsoft.com/dotnet/aspire-dashboard:9.0 -c highload
    ```
-3. **Пароли** лежат в git зашифрованными: `postgres-sealed.yaml` здесь и `deploy/monitoring/secrets/grafana-admin-sealed.yaml` — это SealedSecret. Открыть их может только контроллер Sealed Secrets в кластере (`deploy/argocd/sealed-secrets.yaml`, ставит Argo CD): у него закрытый ключ, а `kubeseal` на ноутбуке шифрует открытым. Контроллер нужен раньше, чем `kubectl apply -k`: без него тип `SealedSecret` кластеру неизвестен.
+3. **Пароли.** Пароль PostgreSQL в git не хранится вообще: его генерирует оператор CloudNativePG в кластере (Secret `pg-app`), сервисы читают его оттуда. Оператор — `deploy/argocd/cnpg.yaml`, ставит Argo CD; он нужен раньше, чем `kubectl apply -k`: без него типы `Cluster` и `Database` кластеру неизвестны. Пароль Grafana лежит в git зашифрованным: `deploy/monitoring/secrets/grafana-admin-sealed.yaml` — это SealedSecret. Открыть их может только контроллер Sealed Secrets в кластере (`deploy/argocd/sealed-secrets.yaml`, ставит Argo CD): у него закрытый ключ, а `kubeseal` на ноутбуке шифрует открытым. Контроллер нужен раньше, чем `kubectl apply -k`: без него тип `SealedSecret` кластеру неизвестен.
 
    **kubeseal** (один раз):
    ```powershell
@@ -63,15 +63,12 @@
    [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";$HOME\bin", "User")
    ```
 
-   **Зашифровать заново** — на новом кластере (у его контроллера новый ключ, старые файлы он не откроет) или при смене пароля. Строки подключения с паролем — в `postgres.env`, его нет в git:
+   **Зашифровать заново** — на новом кластере (у его контроллера новый ключ, старые файлы он не откроет) или при смене пароля:
    ```powershell
-   Copy-Item deploy\k8s\postgres.env.example deploy\k8s\postgres.env   # и заменить CHANGE_ME в обеих строках
-   kubectl -n highload create secret generic postgres --from-env-file=deploy/k8s/postgres.env --dry-run=client -o yaml |
-       kubeseal -o yaml > deploy/k8s/postgres-sealed.yaml
    kubectl -n monitoring create secret generic grafana-admin --from-literal=admin-user=admin --from-literal=admin-password='<пароль>' --dry-run=client -o yaml |
        kubeseal -o yaml > deploy/monitoring/secrets/grafana-admin-sealed.yaml
    ```
-   Затем коммит и push: Argo CD применит SealedSecret, контроллер обновит Secret. Поды читают пароль из переменных окружения только при старте, поэтому после смены пароля: `kubectl -n highload rollout restart deployment/payments-api deployment/ledger-service`.
+   Затем коммит и push: Argo CD применит SealedSecret, контроллер обновит Secret. Grafana читает пароль при старте: после смены — `kubectl -n monitoring rollout restart deployment/monitoring-grafana`.
 
    **Ключ контроллера** — единственное, чего нет в git, и без него файлы в git не открыть. Сохранить вне репозитория (менеджер паролей):
    ```powershell
@@ -115,9 +112,12 @@ Invoke-RestMethod http://localhost:8080/invariants
 k6 run -e BASE_URL=http://localhost:8080 -e RATE=200 -e DURATION=60s load/payments.js
 ```
 
-С какого адреса поды приходят в Postgres:
+PostgreSQL: какой экземпляр основной, сколько соединений у сервисов, работает ли синхронная репликация:
 ```powershell
-psql -p 5433 -U postgres -c "SELECT DISTINCT client_addr, datname FROM pg_stat_activity WHERE datname IN ('payments','ledger')"
+kubectl -n highload get cluster pg
+$p = kubectl -n highload get cluster pg -o jsonpath='{.status.currentPrimary}'
+kubectl -n highload exec $p -c postgres -- psql -U postgres -c "select datname, usename, count(*) from pg_stat_activity where datname in ('payments','ledger') group by 1,2"
+kubectl -n highload exec $p -c postgres -- psql -U postgres -c "select application_name, state, sync_state from pg_stat_replication"
 ```
 
 ## Выкатка новой версии
@@ -143,7 +143,7 @@ k3d cluster delete highload      # или весь кластер
 
 ## CoreDNS в двух экземплярах
 
-k3s запускает CoreDNS в одном экземпляре. Если упадёт нода, на которой он живёт, в кластере пропадёт DNS, и ни один новый под не стартует: Payments.Api и Ledger.Service при старте резолвят `host.docker.internal`, `kafka` и `redis`. Вторая реплика — на другой ноде:
+k3s запускает CoreDNS в одном экземпляре. Если упадёт нода, на которой он живёт, в кластере пропадёт DNS, и ни один новый под не стартует: Payments.Api и Ledger.Service при старте резолвят `pg-rw`, `kafka` и `redis`. Вторая реплика — на другой ноде:
 ```powershell
 kubectl -n kube-system scale deployment/coredns --replicas=2
 kubectl -n kube-system get pods -l k8s-app=kube-dns -o wide     # реплики должны быть на разных нодах
