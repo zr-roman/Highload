@@ -140,3 +140,5 @@ Grafana наружу не опубликована:
 kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80     # http://localhost:3000, admin и пароль из Secret
 ```
 
+Что на дашбордах, почему мониторинг закреплён за server-0 и что показали опыты с отказом нод — в [docs/observability.md](../../docs/observability.md).
+
