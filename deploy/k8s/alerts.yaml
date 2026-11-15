@@ -1,0 +1,81 @@
+# Alerting rules of the stand. The Prometheus Operator turns this PrometheusRule into Prometheus rules; Prometheus
+# picks it up from any namespace (ruleSelectorNilUsesHelmValues in deploy/monitoring/values.yaml) and sends what fires
+# to Alertmanager. Nobody is paged on a laptop: Alertmanager keeps the alerts for its UI and for Grafana.
+#
+# Each alert answers "is someone affected, or about to be", not "is something unusual": an alert nobody acts on
+# teaches people to ignore the rest. Prometheus evaluates the rules every 30 s, so an alert fires up to 30 s after
+# its condition plus "for".
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: highload
+spec:
+  groups:
+    - name: highload.entry
+      rules:
+        # The earliest sign of a dead pod: Traefik's attempts to Payments.Api fail with 502/504 while the client still
+        # gets its answers, because the retry middleware sends the request to another pod (deploy/k8s/traefik.yaml).
+        # Kubernetes needs ~15 s more to call the node NotReady (node-monitor-grace-period, deploy/k8s/README.md).
+        # A warning, not critical: nobody is affected yet, but the retries are using up the spare capacity.
+        - alert: PaymentsApiAttemptsFailing
+          expr: |
+            sum(rate(traefik_service_requests_total{service=~"highload-payments-api.*", code=~"502|504"}[1m])) > 1
+          for: 15s
+          labels:
+            severity: warning
+          annotations:
+            summary: "Traefik cannot reach a Payments.Api pod: {{ $value | humanize }} failed attempts a second"
+            description: >-
+              Attempts fail and are retried on another pod; clients do not see it yet.
+              Usually a pod on a dead node that is still in the Service.
+
+        # What the client actually sees. 1 % for a minute: a few 5xx during a rolling update stay below it.
+        - alert: ClientErrorsHigh
+          expr: |
+            sum(rate(traefik_entrypoint_requests_total{entrypoint="web", code=~"5.."}[2m]))
+              / sum(rate(traefik_entrypoint_requests_total{entrypoint="web"}[2m])) > 0.01
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $value | humanizePercentage }} of the answers to clients are 5xx"
+
+    - name: highload.async
+      rules:
+        # Payments are taken but do not reach the Ledger: Kafka is down or the relay is stuck. Normally the oldest
+        # message waits well under a second. The gauge comes over OTLP and has no staleness marker: after the relay's
+        # pod dies, Prometheus keeps its last value for 5 minutes (docs/observability.md, lesson 7).
+        - alert: OutboxBacklog
+          expr: max(payments_outbox_oldest_age_seconds) > 60
+          for: 30s
+          labels:
+            severity: critical
+          annotations:
+            summary: "The oldest payment in the outbox has waited {{ $value | humanizeDuration }}"
+            description: Balances lag behind payments. Check Kafka and the outbox relay of Payments.Api.
+
+    - name: highload.cluster
+      rules:
+        # From kube-state-metrics, which stays on the server node (deploy/monitoring/values.yaml): a stopped agent
+        # node does not take its own alert down with it.
+        - alert: NodeNotReady
+          expr: kube_node_status_condition{condition="Ready", status="true"} == 0
+          for: 30s
+          labels:
+            severity: critical
+          annotations:
+            summary: "Node {{ $labels.node }} is not Ready"
+            description: Pods on it are evicted 30 s after NotReady (tolerationSeconds in payments-api.yaml).
+
+        # A container that keeps falling over. Restarts alone are not enough: Kafka and the Ledger restart once
+        # when their node comes back, and that is recovery, not a problem.
+        - alert: PodCrashLooping
+          expr: |
+            max by (namespace, pod, container) (
+              kube_pod_container_status_waiting_reason{namespace="highload", reason="CrashLoopBackOff"}) == 1
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.pod }} ({{ $labels.container }}) is in CrashLoopBackOff"
+            description: "kubectl -n highload logs {{ $labels.pod }} --previous"

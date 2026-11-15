@@ -1,13 +1,25 @@
 # kube-prometheus-stack for the k3d stand on a laptop: Prometheus, Grafana, the Prometheus Operator, kube-state-metrics
 # and node-exporter. Installed by Argo CD from git (deploy/argocd/monitoring.yaml); this file is its Helm values.
-# Trimmed for one machine: no Alertmanager, short retention, modest memory.
+# Trimmed for one machine: short retention, modest memory, Alertmanager without receivers.
 
 # Short resource names: monitoring-grafana, monitoring-prometheus and so on.
 fullnameOverride: monitoring
 
-# Nobody to page on a laptop. The alerting rules are off as well: without Alertmanager they only cost CPU.
+# Alertmanager without receivers: nobody to page on a laptop, the alerts are seen in its UI and in Grafana, which gets
+# an Alertmanager data source from the chart. The rules are the stand's own (deploy/k8s/alerts.yaml).
 alertmanager:
-  enabled: false
+  alertmanagerSpec:
+    # On the server node, like Prometheus: an alert about a dead node must not die with it.
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: "true"
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
+# The chart's default rules (about 150) are written for kubeadm clusters: on k3s some of them fire forever about
+# control-plane components it does not expose, and the rest overlap with deploy/k8s/alerts.yaml.
 defaultRules:
   create: false
 

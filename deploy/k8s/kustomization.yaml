@@ -25,6 +25,7 @@ resources:
   - traefik.yaml
   - otel-collector.yaml
   - monitors.yaml
+  - alerts.yaml
 
 # Grafana dashboards of the stand, from the JSON files in dashboards/. The Grafana sidecar picks up any ConfigMap
 # labelled grafana_dashboard: "1" in any namespace (deploy/monitoring/values.yaml) and loads it without a restart.

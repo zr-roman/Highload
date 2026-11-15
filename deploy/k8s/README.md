@@ -17,6 +17,7 @@
 | `otel-collector.yaml` | OpenTelemetry Collector: телеметрия сервисов — метрики в Prometheus, всё в Aspire dashboard | `otel-collector:4317` |
 | `dashboards/` | дашборды Grafana «Платежи» и «Устойчивость»: JSON, из которого kustomize делает ConfigMap | — |
 | `monitors.yaml` | что ещё собирает Prometheus: Traefik и Argo CD | — |
+| `alerts.yaml` | правила алертов Prometheus | — |
 | `pdb.yaml` | PodDisruptionBudget Payments.Api: при `kubectl drain` одна реплика всегда в работе | — |
 
 ## Запуск
@@ -146,6 +147,12 @@ kubectl apply -f deploy/argocd/monitoring.yaml
 Grafana наружу не опубликована:
 ```powershell
 kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80     # http://localhost:3000, admin и пароль из Secret
+```
+
+Алерты — `deploy/k8s/alerts.yaml` (PrometheusRule): недоступный под Payments.Api, 5xx клиентам, застрявший outbox, нода NotReady, CrashLoopBackOff. Alertmanager без получателей: сработавшие алерты видны в его интерфейсе и в Grafana (Alerting → Alert rules, источник Alertmanager).
+```powershell
+kubectl -n monitoring port-forward svc/monitoring-alertmanager 9093:9093    # http://localhost:9093
+kubectl -n monitoring port-forward svc/monitoring-prometheus 9090:9090      # http://localhost:9090/alerts — правила и их состояние
 ```
 
 Что на дашбордах, почему мониторинг закреплён за server-0 и что показали опыты с отказом нод — в [docs/observability.md](../../docs/observability.md).
