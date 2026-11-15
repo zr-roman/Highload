@@ -32,6 +32,9 @@ await DatabaseSchema.ApplyAsync(
     Path.Combine(app.Environment.ContentRootPath, "Database", "schema.sql"));
 await KafkaTopics.EnsureCreatedAsync(kafka, Topics.PaymentsCaptured, Topics.PaymentsCapturedPartitions, app.Logger);
 
+// Every counter at zero from the first export on: see LedgerMetrics.StartCountersAtZero.
+app.Services.GetRequiredService<LedgerMetrics>().StartCountersAtZero();
+
 app.MapGet("/balances/merchants/{merchantId:long}", async (long merchantId, LedgerQueries queries, CancellationToken ct) =>
     await queries.GetBalanceAsync(LedgerAccounts.MerchantAccounts(merchantId), ct) is { } balance
         ? Results.Ok(new { merchantId, balance })

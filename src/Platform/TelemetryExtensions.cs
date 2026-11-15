@@ -18,8 +18,14 @@ public static class TelemetryExtensions
     public static WebApplicationBuilder AddPlatformTelemetry(
         this WebApplicationBuilder builder, string serviceName, params string[] meters)
     {
+        // The instance in telemetry: in Kubernetes the pod (POD_NAME from the downward API, deploy/k8s), so that
+        // a container restarted in the same pod continues its series in Prometheus instead of starting new ones.
+        // Elsewhere, as by default, a random id for every process.
+        var podName = Environment.GetEnvironmentVariable("POD_NAME");
+
         builder.Services.AddOpenTelemetry()
-            .ConfigureResource(resource => resource.AddService(serviceName))
+            .ConfigureResource(resource => resource.AddService(
+                serviceName, serviceInstanceId: string.IsNullOrEmpty(podName) ? null : podName))
             .WithTracing(tracing => tracing
                 .AddAspNetCoreInstrumentation()
                 .AddSource("System.Net.Http")   // HttpClient spans are built into .NET

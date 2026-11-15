@@ -34,6 +34,19 @@ public sealed class LedgerMetrics
     }
 
     /// <summary>
+    /// The counters at zero before the first batch, so that their series reach Prometheus with the first export.
+    /// A rate is the difference between two points: a series that first appears with a burst already in it (the backlog
+    /// after Kafka comes back, written by a ledger that has just restarted) has nothing to subtract the burst from.
+    /// Called once at startup (Program.cs), not in the constructor: a test's metric collector would count the zeros.
+    /// </summary>
+    public void StartCountersAtZero()
+    {
+        _applied.Add(0);
+        _duplicates.Add(0);
+        _malformed.Add(0);
+    }
+
+    /// <summary>
     /// A batch of one partition is in the ledger. The partition tag shows skew: batches of the partition with a hot merchant
     /// grow while the rest stay small, and in the totals they are lost among the others.
     /// </summary>

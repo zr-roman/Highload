@@ -63,6 +63,30 @@ public sealed class PaymentsMetrics
             description: "How long the oldest message in the outbox has been waiting for the relay");
     }
 
+    /// <summary>
+    /// Every counter of this instance at zero before anything happens, so that each series reaches Prometheus with
+    /// the first export. A rate is the difference between two points, and a series that first appears with a burst
+    /// already in it has nothing to subtract the burst from. That is how the outbox drained after Kafka came back went
+    /// missing from the dashboards: the new relay leader had never published before, and its first point held it all.
+    /// Called once at startup (Program.cs), not in the constructor: the tests' metric collectors would count the zeros
+    /// as measurements. Histograms are left alone: they cannot get a series without a made-up observation.
+    /// </summary>
+    public void StartCountersAtZero()
+    {
+        _captured.Add(0);
+        _capturedAmount.Add(0);
+        _declined.Add(0);
+        _unknown.Add(0);
+        _replayed.Add(0);
+        _outboxPublished.Add(0);
+        _rateLimitLocal.Add(0);
+        foreach (var source in new[] { "redis", "local" })
+        {
+            AddRateLimited(0, source, overrideQuota: false);
+            AddRateLimited(0, source, overrideQuota: true);
+        }
+    }
+
     public void Captured(long amount)
     {
         _captured.Add(1);
@@ -79,8 +103,10 @@ public sealed class PaymentsMetrics
     /// A request got 429; <paramref name="source"/> is who decided: "redis" or "local". The quota tag tells merchants
     /// with a quota of their own from the rest without a merchantId in the metric: 10 000 merchants would be 10 000 series.
     /// </summary>
-    public void RateLimited(string source, bool overrideQuota) =>
-        _rateLimited.Add(1, new KeyValuePair<string, object?>("source", source), new KeyValuePair<string, object?>("quota", overrideQuota ? "override" : "default"));
+    public void RateLimited(string source, bool overrideQuota) => AddRateLimited(1, source, overrideQuota);
+
+    private void AddRateLimited(long value, string source, bool overrideQuota) =>
+        _rateLimited.Add(value, new KeyValuePair<string, object?>("source", source), new KeyValuePair<string, object?>("quota", overrideQuota ? "override" : "default"));
 
     public void RateLimitLocal() => _rateLimitLocal.Add(1);
 

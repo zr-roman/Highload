@@ -82,6 +82,12 @@ spec:
             # Metrics every 15 s, as often as Prometheus scrapes the rest; the default of 60 s draws one point a minute.
             - name: OTEL_METRIC_EXPORT_INTERVAL
               value: "15000"
+            # The pod's name as the instance in telemetry (src/Platform/TelemetryExtensions.cs): a container restarted
+            # in the same pod continues its series in Prometheus instead of starting new ones.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             # 1 % of traces, as the load matrix runs the services (load/Matrix/Stand.cs): a trace of every request
             # is thousands of spans a second for the dashboard on the same laptop, and it shows in the latency.
             - name: OTEL_TRACES_SAMPLER

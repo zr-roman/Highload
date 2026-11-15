@@ -86,6 +86,9 @@ app.Services.GetRequiredService<IConnectionMultiplexer>();
 // Merchant limits that do not validate fail the start, not the first payment.
 app.Services.GetRequiredService<MerchantQuotas>();
 
+// Every counter at zero from the first export on, on every instance: see PaymentsMetrics.StartCountersAtZero.
+app.Services.GetRequiredService<PaymentsMetrics>().StartCountersAtZero();
+
 app.MapPaymentEndpoints();
 
 app.MapPlatformHealthChecks();
