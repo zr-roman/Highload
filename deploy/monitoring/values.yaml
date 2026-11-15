@@ -1,0 +1,81 @@
+# kube-prometheus-stack for the k3d stand on a laptop: Prometheus, Grafana, the Prometheus Operator, kube-state-metrics
+# and node-exporter. Installed by Argo CD from git (deploy/argocd/monitoring.yaml); this file is its Helm values.
+# Trimmed for one machine: no Alertmanager, short retention, modest memory.
+
+# Short resource names: monitoring-grafana, monitoring-prometheus and so on.
+fullnameOverride: monitoring
+
+# Nobody to page on a laptop. The alerting rules are off as well: without Alertmanager they only cost CPU.
+alertmanager:
+  enabled: false
+defaultRules:
+  create: false
+
+# k3s runs the control plane in one process and does not expose these components the way kubeadm does: their targets
+# would be down forever.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+kubeEtcd:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    # Enough to look at a run and compare it with the previous one; the disk of the laptop is tight.
+    retention: 12h
+    retentionSize: 1GB
+    scrapeInterval: 15s
+    # Pick up ServiceMonitors and PodMonitors from any namespace, not only those labelled for this Helm release:
+    # the monitors of the stand live in deploy/k8s, next to the services they watch.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    resources:
+      requests:
+        cpu: 100m
+        memory: 400Mi
+      limits:
+        memory: 1500Mi
+
+grafana:
+  # Dashboards come from git as ConfigMaps (label grafana_dashboard: "1"), so nothing in Grafana needs a disk.
+  persistence:
+    enabled: false
+  sidecar:
+    dashboards:
+      # The dashboards of the stand live in deploy/k8s, in namespace highload.
+      searchNamespace: ALL
+  defaultDashboardsTimezone: browser
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 24Mi
+    limits:
+      memory: 64Mi

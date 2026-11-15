@@ -1,0 +1,35 @@
+# Prometheus and Grafana, installed by Argo CD from the Helm chart kube-prometheus-stack; the values are in git
+# (deploy/monitoring/values.yaml). Applied once by hand, like highload.yaml:
+#   kubectl apply -f deploy/argocd/monitoring.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monitoring
+  namespace: argocd
+spec:
+  project: default
+  # Two sources: the chart from its Helm repository, the values from this repository (referred to as $values).
+  sources:
+    - repoURL: https://prometheus-community.github.io/helm-charts
+      chart: kube-prometheus-stack
+      # A fixed version: a new chart version is a commit here, like a new image tag of the services.
+      targetRevision: 87.19.2
+      helm:
+        releaseName: monitoring
+        valueFiles:
+          - $values/deploy/monitoring/values.yaml
+    - repoURL: https://github.com/zr-roman/Highload.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # The CRDs of the Prometheus Operator are too large for client-side apply: its last-applied annotation
+      # exceeds the 256 KB limit of an annotation.
+      - ServerSideApply=true
