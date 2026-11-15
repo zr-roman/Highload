@@ -305,15 +305,15 @@
     },
     {
       "type": "timeseries",
-      "title": "Traefik: повторы на другом поде",
-      "description": "Middleware retry (deploy/k8s/traefik.yaml): запрос, не доставленный поду, уходит на следующий.",
+      "title": "Traefik: что спрятали повторы",
+      "description": "Попытки к подам, закончившиеся 5xx, против ответов 5xx, которые получил клиент. Попытку, не дошедшую до пода (504 — нет соединения за 1 с, 502 — соединение оборвалось), middleware retry (deploy/k8s/traefik.yaml) повторяет на другом поде, и клиент получает обычный ответ: разница между линиями — работа повторов. Ответы клиенту считаются на входе web по всем маршрутам, но под нагрузкой почти все они — POST /payments. Своего счётчика у middleware retry нет: traefik_service_retries_total она не пишет (в коде Traefik — TODO missing metrics).",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
+          "unit": "reqps",
           "min": 0,
           "noValue": "0",
           "color": {
@@ -332,7 +332,38 @@
             }
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "попытки к подам с 5xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ответы клиенту с 5xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -352,8 +383,18 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (service) (rate(traefik_service_retries_total{service=~\"highload-.*\"}[$__rate_interval]))",
-          "legendFormat": "{{service}}",
+          "expr": "sum(rate(traefik_service_requests_total{service=~\"highload-payments-api.*\", code=~\"5..\"}[$__rate_interval]))",
+          "legendFormat": "попытки к подам с 5xx",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(traefik_entrypoint_requests_total{entrypoint=\"web\", code=~\"5..\"}[$__rate_interval]))",
+          "legendFormat": "ответы клиенту с 5xx",
           "range": true
         }
       ],
