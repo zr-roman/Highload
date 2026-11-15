@@ -121,15 +121,17 @@ psql -p 5433 -U postgres -c "SELECT DISTINCT client_addr, datname FROM pg_stat_a
 
 ## Выкатка новой версии
 
-Кластер синхронизирует из git Argo CD (`deploy/argocd/highload.yaml`), поэтому новая версия выкатывается через git, а не через `kubectl`:
+Кластер синхронизирует из git Argo CD (`deploy/argocd/highload.yaml`), поэтому новая версия выкатывается через git, а не через `kubectl`. Обычно — сама: push в `main` запускает CI (`.github/workflows/ci.yml`), он прогоняет тесты, собирает образы изменившихся сервисов в `ghcr.io/zr-roman/…` и коммитит их теги. Подробно — в [docs/gitops.md](../../docs/gitops.md#выкатка-новой-версии).
 ```powershell
-git commit -am "..."                                   # код сервиса закоммичен
-.\deploy\release.ps1 -Services payments-api             # сборка с тегом = коммит, импорт в ноды, тег в kustomization.yaml, push
+git push                                  # дальше CI; через несколько минут — коммит «Release: … (CI)»
+git pull                                  # коммит бота, прежде чем коммитить своё
 kubectl -n highload rollout status deployment/payments-api
 ```
-Argo CD замечает новый тег в течение 3 минут, сразу — по кнопке Refresh. Откат — `git revert` коммита `Release: ...` и `git push`: тег возвращается к прошлому, а прошлый образ ещё лежит в нодах.
-
-Без скрипта, вручную — то же самое: `docker build -t payments-api:<тег>`, `k3d image import payments-api:<тег> -c highload`, тег в блок `images:` в `kustomization.yaml`, коммит, push.
+Без CI или без интернета — скрипт: собирает образ здесь под тем же именем, загружает в ноды и коммитит тег:
+```powershell
+.\deploy\release.ps1 -Services payments-api
+```
+Argo CD замечает новый тег в течение 3 минут, сразу — по кнопке Refresh. Откат — `git revert` коммита `Release: ...` и `git push`: тег возвращается к прошлому, прошлый образ лежит в ghcr.io.
 
 ## Удалить
 

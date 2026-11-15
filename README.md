@@ -1,6 +1,8 @@
 # payments-platform
 
-Платёжный сервис на микросервисах — пет-проект о высокой нагрузке. Архитектура выведена из замеров на PostgreSQL: пять экспериментов, их цифры и выводы — в [docs/postgres-experiments.md](docs/postgres-experiments.md). Как этап 1 держит нагрузку и во что упирается — в [docs/load-testing.md](docs/load-testing.md). Стенд в Kubernetes и выкатка через git — в [deploy/k8s/README.md](deploy/k8s/README.md) и [docs/gitops.md](docs/gitops.md). Метрики, дашборды и опыты с отказом нод — в [docs/observability.md](docs/observability.md).
+[![CI](https://github.com/zr-roman/Highload/actions/workflows/ci.yml/badge.svg)](https://github.com/zr-roman/Highload/actions/workflows/ci.yml)
+
+Платёжный сервис на микросервисах — пет-проект о высокой нагрузке. Архитектура выведена из замеров на PostgreSQL: пять экспериментов, их цифры и выводы — в [docs/postgres-experiments.md](docs/postgres-experiments.md). Как этап 1 держит нагрузку и во что упирается — в [docs/load-testing.md](docs/load-testing.md). Стенд в Kubernetes и выкатка через git — в [deploy/k8s/README.md](deploy/k8s/README.md) и [docs/gitops.md](docs/gitops.md); тесты и образы собирает CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)). Метрики, дашборды и опыты с отказом нод — в [docs/observability.md](docs/observability.md).
 
 ## Этап 1: что уже работает
 
