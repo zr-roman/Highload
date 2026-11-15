@@ -31,3 +31,17 @@ spec:
   endpoints:
     - port: metrics
       interval: 30s
+---
+# PostgreSQL (postgres.yaml): the exporter of each instance, port metrics (9187). Replication lag, connections,
+# transactions, which instance is the primary.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: postgres
+spec:
+  selector:
+    matchLabels:
+      cnpg.io/cluster: pg
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 15s
