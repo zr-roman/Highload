@@ -1,10 +1,12 @@
 using System.Diagnostics;
 using Confluent.Kafka;
+using Contracts;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using OpenTelemetry;
 using Payments.Api.Database;
 using Payments.Api.Telemetry;
+using Platform;
 
 namespace Payments.Api.Outbox;
 
@@ -21,6 +23,8 @@ public sealed class OutboxRelay(
     ILogger<OutboxRelay> logger) : BackgroundService
 {
     private sealed record OutboxMessage(long Id, string Topic, string Key, string Payload, DateTimeOffset CreatedAt);
+
+    private bool _topicReady;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -73,6 +77,16 @@ public sealed class OutboxRelay(
 
         if (batch.Count == 0)
             return 0;
+
+        // The topic before the first message, or Kafka creates it on its own with a single partition. Here and not at
+        // startup: a pod has to start while Kafka is down, and the relay waits for Kafka anyway. Until Kafka answers
+        // this throws, and the loop above tries again; the outbox age above is measured all the same.
+        if (!_topicReady)
+        {
+            using var admin = new DependentAdminClientBuilder(producer.Handle).Build();
+            await KafkaTopics.EnsureCreatedAsync(admin, Topics.PaymentsCaptured, Topics.PaymentsCapturedPartitions, logger);
+            _topicReady = true;
+        }
 
         var read = Stopwatch.GetElapsedTime(started);
 

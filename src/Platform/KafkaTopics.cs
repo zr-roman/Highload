@@ -13,6 +13,15 @@ public static class KafkaTopics
     public static async Task EnsureCreatedAsync(string bootstrapServers, string topic, int partitions, ILogger logger)
     {
         using var admin = new AdminClientBuilder(new AdminClientConfig { BootstrapServers = bootstrapServers }).Build();
+        await EnsureCreatedAsync(admin, topic, partitions, logger);
+    }
+
+    /// <summary>
+    /// The same through an admin client that already exists, such as one that shares a producer's connections
+    /// (DependentAdminClientBuilder).
+    /// </summary>
+    public static async Task EnsureCreatedAsync(IAdminClient admin, string topic, int partitions, ILogger logger)
+    {
         try
         {
             // A timeout of its own: by default the request waits up to a minute for a broker that is not there,
