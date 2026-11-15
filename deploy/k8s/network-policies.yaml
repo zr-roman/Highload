@@ -62,25 +62,8 @@ spec:
       ports:
         - port: 6379
 ---
-# Kafka: Payments.Api writes (outbox relay), Ledger.Service reads. The controller port 9093 is used inside the pod only.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: kafka
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: kafka
-  policyTypes: [Ingress]
-  ingress:
-    - from:
-        - podSelector:
-            matchExpressions:
-              - key: app.kubernetes.io/name
-                operator: In
-                values: [payments-api, ledger-service]
-      ports:
-        - port: 9092
+# Kafka: no policy here. Strimzi makes its own (kafka.yaml): the listener 9092 for Payments.Api, which writes from the
+# outbox, and Ledger.Service, which reads (networkPolicyPeers); the ports between the brokers and from the operator.
 ---
 # The bank and the antifraud check are called by Payments.Api alone (antifraud from stage 4 on).
 apiVersion: networking.k8s.io/v1

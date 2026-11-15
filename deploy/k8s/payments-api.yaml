@@ -88,7 +88,7 @@ spec:
             - name: ConnectionStrings__Payments
               value: Host=pg-rw;Port=5432;Database=payments;Username=app;Password=$(PG_PASSWORD);Maximum Pool Size=16;Minimum Pool Size=16;Timeout=3;Command Timeout=5;Options=-c idle_in_transaction_session_timeout=15s -c statement_timeout=5s
             - name: ConnectionStrings__Kafka
-              value: kafka:9092
+              value: kafka-kafka-bootstrap:9092
             - name: ConnectionStrings__Redis
               value: redis:6379,connectTimeout=2000,syncTimeout=100,asyncTimeout=100
             - name: Acquirer__BaseAddress

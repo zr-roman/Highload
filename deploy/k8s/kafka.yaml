@@ -1,123 +1,126 @@
-# One Kafka node in KRaft mode, as in docker-compose.yml: the same process is broker and controller.
-# A StatefulSet, so the pod has a stable name (kafka-0) and keeps its volume across restarts.
-apiVersion: v1
-kind: Service
+# Kafka of the stand, run by Strimzi (deploy/argocd/strimzi.yaml): three nodes on three nodes of the cluster, each
+# both broker and KRaft controller. The quorum of three controllers and three replicas of every partition survive the
+# loss of any one node.
+#
+# The services connect to the Service kafka-kafka-bootstrap:9092; the client then talks to the broker that leads each
+# partition, at the address that broker advertises (kafka-broker-N.kafka-kafka-brokers).
+#
+# A write is safe when two of three brokers have it: min.insync.replicas 2 with acks=all of the producer of
+# Payments.Api (Program.cs). The outbox row is deleted only after that. One broker down: writes go on. Two down: the
+# producer is refused, the outbox keeps the payments in PostgreSQL until a second broker is back — nothing is lost,
+# the Ledger lags (alert OutboxBacklog). The same choice as dataDurability: required of PostgreSQL (postgres.yaml).
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
 metadata:
-  name: kafka
+  name: broker
   labels:
-    app.kubernetes.io/name: kafka
+    strimzi.io/cluster: kafka
 spec:
-  # Headless: the name kafka resolves straight to the pod's IP, and kafka-0.kafka is the pod's own name,
-  # which the broker advertises to the clients.
-  clusterIP: None
-  selector:
-    app.kubernetes.io/name: kafka
-  ports:
-    - name: broker
-      port: 9092
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: kafka
-  labels:
-    app.kubernetes.io/name: kafka
-spec:
-  serviceName: kafka
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: kafka
+  replicas: 3
+  roles: [controller, broker]
+  storage:
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        # local-path of k3s: a folder on the node. The volume stays when the cluster is deleted: deleteClaim false.
+        size: 1Gi
+        deleteClaim: false
+        # The KRaft metadata log on the same volume as the partitions.
+        kraftMetadata: shared
+  # The heap is small: the stand writes a few hundred small messages a second. The rest of the memory is the page
+  # cache, which Kafka reads and writes through.
+  jvmOptions:
+    -Xms: 320m
+    -Xmx: 320m
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 768Mi
   template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: kafka
-    spec:
-      # Without this Kubernetes adds KAFKA_PORT, KAFKA_SERVICE_HOST and the like for the Service named kafka,
-      # and the image turns every KAFKA_* variable into a broker setting.
-      enableServiceLinks: false
-      # Restricted, as the Pod Security Standard of the namespace demands (namespace.yaml, docs/security.md).
-      # appuser of the image, the owner of the files on the data volume.
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
-        seccompProfile:
-          type: RuntimeDefault
-      containers:
-        - name: kafka
-          # Not 4.0.0: see docker-compose.yml (KAFKA-19888).
-          image: apache/kafka:4.4.0
-          ports:
-            - name: broker
-              containerPort: 9092
-          env:
-            - name: KAFKA_NODE_ID
-              value: "1"
-            - name: KAFKA_PROCESS_ROLES
-              value: broker,controller
-            - name: KAFKA_LISTENERS
-              value: PLAINTEXT://:9092,CONTROLLER://:9093
-            # The address clients get back from the bootstrap server and then connect to:
-            # the pod's own DNS name, reachable from every pod of the cluster.
-            - name: KAFKA_ADVERTISED_LISTENERS
-              value: PLAINTEXT://kafka-0.kafka.highload.svc.cluster.local:9092
-            - name: KAFKA_CONTROLLER_LISTENER_NAMES
-              value: CONTROLLER
-            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
-              value: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
-              value: 1@localhost:9093
-            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
-              value: "1"
-            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
-              value: "1"
-            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
-              value: "1"
-            - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
-              value: "0"
-            # Topics are created by the services with the right number of partitions.
-            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
-              value: "false"
-            # The disk is tight: at most ~64 MB per partition, small segments so old ones can be deleted.
-            - name: KAFKA_LOG_RETENTION_BYTES
-              value: "67108864"
-            - name: KAFKA_LOG_SEGMENT_BYTES
-              value: "16777216"
-            - name: KAFKA_LOG_RETENTION_HOURS
-              value: "1"
-            # On the volume, not in /tmp of the container: the log survives a restart of the pod.
-            - name: KAFKA_LOG_DIRS
-              value: /var/lib/kafka/data
-            - name: KAFKA_HEAP_OPTS
-              value: "-Xmx512m -Xms512m"
-          # The broker accepts connections: the services may start creating the topic.
-          readinessProbe:
-            tcpSocket:
-              port: broker
-            periodSeconds: 5
-          # Restricted (docs/security.md): the process cannot gain privileges beyond those it starts with.
-          securityContext:
-            allowPrivilegeEscalation: false
-            # The image writes its broker config into /opt/kafka/config at start: the root file system stays writable.
-            readOnlyRootFilesystem: false
-            capabilities:
-              drop: [ALL]
-          resources:
-            requests:
-              cpu: 250m
-              memory: 768Mi
-            limits:
-              memory: 1Gi
-          volumeMounts:
-            - name: data
-              mountPath: /var/lib/kafka/data
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: [ReadWriteOnce]
-        # local-path, the default storage class of k3s: a folder on the node.
-        resources:
-          requests:
-            storage: 1Gi
+    pod:
+      # One broker per node, like the instances of PostgreSQL: a node going down takes one replica of a partition,
+      # never two, so min.insync.replicas 2 still holds.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  strimzi.io/cluster: kafka
+                  strimzi.io/pool-name: broker
+---
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: kafka
+spec:
+  kafka:
+    version: 4.3.2
+    metadataVersion: 4.3-IV0
+    listeners:
+      # Plain text inside the cluster, as before. Strimzi makes a NetworkPolicy for every listener; the peers below
+      # narrow it to the two services (docs/security.md).
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+        networkPolicyPeers:
+          - podSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values: [payments-api, ledger-service]
+    config:
+      default.replication.factor: 3
+      min.insync.replicas: 2
+      offsets.topic.replication.factor: 3
+      transaction.state.log.replication.factor: 3
+      transaction.state.log.min.isr: 2
+      group.initial.rebalance.delay.ms: 0
+      # Topics are declared below (KafkaTopic) or created by the services with the broker's defaults.
+      auto.create.topics.enable: false
+      # The disk is tight: at most ~64 MB per partition and an hour, small segments so old ones can be deleted.
+      log.retention.bytes: 67108864
+      log.segment.bytes: 16777216
+      log.retention.hours: 1
+  # The Topic Operator keeps the KafkaTopic resources and the topics in Kafka in step. No User Operator: no users,
+  # the listener has no authentication.
+  entityOperator:
+    topicOperator:
+      resources:
+        requests:
+          cpu: 20m
+          memory: 192Mi
+        limits:
+          memory: 256Mi
+    template:
+      pod:
+        # With the rest of the infrastructure, on the server node: the experiments stop agent nodes.
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: node-role.kubernetes.io/control-plane
+                      operator: In
+                      values: ["true"]
+---
+# The topic of captured payments: Payments.Api writes it from the outbox, Ledger.Service reads it. Declared here so
+# that its replication is in git; the services still call CreateTopics at start (Platform/KafkaTopics.cs) and get
+# TopicAlreadyExists.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: payments-captured
+  labels:
+    strimzi.io/cluster: kafka
+spec:
+  topicName: payments.captured
+  # Contracts/Topics.cs: PaymentsCapturedPartitions. The Ledger scales up to this many consumers.
+  partitions: 8
+  replicas: 3
+  config:
+    min.insync.replicas: 2

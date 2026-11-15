@@ -4,7 +4,7 @@
 
 | Манифест | Что | Порт в кластере |
 |---|---|---|
-| `kafka.yaml` | Kafka 4.3.2, один узел KRaft, StatefulSet с томом | `kafka:9092` |
+| `kafka.yaml` | Kafka 4.3.2 под оператором Strimzi: три узла (брокер и контроллер KRaft в каждом), по одному на ноду; топик `payments.captured` — 3 реплики, `min.insync.replicas` 2 | `kafka-kafka-bootstrap:9092` |
 | `redis.yaml` | Redis без персистентности | `redis:6379` |
 | `dashboard.yaml` | Aspire dashboard: UI и приём OTLP | `dashboard:18888`, `dashboard:18889` |
 | `bank-emulator.yaml` | эмулятор банка (Go), одна реплика: решения в памяти | `bank-emulator:5300` |
@@ -77,6 +77,8 @@
    kubectl -n highload create secret generic backup-store --from-literal=ACCESS_KEY_ID=$key --from-literal=ACCESS_SECRET_KEY=$secret --dry-run=client -o yaml |
        kubeseal -o yaml > deploy/k8s/backup-store-sealed.yaml
    ```
+   Kafka запускает оператор Strimzi (`deploy/argocd/strimzi.yaml`), его тоже ставит Argo CD, и он тоже нужен раньше, чем `kubectl apply -k`: без него типы `Kafka`, `KafkaNodePool` и `KafkaTopic` кластеру неизвестны.
+
    Резервные копии делает плагин Barman Cloud (`deploy/argocd/barman-cloud.yaml`), ему нужен cert-manager (`deploy/argocd/cert-manager.yaml`). Оба ставит Argo CD, и оба нужны раньше, чем `kubectl apply -k`: без плагина тип `ObjectStore` кластеру неизвестен. Порядок: `cert-manager.yaml`, дождаться Healthy, затем `barman-cloud.yaml`.
 
    **Ключ контроллера** — единственное, чего нет в git, и без него файлы в git не открыть. Сохранить вне репозитория (менеджер паролей):
