@@ -1,0 +1,40 @@
+# CloudNativePG: the operator that runs PostgreSQL in the cluster (deploy/k8s/postgres.yaml). It creates the
+# instances, sets up streaming replication between them and, when the primary is gone, promotes a replica and moves
+# the Service pg-rw to it. Installed by Argo CD from the Helm chart. Applied once by hand, like the other applications:
+#   kubectl apply -f deploy/argocd/cnpg.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cnpg
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://cloudnative-pg.github.io/charts
+    chart: cloudnative-pg
+    # A fixed version, like the other charts: chart 0.29.0 is operator 1.30.0.
+    targetRevision: 0.29.0
+    helm:
+      releaseName: cnpg
+      valuesObject:
+        # On the server node with the rest of the infrastructure: the experiments stop agent nodes, and the operator
+        # is the one that has to react when they do.
+        nodeSelector:
+          node-role.kubernetes.io/control-plane: "true"
+        resources:
+          requests:
+            cpu: 20m
+            memory: 64Mi
+          limits:
+            memory: 256Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cnpg-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # The CRDs of CloudNativePG are too large for client-side apply, like those of the Prometheus Operator.
+      - ServerSideApply=true
