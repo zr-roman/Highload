@@ -15,7 +15,11 @@ public static class KafkaTopics
         using var admin = new AdminClientBuilder(new AdminClientConfig { BootstrapServers = bootstrapServers }).Build();
         try
         {
-            await admin.CreateTopicsAsync([new TopicSpecification { Name = topic, NumPartitions = partitions, ReplicationFactor = 1 }]);
+            // A timeout of its own: by default the request waits up to a minute for a broker that is not there,
+            // and the caller (StartupRetry) would rather try again sooner.
+            await admin.CreateTopicsAsync(
+                [new TopicSpecification { Name = topic, NumPartitions = partitions, ReplicationFactor = 1 }],
+                new CreateTopicsOptions { RequestTimeout = TimeSpan.FromSeconds(5) });
             logger.LogInformation("Created Kafka topic {Topic} with {Partitions} partitions", topic, partitions);
         }
         catch (CreateTopicsException e) when (e.Results.All(r => r.Error.Code == ErrorCode.TopicAlreadyExists))

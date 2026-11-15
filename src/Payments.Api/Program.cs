@@ -74,11 +74,13 @@ var app = builder.Build();
 
 // From the content root, like appsettings.json. Not from AppContext.BaseDirectory: when the end-to-end tests host
 // both services in one process, that is the tests' folder, and both services' schema.sql would land on one path there.
-await DatabaseSchema.ApplyAsync(
+// Postgres and Kafka may be out of reach for a moment while a pod starts: see StartupRetry.
+await StartupRetry.RunAsync("Database schema", ct => DatabaseSchema.ApplyAsync(
     app.Services.GetRequiredService<NpgsqlDataSource>(),
-    Path.Combine(app.Environment.ContentRootPath, "Database", "schema.sql"));
+    Path.Combine(app.Environment.ContentRootPath, "Database", "schema.sql"), ct), app.Logger);
 
-await KafkaTopics.EnsureCreatedAsync(kafka, Topics.PaymentsCaptured, Topics.PaymentsCapturedPartitions, app.Logger);
+await StartupRetry.RunAsync("Kafka topic", _ => KafkaTopics.EnsureCreatedAsync(
+    kafka, Topics.PaymentsCaptured, Topics.PaymentsCapturedPartitions, app.Logger), app.Logger);
 
 // Connect at startup, not on the first request that needs Redis: the first attempt may take up to connectTimeout.
 app.Services.GetRequiredService<IConnectionMultiplexer>();
