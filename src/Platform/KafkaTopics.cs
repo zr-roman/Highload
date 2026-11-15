@@ -26,8 +26,10 @@ public static class KafkaTopics
         {
             // A timeout of its own: by default the request waits up to a minute for a broker that is not there,
             // and the caller (StartupRetry) would rather try again sooner.
+            // ReplicationFactor -1: the broker's default.replication.factor, 3 in the cluster (deploy/k8s/kafka.yaml),
+            // 1 with the single broker of docker-compose and the tests.
             await admin.CreateTopicsAsync(
-                [new TopicSpecification { Name = topic, NumPartitions = partitions, ReplicationFactor = 1 }],
+                [new TopicSpecification { Name = topic, NumPartitions = partitions, ReplicationFactor = -1 }],
                 new CreateTopicsOptions { RequestTimeout = TimeSpan.FromSeconds(5) });
             logger.LogInformation("Created Kafka topic {Topic} with {Partitions} partitions", topic, partitions);
         }
