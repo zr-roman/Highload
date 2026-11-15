@@ -26,6 +26,7 @@ resources:
   - otel-collector.yaml
   - monitors.yaml
   - alerts.yaml
+  - postgres-sealed.yaml
 
 # Grafana dashboards of the stand, from the JSON files in dashboards/. The Grafana sidecar picks up any ConfigMap
 # labelled grafana_dashboard: "1" in any namespace (deploy/monitoring/values.yaml) and loads it without a restart.
@@ -54,6 +55,6 @@ images:
   - name: antifraud
     newTag: dev
 
-# The Postgres password is not here: the cluster is synced from git by Argo CD (deploy/argocd), and the password
-# must not be in git. The Secret postgres is created once by hand from postgres.env (README, step 3): the Deployments
-# refer to it by name.
+# The Postgres password is in git only encrypted: postgres-sealed.yaml is a SealedSecret that the Sealed Secrets
+# controller (deploy/argocd/sealed-secrets.yaml) turns into the Secret postgres the Deployments refer to. It is sealed
+# from postgres.env, which stays out of git (README, step 3).
