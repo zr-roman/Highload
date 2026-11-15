@@ -68,8 +68,9 @@ public sealed class PaymentsMetrics
     /// the first export. A rate is the difference between two points, and a series that first appears with a burst
     /// already in it has nothing to subtract the burst from. That is how the outbox drained after Kafka came back went
     /// missing from the dashboards: the new relay leader had never published before, and its first point held it all.
-    /// Called once at startup (Program.cs), not in the constructor: the tests' metric collectors would count the zeros
-    /// as measurements. Histograms are left alone: they cannot get a series without a made-up observation.
+    /// Called once the host has started (Program.cs): earlier the OpenTelemetry SDK is not listening yet. Not in the
+    /// constructor either: the tests' metric collectors would count the zeros as measurements. Histograms are left
+    /// alone: they cannot get a series without a made-up observation.
     /// </summary>
     public void StartCountersAtZero()
     {

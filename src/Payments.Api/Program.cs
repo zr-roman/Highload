@@ -87,7 +87,9 @@ app.Services.GetRequiredService<IConnectionMultiplexer>();
 app.Services.GetRequiredService<MerchantQuotas>();
 
 // Every counter at zero from the first export on, on every instance: see PaymentsMetrics.StartCountersAtZero.
-app.Services.GetRequiredService<PaymentsMetrics>().StartCountersAtZero();
+// Once the host has started: the OpenTelemetry SDK begins to listen to the meters with the host, and zeros recorded
+// before that go nowhere.
+app.Lifetime.ApplicationStarted.Register(app.Services.GetRequiredService<PaymentsMetrics>().StartCountersAtZero);
 
 app.MapPaymentEndpoints();
 
