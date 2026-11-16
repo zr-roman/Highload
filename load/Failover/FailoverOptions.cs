@@ -9,6 +9,13 @@ public enum Scenario
     /// that another replica takes over the outbox while the node is still down.
     /// </summary>
     KafkaBroker,
+
+    /// <summary>
+    /// The primary of PostgreSQL on the node, the leader of the outbox relay wherever it is. Checks the failover of
+    /// the base under load: that a replica is promoted while the node is down and that no confirmed payment is lost
+    /// (docs/postgres-failover.md). The node has a Kafka broker too, as every agent node does.
+    /// </summary>
+    PgPrimary,
 }
 
 /// <summary>How the node goes away.</summary>
@@ -25,6 +32,12 @@ public enum FailureMode
     /// closed: the peers' connections to it just go silent, as when a machine loses power or its switch port.
     /// </summary>
     Partition,
+
+    /// <summary>
+    /// kubectl drain: planned maintenance. Pods are evicted one by one within their PodDisruptionBudgets, the operators
+    /// see the node cordoned and move what they run (CloudNativePG switches the primary over); then uncordon.
+    /// </summary>
+    Drain,
 }
 
 /// <summary>The command line of the tool.</summary>
@@ -39,14 +52,17 @@ public sealed record FailoverOptions(
           dotnet run --project load\Failover -c Release
           dotnet run --project load\Failover -c Release -- --scenario kafka-broker --node agent-0 --rate 50
           dotnet run --project load\Failover -c Release -- --mode partition
+          dotnet run --project load\Failover -c Release -- --scenario pg-primary --mode drain
 
           --scenario S  what to put on the node (default: kafka-broker)
                           kafka-broker  a Kafka broker that leads partitions and the leader of the outbox relay;
                                         the primary of PostgreSQL is moved away from the node
+                          pg-primary    the primary of PostgreSQL: the failover of the base under load
           --mode M      how the node goes away (default: stop)
                           stop       docker stop: its processes exit and close their connections
                           partition  docker network disconnect: it stays up but drops out of the network;
                                      nothing is closed, the peers' connections go silent
+                          drain      kubectl drain: planned maintenance, pods evicted within their budgets
           --node N      the agent node to stop: agent-0 or agent-1 (default: agent-1). Not the server node:
                         the operators and the control plane live there
           --rate R      payments a second (default: 50)
@@ -73,7 +89,8 @@ public sealed record FailoverOptions(
                 {
                     "stop" => FailureMode.Stop,
                     "partition" => FailureMode.Partition,
-                    _ => throw new FailoverException($"Unknown mode {value}: stop or partition"),
+                    "drain" => FailureMode.Drain,
+                    _ => throw new FailoverException($"Unknown mode {value}: stop, partition or drain"),
                 } },
                 "--rate" => options with { Rate = Positive(name, value) },
                 "--before" => options with { BeforeSeconds = Positive(name, value) },
@@ -97,15 +114,22 @@ public sealed record FailoverOptions(
     public static string ScenarioName(Scenario scenario) => scenario switch
     {
         Scenario.KafkaBroker => "kafka-broker",
+        Scenario.PgPrimary => "pg-primary",
         _ => scenario.ToString(),
     };
 
-    public static string ModeName(FailureMode mode) => mode == FailureMode.Partition ? "partition" : "stop";
+    public static string ModeName(FailureMode mode) => mode switch
+    {
+        FailureMode.Partition => "partition",
+        FailureMode.Drain => "drain",
+        _ => "stop",
+    };
 
     private static Scenario ParseScenario(string value) => value switch
     {
         "kafka-broker" => Scenario.KafkaBroker,
-        _ => throw new FailoverException($"Unknown scenario {value}: kafka-broker"),
+        "pg-primary" => Scenario.PgPrimary,
+        _ => throw new FailoverException($"Unknown scenario {value}: kafka-broker or pg-primary"),
     };
 
     private static int Positive(string name, string value) =>

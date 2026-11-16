@@ -17,7 +17,9 @@ public sealed class Report(
         text.Append($"# Отказ ноды: сценарий `{FailoverOptions.ScenarioName(options.Scenario)}`, режим `{FailoverOptions.ModeName(options.Mode)}`\n\n");
         text.Append($"{started:dd.MM.yyyy HH:mm}. ");
         text.Append(commit is null ? "Коммит неизвестен. " : $"Коммит `{commit}`{(dirty ? " и незакоммиченные изменения" : "")}. ");
-        text.Append(options.Mode == FailureMode.Partition
+        text.Append(options.Mode == FailureMode.Drain
+            ? $"Нода `{options.NodeName}` выведена на обслуживание на {options.BeforeSeconds}-й секунде нагрузки на {options.DownSeconds} с (`kubectl drain`: поды выселяются по одному в пределах PodDisruptionBudget, затем `uncordon`). "
+            : options.Mode == FailureMode.Partition
             ? $"Нода `{options.NodeName}` отключена от сети на {options.BeforeSeconds}-й секунде нагрузки на {options.DownSeconds} с (`docker network disconnect`: всё на ней работает, но соединения с ней замолкают, ничего не закрывается). " +
               "После возвращения в сеть нода перезапускается: в k3d сеть подов после переподключения не восстанавливается сама. "
             : $"Нода `{options.NodeName}` остановлена на {options.BeforeSeconds}-й секунде нагрузки на {options.DownSeconds} с (`docker stop`: процессы завершаются и закрывают свои соединения). ");
@@ -25,7 +27,9 @@ public sealed class Report(
 
         text.Append("## Перед отказом\n\n");
         text.Append($"- основной PostgreSQL — `{placement.PgPrimary}` на `{placement.PgPrimaryNode}`\n");
-        text.Append($"- лидер outbox — `{placement.OutboxLeaderPod}`, на останавливаемой ноде\n");
+        text.Append(options.Scenario == Scenario.KafkaBroker
+            ? $"- лидер outbox — `{placement.OutboxLeaderPod}`, на останавливаемой ноде\n"
+            : $"- лидер outbox — `{placement.OutboxLeaderPod}`\n");
         text.Append($"- брокер Kafka {placement.BrokerOnNode} на останавливаемой ноде, лидер {placement.PartitionsLedOnNode} партиций из 8\n");
         foreach (var move in placement.Moves)
             text.Append($"- подготовка: {move}\n");
@@ -82,11 +86,23 @@ public sealed class Report(
         var stopped = outage.Stopped ?? TimeSpan.Zero;
 
         if (outage.Stopped is { } s)
-            events.Add((s, options.Mode == FailureMode.Partition ? "нода отключена от сети" : $"`docker stop {options.NodeName}` завершился"));
+            events.Add((s, options.Mode switch
+            {
+                FailureMode.Partition => "нода отключена от сети",
+                FailureMode.Drain => $"`kubectl drain {options.NodeName}` начат",
+                _ => $"`docker stop {options.NodeName}` завершился",
+            }));
+        if (outage.Drained is { } dr)
+            events.Add((dr, "`kubectl drain` завершился"));
         if (outage.Restarted is { } rr)
             events.Add((rr, "нода перезапущена, чтобы k3s заново настроил сеть подов (ограничение стенда)"));
         if (outage.Started is { } r)
-            events.Add((r, options.Mode == FailureMode.Partition ? "нода снова в сети" : $"`docker start {options.NodeName}`"));
+            events.Add((r, options.Mode switch
+            {
+                FailureMode.Partition => "нода снова в сети",
+                FailureMode.Drain => $"`kubectl uncordon {options.NodeName}`",
+                _ => $"`docker start {options.NodeName}`",
+            }));
         if (samples.FirstOrDefault(x => x.At > stopped && x.NodeReady == false) is { } notReady)
             events.Add((notReady.At, "нода NotReady"));
         if (outage.Started is { } back && samples.FirstOrDefault(x => x.At > back && x.NodeReady == true) is { } ready)

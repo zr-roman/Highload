@@ -59,10 +59,12 @@ public static class Placement
             }
         }
 
-        // 1. The primary of PostgreSQL away from the node: this scenario is about Kafka, not about a failover of the base.
+        // 1. kafka-broker: the primary of PostgreSQL away from the node, the scenario is about Kafka. pg-primary: the
+        // primary goes onto the node at the very end (step 5), after every cordon of the node, since a cordon of the
+        // primary's node makes CloudNativePG switch it over (docs/postgres-failover.md, finding 1).
         var primary = await Cluster.PgPrimaryAsync() ?? throw new FailoverException("No primary of the cluster pg");
         var instances = await Cluster.PodsAsync("cnpg.io/cluster=pg") ?? throw new FailoverException("No pods of the cluster pg");
-        if (instances.First(p => p.Name == primary).Node == node)
+        if (options.Scenario == Scenario.KafkaBroker && instances.First(p => p.Name == primary).Node == node)
         {
             var target = instances.FirstOrDefault(p => p.Node == ServerNode) ?? instances.First(p => p.Node != node);
             Console.WriteLine($"Switching the primary of PostgreSQL over from {primary} to {target.Name} ({target.Node})");
@@ -73,7 +75,6 @@ public static class Placement
         await WaitAsync("the cluster pg to be healthy", TimeSpan.FromMinutes(3), ct, async () =>
             (await Shell.Kubectl("-n", Cluster.Namespace, "get", "cluster", "pg", "-o", "jsonpath={.status.phase}")).Output
             == "Cluster in healthy state");
-        var primaryNode = instances.First(p => p.Name == primary).Node;
 
         // 2. A replica of Payments.Api on the node. The other agent is cordoned for a moment, so the replacement of a
         // deleted replica starts on this node or on the server, and the spread of payments-api.yaml prefers the node
@@ -95,7 +96,7 @@ public static class Placement
         // stops gracefully and closes its connections, and a waiting replica takes the lock within 5 s (RetryInterval
         // of AdvisoryLeaderLock). The node itself is cordoned meanwhile, so the replacement starts elsewhere.
         var leader = "";
-        for (var attempt = 1; ; attempt++)
+        for (var attempt = 1; options.Scenario == Scenario.KafkaBroker; attempt++)
         {
             primary = await Cluster.PgPrimaryAsync() ?? primary;
             pods = await Cluster.PaymentsApiPodsAsync() ?? pods;
@@ -137,6 +138,29 @@ public static class Placement
             throw new FailoverException($"{pg.Outbox} rows in the outbox: another load is running, or the relay is stuck");
         if (kafka.Lag > 100)
             throw new FailoverException($"The Ledger is {kafka.Lag} messages behind: another load is running, or the Ledger is stuck");
+
+        // 6. pg-primary: the primary onto the node, by a switchover to the instance there; nothing cordons the node
+        // after this.
+        if (options.Scenario == Scenario.PgPrimary)
+        {
+            primary = await Cluster.PgPrimaryAsync() ?? primary;
+            instances = await Cluster.PodsAsync("cnpg.io/cluster=pg") ?? instances;
+            var onTheNode = instances.FirstOrDefault(p => p.Node == node) ?? throw new FailoverException($"No instance of PostgreSQL on {node}");
+            if (primary != onTheNode.Name)
+            {
+                Console.WriteLine($"Switching the primary of PostgreSQL over from {primary} to {onTheNode.Name} ({node})");
+                await SwitchoverAsync(onTheNode.Name, ct);
+                moves.Add($"основной PostgreSQL переключён с `{primary}` на `{onTheNode.Name}`");
+                primary = onTheNode.Name;
+            }
+            await WaitAsync("the cluster pg to be healthy", TimeSpan.FromMinutes(3), ct, async () =>
+                (await Shell.Kubectl("-n", Cluster.Namespace, "get", "cluster", "pg", "-o", "jsonpath={.status.phase}")).Output
+                == "Cluster in healthy state");
+            pods = await Cluster.PaymentsApiPodsAsync() ?? pods;
+            leader = (await LeaderPodAsync(primary, pods, ct))?.Name ?? "";
+        }
+        instances = await Cluster.PodsAsync("cnpg.io/cluster=pg") ?? instances;
+        var primaryNode = instances.First(p => p.Name == primary).Node;
 
         return new PlacementInfo(primary, primaryNode, leader, brokerId, led, restarts, moves);
     }

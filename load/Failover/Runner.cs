@@ -15,6 +15,11 @@ public sealed class Outage(FailoverOptions options, Stopwatch clock)
     /// <summary>When the node was restarted after a partition, to set the pod network up again.</summary>
     public TimeSpan? Restarted { get; private set; }
 
+    /// <summary>When kubectl drain finished: every pod it could evict was gone from the node.</summary>
+    public TimeSpan? Drained { get; private set; }
+
+    private static string Tail(string text) => string.Join(" | ", text.Split('\n', StringSplitOptions.RemoveEmptyEntries).TakeLast(3));
+
     public async Task RunAsync(CancellationToken ct)
     {
         // The node's place in the Docker network of k3d, read before it leaves: it comes back to the same address,
@@ -32,23 +37,43 @@ public sealed class Outage(FailoverOptions options, Stopwatch clock)
         }
 
         await Task.Delay(TimeSpan.FromSeconds(options.BeforeSeconds), ct);
-        var down = options.Mode == FailureMode.Partition
-            ? await Shell.RunAsync("docker", ["network", "disconnect", network, options.NodeName], TimeSpan.FromSeconds(60), ct)
-            : await Shell.RunAsync("docker", ["stop", options.NodeName], TimeSpan.FromSeconds(60), ct);
-        Console.WriteLine(options.Mode == FailureMode.Partition ? $"Disconnected {options.NodeName} from {network}" : $"Stopped {options.NodeName}");
-        if (!down.Ok)
-            throw new FailoverException($"Could not take {options.NodeName} down: {down.Errors}");
-        Stopped = clock.Elapsed;
+        if (options.Mode == FailureMode.Drain)
+        {
+            // The drain starts the outage; it may take a while, as each eviction waits for its budget, and the time
+            // it takes is part of what the run measures. It ends on its own timeout at the latest.
+            Stopped = clock.Elapsed;
+            Console.WriteLine($"Draining {options.NodeName}");
+            var drain = await Shell.RunAsync("kubectl",
+                ["drain", options.NodeName, "--ignore-daemonsets", "--delete-emptydir-data", $"--timeout={options.DownSeconds}s"],
+                TimeSpan.FromSeconds(options.DownSeconds + 30), ct);
+            Drained = clock.Elapsed;
+            Console.WriteLine(drain.Ok ? $"{options.NodeName} drained" : $"The drain did not finish: {Tail(drain.Errors)}");
+        }
+        else
+        {
+            var down = options.Mode == FailureMode.Partition
+                ? await Shell.RunAsync("docker", ["network", "disconnect", network, options.NodeName], TimeSpan.FromSeconds(60), ct)
+                : await Shell.RunAsync("docker", ["stop", options.NodeName], TimeSpan.FromSeconds(60), ct);
+            Console.WriteLine(options.Mode == FailureMode.Partition ? $"Disconnected {options.NodeName} from {network}" : $"Stopped {options.NodeName}");
+            if (!down.Ok)
+                throw new FailoverException($"Could not take {options.NodeName} down: {down.Errors}");
+            Stopped = clock.Elapsed;
+        }
         try
         {
-            await Task.Delay(TimeSpan.FromSeconds(options.DownSeconds), ct);
+            var left = TimeSpan.FromSeconds(options.DownSeconds) - (clock.Elapsed - Stopped.Value);
+            if (left > TimeSpan.Zero)
+                await Task.Delay(left, ct);
         }
         finally
         {
             // Back even when the run is stopped halfway: a node left down would break the next run.
-            var up = options.Mode == FailureMode.Partition
-                ? await Shell.RunAsync("docker", ["network", "connect", "--ip", ip, network, options.NodeName], TimeSpan.FromSeconds(60))
-                : await Shell.RunAsync("docker", ["start", options.NodeName], TimeSpan.FromSeconds(60));
+            var up = options.Mode switch
+            {
+                FailureMode.Partition => await Shell.RunAsync("docker", ["network", "connect", "--ip", ip, network, options.NodeName], TimeSpan.FromSeconds(60)),
+                FailureMode.Drain => await Shell.RunAsync("kubectl", ["uncordon", options.NodeName], TimeSpan.FromSeconds(60)),
+                _ => await Shell.RunAsync("docker", ["start", options.NodeName], TimeSpan.FromSeconds(60)),
+            };
             Console.WriteLine(up.Ok ? $"{options.NodeName} is back" : $"Could not bring {options.NodeName} back: {up.Errors}");
             Started = clock.Elapsed;
 
@@ -167,6 +192,16 @@ public static class Runner
         checks.Add(new Check("стенд восстановился", settled, settled
             ? "нода Ready, outbox пуст, все партиции в полном ISR, Ledger догнал"
             : $"за {options.SettleSeconds} с — нет: нода {last?.NodeReady}, outbox {last?.Outbox}, URP {lastKafka?.UnderReplicated}, lag {lastKafka?.Lag}"));
+
+        if (options.Scenario == Scenario.PgPrimary && outage is { Stopped: { } pgStopped, Started: { } pgBack })
+        {
+            // The point of the scenario: another instance became the primary while the node was down (or drained).
+            var promoted = samples.FirstOrDefault(s => s.At > pgStopped && s.At < pgBack
+                && s.PgPrimary is { } p && p != placement.PgPrimary);
+            checks.Add(new Check("основной PostgreSQL переключился, пока нода лежала", promoted is not null, promoted is not null
+                ? $"`{promoted.PgPrimary}` — основной через {(promoted.At - pgStopped).TotalSeconds:0} с после начала отказа"
+                : $"`{placement.PgPrimary}` оставался основным до возвращения ноды"));
+        }
 
         if (options.Scenario == Scenario.KafkaBroker && outage is { Stopped: { } stopped, Started: { } restarted })
         {
