@@ -44,8 +44,10 @@ spec:
           image: antifraud:dev
           imagePullPolicy: IfNotPresent
           env:
-            - name: ANTIFRAUD_REDIS_URL
-              value: redis://redis:6379/0
+            # The Sentinels say which copy of Redis is the master now (redis.yaml); ANTIFRAUD_REDIS_URL, a single
+            # Redis, is for docker-compose.yml and the local run.
+            - name: ANTIFRAUD_REDIS_SENTINELS
+              value: redis-0.redis:26379,redis-1.redis:26379,redis-2.redis:26379
           ports:
             - name: http
               containerPort: 8000

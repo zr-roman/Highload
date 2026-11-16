@@ -7,6 +7,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic.alias_generators import to_camel
 from redis.asyncio import Redis
+from redis.asyncio.sentinel import Sentinel
 from redis.exceptions import RedisError
 
 from antifraud.checker import check_payment
@@ -23,12 +24,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Short timeouts: a Redis that does not answer in time is treated as down, and the check answers 503 at once.
     # Waiting longer is useless: the attempt of Payments.Api lasts 50 ms, and after it the answer is not needed.
     timeout_seconds = settings.redis_timeout_ms / 1000
-    app.state.redis = Redis.from_url(
-        settings.redis_url,
-        decode_responses=True,
-        socket_timeout=timeout_seconds,
-        socket_connect_timeout=timeout_seconds,
-    )
+    if settings.redis_sentinels:
+        # In Kubernetes: the Sentinels say which copy is the master, asked again on each new connection, so after
+        # a failover the pool reaches the new master. They get longer timeouts than Redis: a slow answer about
+        # the master is better than none.
+        sentinel = Sentinel(settings.redis_sentinels, sentinel_kwargs={"socket_timeout": 0.5, "socket_connect_timeout": 0.5})
+        app.state.redis = sentinel.master_for(
+            settings.redis_master,
+            decode_responses=True,
+            socket_timeout=timeout_seconds,
+            socket_connect_timeout=timeout_seconds,
+        )
+    else:
+        app.state.redis = Redis.from_url(
+            settings.redis_url,
+            decode_responses=True,
+            socket_timeout=timeout_seconds,
+            socket_connect_timeout=timeout_seconds,
+        )
     yield
     await app.state.redis.aclose()
 

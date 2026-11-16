@@ -56,6 +56,7 @@ spec:
               app.kubernetes.io/name: redis
       ports:
         - port: 6379
+        - port: 26379
     - to:
         - podSelector:
             matchLabels:
@@ -125,6 +126,26 @@ spec:
               app.kubernetes.io/name: redis
       ports:
         - port: 6379
+        - port: 26379
+---
+# Redis: the replicas and the Sentinels reach the master and each other.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-redis
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - port: 6379
+        - port: 26379
 ---
 # The OpenTelemetry Collector: traces and logs to the Aspire dashboard, metrics to Prometheus (namespace monitoring).
 apiVersion: networking.k8s.io/v1

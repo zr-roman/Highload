@@ -90,7 +90,9 @@ spec:
             - name: ConnectionStrings__Kafka
               value: kafka-kafka-bootstrap:9092
             - name: ConnectionStrings__Redis
-              value: redis:6379,connectTimeout=2000,syncTimeout=100,asyncTimeout=100
+              # The Sentinels, not Redis itself: they say which copy is the master now, and the client follows a
+              # failover on its own (redis.yaml).
+              value: redis-0.redis:26379,redis-1.redis:26379,redis-2.redis:26379,serviceName=mymaster,connectTimeout=2000,syncTimeout=100,asyncTimeout=100
             - name: Acquirer__BaseAddress
               value: http://bank-emulator:5300/
             # Pause of the outbox relay after each published batch (Outbox/OutboxOptions.cs). 0: no pause.

@@ -23,7 +23,6 @@ public static class Placement
         (Cluster.Namespace, "ledger-service", "app.kubernetes.io/name=ledger-service"),
         (Cluster.Namespace, "bank-emulator", "app.kubernetes.io/name=bank-emulator"),
         (Cluster.Namespace, "antifraud", "app.kubernetes.io/name=antifraud"),
-        (Cluster.Namespace, "redis", "app.kubernetes.io/name=redis"),
         (Cluster.Namespace, "otel-collector", "app.kubernetes.io/name=otel-collector"),
     ];
 

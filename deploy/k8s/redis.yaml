@@ -1,5 +1,12 @@
-# Rate limits of Payments.Api and the antifraud counters: nothing that must survive a restart,
-# so no persistence, as in docker-compose.yml.
+# Rate limits of Payments.Api and the antifraud counters: nothing that must survive a restart, so no persistence,
+# as in docker-compose.yml. What it must survive is the loss of a node: three copies, one per node, a master and two
+# replicas, and a Sentinel next to each that elects a new master when the old one is gone (docs/redis.md).
+# The clients ask the Sentinels where the master is: Payments.Api with serviceName in its connection string,
+# antifraud with ANTIFRAUD_REDIS_SENTINELS.
+#
+# Headless: each pod has a name of its own, redis-0.redis ... redis-2.redis, which Redis and the Sentinels announce
+# instead of pod IPs, which change on every restart. Not-ready pods are published too: a starting copy must find the
+# others, and the first one itself, before any is ready.
 apiVersion: v1
 kind: Service
 metadata:
@@ -7,20 +14,79 @@ metadata:
   labels:
     app.kubernetes.io/name: redis
 spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
   selector:
     app.kubernetes.io/name: redis
   ports:
     - name: redis
       port: 6379
+    - name: sentinel
+      port: 26379
+---
+# Who is the master when a copy starts. Ask the Sentinels of the other copies first: after a failover the master is
+# whichever they elected, and a copy that comes back must join it as a replica. Only if no Sentinel answers, as when
+# the whole set starts, redis-0 is the master: the StatefulSet starts it first.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  labels:
+    app.kubernetes.io/name: redis
+data:
+  configure.sh: |
+    set -eu
+    self="$(hostname).redis.${POD_NAMESPACE}.svc.cluster.local"
+    master=""
+    for i in 0 1 2; do
+      [ "redis-$i" = "$(hostname)" ] && continue
+      peer="redis-$i.redis.${POD_NAMESPACE}.svc.cluster.local"
+      answer="$(timeout 3 redis-cli -h "$peer" -p 26379 --raw sentinel get-master-addr-by-name mymaster 2>/dev/null | head -n 1 || true)"
+      if [ -n "$answer" ]; then
+        master="$answer"
+        echo "Sentinel of redis-$i: the master is $master"
+        break
+      fi
+    done
+    if [ -z "$master" ]; then
+      master="redis-0.redis.${POD_NAMESPACE}.svc.cluster.local"
+      echo "No Sentinel answered: the master is $master"
+    fi
+
+    cat > /data/redis.conf <<CONF
+    port 6379
+    dir /data
+    save ""
+    appendonly no
+    replica-announce-ip $self
+    CONF
+    if [ "$master" != "$self" ]; then
+      echo "replicaof $master 6379" >> /data/redis.conf
+    fi
+
+    # Sentinel rewrites its file as it learns the others: it lives in the writable volume.
+    # down-after 5 s: a master silent that long is down; two of the three Sentinels must agree.
+    cat > /data/sentinel.conf <<CONF
+    port 26379
+    dir /data
+    sentinel resolve-hostnames yes
+    sentinel announce-hostnames yes
+    sentinel announce-ip $self
+    sentinel monitor mymaster $master 6379 2
+    sentinel down-after-milliseconds mymaster 5000
+    sentinel failover-timeout mymaster 20000
+    sentinel parallel-syncs mymaster 1
+    CONF
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: redis
   labels:
     app.kubernetes.io/name: redis
 spec:
-  replicas: 1
+  serviceName: redis
+  replicas: 3
   selector:
     matchLabels:
       app.kubernetes.io/name: redis
@@ -29,35 +95,104 @@ spec:
       labels:
         app.kubernetes.io/name: redis
     spec:
+      # One copy per node: the loss of a node takes one copy at most, and the Sentinels left are two, a majority.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: redis
+              topologyKey: kubernetes.io/hostname
       # Restricted, as the Pod Security Standard of the namespace demands (namespace.yaml, docs/security.md).
       # The image starts as root and drops to user redis (999) itself; here it starts as redis right away.
-      # With --save "" Redis writes nothing to disk, so the root file system stays read-only.
+      # Nothing is written outside the volume /data, so the root file system stays read-only.
       securityContext:
         runAsNonRoot: true
         runAsUser: 999
         runAsGroup: 1000
+        fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
-      containers:
-        - name: redis
+      initContainers:
+        - name: configure
           image: redis:7.4-alpine
-          args: ["redis-server", "--save", "", "--appendonly", "no"]
-          ports:
-            - name: redis
-              containerPort: 6379
-          readinessProbe:
-            tcpSocket:
-              port: redis
-            periodSeconds: 5
-          # Restricted (docs/security.md): the process cannot gain privileges beyond those it starts with.
-          securityContext:
+          command: ["sh", "/scripts/configure.sh"]
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: scripts
+              mountPath: /scripts
+          securityContext: &restricted
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
           resources:
             requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 32Mi
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          args: ["redis-server", "/data/redis.conf"]
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          securityContext: *restricted
+          resources:
+            requests:
               cpu: 50m
               memory: 64Mi
             limits:
               memory: 256Mi
+        - name: sentinel
+          image: redis:7.4-alpine
+          args: ["redis-sentinel", "/data/sentinel.conf"]
+          ports:
+            - name: sentinel
+              containerPort: 26379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "-p", "26379", "ping"]
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          securityContext: *restricted
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: scripts
+          configMap:
+            name: redis-config
+---
+# A drain takes one copy at a time: the Sentinels keep their majority.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis

@@ -22,7 +22,7 @@
 | Куда | Кому можно |
 |---|---|
 | payments-api, ledger-service, dashboard UI | Traefik из `kube-system` |
-| redis | payments-api, antifraud |
+| redis (6379 и Sentinel 26379) | payments-api, antifraud, сами копии Redis |
 | kafka (политику делает Strimzi, `networkPolicyPeers` в kafka.yaml) | payments-api, ledger-service, сами брокеры, под замеров `kafka-probe` |
 | bank-emulator, antifraud | payments-api |
 | otel-collector | payments-api, ledger-service |
@@ -39,10 +39,11 @@ k3s применяет NetworkPolicy сам: в него встроен конт
 | payments-api | PostgreSQL 5432, брокеры Kafka 9092, redis, bank-emulator, antifraud, otel-collector |
 | ledger-service | PostgreSQL 5432, брокеры Kafka 9092, otel-collector |
 | antifraud | redis |
+| redis | копии Redis друг к другу: репликация и Sentinel |
 | otel-collector | dashboard (OTLP), Prometheus в `monitoring` |
 | PostgreSQL (CNPG) | друг к другу 5432/8000, хранилище копий 9000, API Kubernetes |
 | Kafka (Strimzi) | брокеры друг к другу 9090–9092, API Kubernetes (Topic Operator) |
-| bank-emulator, redis, dashboard, backup-store | никуда, кроме DNS |
+| bank-emulator, dashboard, backup-store | никуда, кроме DNS |
 
 **Упрощение:** закрыт только вход. Исходящие открыты: Postgres живёт на хосте, и список разрешённых исходящих требовал бы его адреса, DNS и API-сервера. Хранилища, которые важны, закрыты на входе.
 
@@ -120,13 +121,13 @@ kubectl -n highload get networkpolicy
 kubectl -n highload get pods
 
 # Сеть: без метки к Redis не пустит, с меткой antifraud — пустит. Под сам соответствует restricted, иначе его не пустит admission.
-$sc = '{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65534,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"np-test","image":"busybox:1.37","command":["nc","-zv","-w","3","redis","6379"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}'
+$sc = '{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65534,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"np-test","image":"busybox:1.37","command":["nc","-zv","-w","3","redis-0.redis","6379"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}'
 kubectl -n highload run np-test --rm -it --restart=Never --image=busybox:1.37 --overrides=$sc
 kubectl -n highload run np-test --rm -it --restart=Never --image=busybox:1.37 --labels=app.kubernetes.io/name=antifraud --overrides=$sc
 
 # Под: не root, корень только для чтения, admission отклоняет root
-kubectl -n highload exec deploy/redis -- id
-kubectl -n highload exec deploy/redis -- touch /x
+kubectl -n highload exec redis-0 -c redis -- id
+kubectl -n highload exec redis-0 -c redis -- touch /x
 kubectl -n highload run psa-test --rm -it --restart=Never --image=busybox:1.37 -- id
 
 # Манифесты: та же проверка, что в CI (kustomize и kubeconform в PATH)

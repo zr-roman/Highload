@@ -40,7 +40,8 @@ spec:
         - port: 8080 # payments-api, ledger-service
         - port: 18888 # dashboard UI
 ---
-# Redis: the rate limiter of Payments.Api and the velocity counters of antifraud.
+# Redis: the rate limiter of Payments.Api and the velocity counters of antifraud. The clients ask the Sentinels
+# (26379) where the master is, then talk to it (6379); the copies replicate and the Sentinels watch each other.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -56,9 +57,10 @@ spec:
             matchExpressions:
               - key: app.kubernetes.io/name
                 operator: In
-                values: [payments-api, antifraud]
+                values: [payments-api, antifraud, redis]
       ports:
         - port: 6379
+        - port: 26379
 ---
 # Kafka: no policy here. Strimzi makes its own (kafka.yaml): the listener 9092 for Payments.Api, which writes from the
 # outbox, and Ledger.Service, which reads (networkPolicyPeers); the ports between the brokers and from the operator.

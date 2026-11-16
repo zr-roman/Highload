@@ -11,6 +11,8 @@ class Settings:
     velocity_window_seconds: int  # ...within this window
     decision_ttl_seconds: int  # how long a decision is kept for idempotent repeats
     redis_timeout_ms: int  # a Redis call slower than this counts as Redis being down
+    redis_sentinels: tuple[tuple[str, int], ...] = ()  # if set, Redis is found through these Sentinels, not redis_url
+    redis_master: str = "mymaster"  # the name the Sentinels know the master by
 
     def __post_init__(self) -> None:
         # 0 is allowed on purpose: every payment is denied, which is how the saga's compensation is tested.
@@ -27,8 +29,21 @@ class Settings:
     def from_env(cls) -> "Settings":
         return cls(
             redis_url=os.environ.get("ANTIFRAUD_REDIS_URL", "redis://127.0.0.1:6379/0"),
+            redis_sentinels=parse_sentinels(os.environ.get("ANTIFRAUD_REDIS_SENTINELS", "")),
+            redis_master=os.environ.get("ANTIFRAUD_REDIS_MASTER", "mymaster"),
             velocity_limit=int(os.environ.get("ANTIFRAUD_VELOCITY_LIMIT", "100")),
             velocity_window_seconds=int(os.environ.get("ANTIFRAUD_VELOCITY_WINDOW_SECONDS", "60")),
             decision_ttl_seconds=int(os.environ.get("ANTIFRAUD_DECISION_TTL_SECONDS", "86400")),
             redis_timeout_ms=int(os.environ.get("ANTIFRAUD_REDIS_TIMEOUT_MS", "20")),
         )
+
+
+def parse_sentinels(value: str) -> tuple[tuple[str, int], ...]:
+    """"host:port,host:port" -> ((host, port), ...); empty -> ()."""
+    sentinels = []
+    for item in filter(None, (part.strip() for part in value.split(","))):
+        host, separator, port = item.rpartition(":")
+        if not separator or not host or not port.isdigit():
+            raise ValueError(f"ANTIFRAUD_REDIS_SENTINELS must be host:port,host:port, got {value!r}")
+        sentinels.append((host, int(port)))
+    return tuple(sentinels)
