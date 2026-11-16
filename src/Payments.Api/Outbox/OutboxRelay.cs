@@ -85,13 +85,26 @@ public sealed class OutboxRelay(
             return 0;
 
         // The topic before the first message, or Kafka creates it on its own with a single partition. Here and not at
-        // startup: a pod has to start while Kafka is down, and the relay waits for Kafka anyway. Until Kafka answers
-        // this throws, and the loop above tries again; the outbox age above is measured all the same.
+        // startup: a pod has to start while Kafka is down, and the relay waits for Kafka anyway.
+        // One try, and the batch goes out whatever its outcome. CreateTopics goes to the controller the client last
+        // heard of, and when that broker's node has just died the request times out again and again until the
+        // client's metadata moves on, while the partitions already have live leaders: a new leader of the relay
+        // waited 40 s on this check alone, with nothing wrong with the publishing (docs/kafka-failover.md). A topic
+        // that is really missing is caught below instead: with auto.create.topics.enable off the producer gets
+        // UnknownTopicOrPart, the check is armed again, and the loop above retries.
         if (!_topicReady)
         {
-            using var admin = new DependentAdminClientBuilder(producer.Handle).Build();
-            await KafkaTopics.EnsureCreatedAsync(admin, Topics.PaymentsCaptured, Topics.PaymentsCapturedPartitions, logger);
             _topicReady = true;
+            try
+            {
+                using var admin = new DependentAdminClientBuilder(producer.Handle).Build();
+                await KafkaTopics.EnsureCreatedAsync(admin, Topics.PaymentsCaptured, Topics.PaymentsCapturedPartitions, logger);
+            }
+            catch (KafkaException e)
+            {
+                logger.LogWarning("Could not check the Kafka topic {Topic} ({Reason}): publishing anyway",
+                    Topics.PaymentsCaptured, e.Error.Reason);
+            }
         }
 
         var read = Stopwatch.GetElapsedTime(started);
@@ -111,7 +124,15 @@ public sealed class OutboxRelay(
             deliveries[i] = producer.ProduceAsync(batch[i].Topic, message, cancellationToken);
         }
 
-        await Task.WhenAll(deliveries);
+        try
+        {
+            await Task.WhenAll(deliveries);
+        }
+        catch (ProduceException<string, string> e) when (e.Error.Code is ErrorCode.UnknownTopicOrPart or ErrorCode.Local_UnknownTopic)
+        {
+            _topicReady = false; // the topic is missing after all: create it before the next try
+            throw;
+        }
 
         var produced = Stopwatch.GetElapsedTime(started);
 
