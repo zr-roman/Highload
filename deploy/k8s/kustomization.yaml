@@ -62,7 +62,7 @@ images:
     newTag: f427aee5187e
     newName: ghcr.io/zr-roman/bank-emulator
   - name: antifraud
-    newTag: 2dcfd5b20905
+    newTag: 08802f33fba6
     newName: ghcr.io/zr-roman/antifraud
 
 # The Postgres password is not in git at all: CloudNativePG generates it in the cluster (Secret pg-app, postgres.yaml),
