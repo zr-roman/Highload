@@ -43,6 +43,12 @@ builder.Services.AddSingleton<IProducer<string, string>>(_ => new ProducerBuilde
     Acks = Acks.All,            // the broker confirms the write before the outbox row is deleted
     EnableIdempotence = true,   // producer retries cause neither duplicates nor reordering
     LingerMs = 5,               // let the client collect messages into batches for up to 5 ms
+    // How long a request to a broker may stay unanswered. Default 60 s: when the network to a broker's node broke,
+    // its in-flight produce requests hung for all of it, and the idempotent producer sends nothing more to those
+    // partitions until they are settled, so the outbox stood still for a minute after Kafka had new leaders
+    // (docs/kafka-failover.md). Inside the cluster an answer takes milliseconds; a request cancelled after 10 s is
+    // sent again to the new leader, and idempotence keeps the retry from writing twice.
+    SocketTimeoutMs = 10_000,
 }).Build());
 
 builder.Services.Configure<FeeOptions>(builder.Configuration.GetSection("Fees"));
