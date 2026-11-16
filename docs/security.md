@@ -6,7 +6,7 @@
 
 | Слой | Мера | Где |
 |---|---|---|
-| Сеть | Внутри `highload` всё закрыто, открыто только нужное (NetworkPolicy) | [deploy/k8s/network-policies.yaml](../deploy/k8s/network-policies.yaml) |
+| Сеть | Внутри `highload` всё закрыто в обе стороны, открыто только нужное (NetworkPolicy): кто может прийти к поду и куда может пойти сам под | [network-policies.yaml](../deploy/k8s/network-policies.yaml), [network-policies-egress.yaml](../deploy/k8s/network-policies-egress.yaml) |
 | Под | Не root, без capabilities, без повышения привилегий, seccomp, корневая ФС только для чтения | `securityContext` в манифестах `deploy/k8s/*.yaml` |
 | Namespace | API-сервер отказывает поду, нарушающему профиль `restricted` (Pod Security Admission) | [deploy/k8s/namespace.yaml](../deploy/k8s/namespace.yaml) |
 | Образ | Trivy проверяет образ до push в ghcr.io: критическая уязвимость с исправлением останавливает релиз | [.github/workflows/ci.yml](../.github/workflows/ci.yml) |
@@ -31,6 +31,18 @@
 k3s применяет NetworkPolicy сам: в него встроен контроллер kube-router. Пробы kubelet приходят с ноды и проходят без отдельного правила; `kubectl port-forward` и `exec` идут через kubelet, а не через сеть подов.
 
 **Проверено:** временный под без метки не подключился к Redis (`nc` — таймаут), тот же под с меткой `app.kubernetes.io/name=antifraud` — подключился. Нагрузка 100 платежей в секунду — без ошибок.
+
+**Исходящий трафик** закрыт так же (`default-deny-egress`): каждому поду открыт DNS, остальное — по списку. Взломанный под не выйдет в интернет, в другие namespace и к хранилищам, которые ему не нужны.
+
+| Кто | Куда может |
+|---|---|
+| payments-api | PostgreSQL 5432, брокеры Kafka 9092, redis, bank-emulator, antifraud, otel-collector |
+| ledger-service | PostgreSQL 5432, брокеры Kafka 9092, otel-collector |
+| antifraud | redis |
+| otel-collector | dashboard (OTLP), Prometheus в `monitoring` |
+| PostgreSQL (CNPG) | друг к другу 5432/8000, хранилище копий 9000, API Kubernetes |
+| Kafka (Strimzi) | брокеры друг к другу 9090–9092, API Kubernetes (Topic Operator) |
+| bank-emulator, redis, dashboard, backup-store | никуда, кроме DNS |
 
 **Упрощение:** закрыт только вход. Исходящие открыты: Postgres живёт на хосте, и список разрешённых исходящих требовал бы его адреса, DNS и API-сервера. Хранилища, которые важны, закрыты на входе.
 
@@ -92,7 +104,7 @@ Trivy отвечает на вопрос «нет ли в образе изве�
 
 | На стенде | В продакшене |
 |---|---|
-| NetworkPolicy только на вход | И на выход: сервис ходит только туда, куда должен |
+| Исходящий трафик к API-серверу открыт на любой адрес с портом 6443: адрес сервера — адрес ноды в сети k3d | Конкретный адрес или подсеть control plane |
 | Подпись и SBOM создаются, но кластер их не проверяет | Admission-политика (Kyverno, policy-controller Sigstore): под с неподписанным образом или образом не из нашего CI не запускается |
 | SBOM лежат в реестре, но никто их не читает | SBOM собираются в одно место (Dependency-Track), новая CVE сразу показывает затронутые сервисы |
 | Pod Security Admission | Плюс политики (Kyverno, Gatekeeper): только образы из своего реестра, обязательные лимиты, запрет `latest` |

@@ -2,9 +2,7 @@
 # antifraud could read Kafka or call the bank in the name of Payments.Api. k3s enforces NetworkPolicy itself
 # (the policy controller of kube-router is built in).
 #
-# Ingress only: each pod lists who may come in. Egress stays open: an egress allow-list would need DNS, the API
-# server and the pods of the operator spelled out for every pod; the stores that matter (PostgreSQL, Kafka, Redis)
-# are closed from the inside anyway. In production: egress too.
+# Ingress here: each pod lists who may come in. Egress, where each pod may go, is in network-policies-egress.yaml.
 #
 # Not covered by these and not needed: kubectl port-forward and exec go through the kubelet, not the pod network;
 # probes come from the node, which kube-router lets through.

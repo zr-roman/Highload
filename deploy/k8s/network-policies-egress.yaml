@@ -1,0 +1,255 @@
+# Egress of namespace highload: see network-policies.yaml for ingress.
+# ===================================================================================================================
+# Egress: where each pod may connect to. Everything closed by default, as for ingress: a compromised pod cannot reach
+# the internet, the other namespaces or a store it has no business with. What every pod needs is DNS; the rest is
+# listed per pod below. Replies to allowed connections, in both directions, are let through by kube-router itself.
+# ===================================================================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    # DNS: CoreDNS in kube-system. Every client finds the others by name (pg-rw, kafka-kafka-bootstrap, redis ...).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# Payments.Api: its database, Kafka (the outbox relay), Redis (rate limits), the bank, antifraud, telemetry.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-payments-api
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: payments-api
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: pg
+      ports:
+        - port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              strimzi.io/cluster: kafka
+              strimzi.io/pool-name: broker
+      ports:
+        - port: 9092
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: bank-emulator
+      ports:
+        - port: 5300
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: antifraud
+      ports:
+        - port: 8000
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: otel-collector
+      ports:
+        - port: 4317
+        - port: 4318
+---
+# Ledger.Service: its database, Kafka (reads payments.captured), telemetry.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-ledger-service
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ledger-service
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: pg
+      ports:
+        - port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              strimzi.io/cluster: kafka
+              strimzi.io/pool-name: broker
+      ports:
+        - port: 9092
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: otel-collector
+      ports:
+        - port: 4317
+        - port: 4318
+---
+# Antifraud: its counters in Redis.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-antifraud
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: antifraud
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - port: 6379
+---
+# The OpenTelemetry Collector: traces and logs to the Aspire dashboard, metrics to Prometheus (namespace monitoring).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-otel-collector
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: otel-collector
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: dashboard
+      ports:
+        - port: 18889
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 9090
+---
+# PostgreSQL (CloudNativePG, every cluster: pg, and pg-restore of the recovery drill): replication and the instance
+# manager between the instances, the WAL archive and the base backups to the object store, and the Kubernetes API,
+# which the instance manager and the Barman Cloud sidecar read and write (the Cluster status, the ObjectStore, Secrets).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-postgres
+spec:
+  podSelector:
+    matchExpressions:
+      - key: cnpg.io/cluster
+        operator: Exists
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: cnpg.io/cluster
+                operator: Exists
+      ports:
+        - port: 5432
+        - port: 8000
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: backup-store
+      ports:
+        - port: 9000
+    # The API server is not a pod: the address of the Service kubernetes (443) is translated to the server node's
+    # 6443 before the policy sees the packet. Any address on 6443, since the node's address is the k3d network's.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 6443
+        - port: 443
+---
+# Kafka (Strimzi): the brokers among themselves (KRaft 9090, replication 9091, clients 9092), and the Topic Operator
+# to the brokers and to the Kubernetes API, where it keeps the KafkaTopic resources.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-kafka
+spec:
+  podSelector:
+    matchLabels:
+      strimzi.io/cluster: kafka
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              strimzi.io/cluster: kafka
+      ports:
+        - port: 9090
+        - port: 9091
+        - port: 9092
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 6443
+        - port: 443
+---
+# The jobs and pods of the stand's own tools: the bucket of the backups (backup-bucket.yaml), the Kafka tools of
+# load/Failover (KafkaProbe.cs).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-backup-bucket
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: backup-bucket
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: backup-store
+      ports:
+        - port: 9000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-kafka-probe
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kafka-probe
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              strimzi.io/cluster: kafka
+              strimzi.io/pool-name: broker
+      ports:
+        - port: 9092
