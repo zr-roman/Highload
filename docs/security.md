@@ -23,7 +23,7 @@
 |---|---|
 | payments-api, ledger-service, dashboard UI | Traefik из `kube-system` |
 | redis | payments-api, antifraud |
-| kafka | payments-api, ledger-service |
+| kafka (политику делает Strimzi, `networkPolicyPeers` в kafka.yaml) | payments-api, ledger-service, сами брокеры, под замеров `kafka-probe` |
 | bank-emulator, antifraud | payments-api |
 | otel-collector | payments-api, ledger-service |
 | dashboard (OTLP) | otel-collector |
