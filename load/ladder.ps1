@@ -4,6 +4,9 @@
 #   powershell -ExecutionPolicy Bypass -File load\ladder.ps1
 #   powershell -ExecutionPolicy Bypass -File load\ladder.ps1 -Rates "2000,2500,3000" -Duration 120s
 #   powershell -ExecutionPolicy Bypass -File load\ladder.ps1 -Rates "1000,1500" -HotShare 0.9 -Merchants 50
+# The k3d cluster instead of docker compose: through Traefik on localhost:8080, kubectl top of the nodes and pods
+# after each step instead of the lag from the Kafka container of compose:
+#   powershell -ExecutionPolicy Bypass -File load\ladder.ps1 -Cluster -Rates "100,200,300,400,500" -Warmup 30s
 param(
     [string] $Rates = "1000,1500,2000,2500,3000",
     [string] $Duration = "60s",
@@ -15,7 +18,9 @@ param(
     [string] $HotShare = "",
     [int] $HotMerchant = 1,
     # How many merchants get payments; 0 leaves the default of payments.js.
-    [int] $Merchants = 0
+    [int] $Merchants = 0,
+    # The stand in k3d (deploy/k8s): payments and /invariants through Traefik, reports named cluster-rate-*.
+    [switch] $Cluster
 )
 
 # A string rather than int[]: with -File, "2000,2500" arrives as one argument, so the list is split here.
@@ -28,8 +33,11 @@ New-Item -ItemType Directory -Force -Path $reports | Out-Null
 $mix = @()
 if ($HotShare) { $mix += "-e", "HOT_SHARE=$HotShare", "-e", "HOT_MERCHANT=$HotMerchant" }
 if ($Merchants -gt 0) { $mix += "-e", "MERCHANTS=$Merchants" }
+if ($Cluster) { $mix += "-e", "BASE_URL=http://localhost:8080" }
+$invariants = if ($Cluster) { "http://localhost:8080/invariants" } else { "http://localhost:5200/invariants" }
 # Runs with a hot merchant get reports of their own instead of overwriting the stage 1 ones.
 $reportSuffix = if ($HotShare) { "-hot-$HotShare" } else { "" }
+$reportPrefix = if ($Cluster) { "cluster-" } else { "" }
 
 if ($Warmup -notin @("", "0", "0s")) {
     # At the first rate, but not above 1000/s (below this stand's knee): a warm-up past the limit
@@ -50,13 +58,21 @@ $env:K6_WEB_DASHBOARD_PERIOD = "2s"
 
 for ($i = 0; $i -lt $steps.Count; $i++) {
     $rate = $steps[$i]
-    $env:K6_WEB_DASHBOARD_EXPORT = Join-Path $reports "rate-$rate$reportSuffix.html"
+    $env:K6_WEB_DASHBOARD_EXPORT = Join-Path $reports "${reportPrefix}rate-$rate$reportSuffix.html"
 
     k6 run -e RATE=$rate -e DURATION=$Duration @mix $testScript
-    Invoke-RestMethod http://localhost:5200/invariants | Out-Host
-    # The lag of every partition as the broker sees it, from the committed offsets (README, step 7):
-    # at the end of a step it shows whether the ledger keeps up and which partition falls behind first.
-    docker exec payments-kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group ledger
+    Invoke-RestMethod $invariants | Out-Host
+    if ($Cluster) {
+        # Who spends the processor: the nodes, then the pods of the stand and the busiest of the rest. Taken right
+        # after the step, so it still shows the load (metrics-server averages over the last minute or so).
+        kubectl top nodes | Out-Host
+        kubectl top pods -A --sort-by=cpu | Select-Object -First 15 | Out-Host
+    }
+    else {
+        # The lag of every partition as the broker sees it, from the committed offsets (README, step 7):
+        # at the end of a step it shows whether the ledger keeps up and which partition falls behind first.
+        docker exec payments-kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group ledger
+    }
 
     if ($i -lt $steps.Count - 1) {
         Read-Host "RATE=$rate done. Enter: next step, Ctrl+C: stop" | Out-Null

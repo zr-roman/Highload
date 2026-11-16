@@ -116,7 +116,9 @@ public static class Placement
                 leader = holder.Name;
                 break;
             }
-            if (attempt > 4)
+            // Whichever waiting replica polls first takes the lock: with up to 4 replicas on 4 nodes the one on the
+            // node wins about one time in three, so a few tries are expected.
+            if (attempt > 8)
                 throw new FailoverException($"The leader of the outbox relay did not move to {node}");
             if (holder is null)
             {
