@@ -38,6 +38,15 @@ public static class Placement
         if (nodes.Where(n => !n.Value).Select(n => n.Key).ToList() is { Count: > 0 } notReady)
             throw new FailoverException($"Nodes not Ready: {string.Join(", ", notReady)}. The run needs a healthy cluster");
 
+        // A node left cordoned, by a run stopped halfway or by hand, keeps the pods whose volumes are on it Pending,
+        // and the cluster pg never gets healthy: say so at once instead of waiting for it.
+        var cordoned = (await Shell.KubectlOrThrow("get", "nodes", "-o",
+                "jsonpath={range .items[?(@.spec.unschedulable==true)]}{.metadata.name} {end}"))
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (cordoned.Length > 0)
+            throw new FailoverException($"Nodes closed to new pods: {string.Join(", ", cordoned)}. Open them first: " +
+                string.Join("; ", cordoned.Select(n => $"kubectl uncordon {n}")));
+
         // 0. The services with a single replica off the node: otherwise the failure of the node is the failure of the
         // only copy of something every request needs, Traefik above all, and drowns what the scenario is about
         // (docs/observability.md). Each is deleted with the node cordoned, so its replacement starts elsewhere.
