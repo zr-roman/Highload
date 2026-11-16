@@ -62,6 +62,6 @@ jobs:
           echo "::group::deploy/k8s (as kustomize renders it for Argo CD)"
           kustomize build deploy/k8s | check -
           echo "::endgroup::"
-          echo "::group::deploy/argocd and deploy/monitoring/secrets"
-          check deploy/argocd deploy/monitoring/secrets
+          echo "::group::deploy/argocd, deploy/cluster and deploy/monitoring/secrets"
+          check deploy/argocd deploy/cluster deploy/monitoring/secrets
           echo "::endgroup::"

@@ -1,0 +1,25 @@
+# Traefik itself is installed by k3s (its HelmChart in kube-system); a HelmChartConfig changes its values. It is the
+# only way into the cluster: with one replica, the node it happened to sit on took every request down with it.
+# Two replicas, never on one node, and a PodDisruptionBudget, so a drain leaves one serving. The Service of type
+# LoadBalancer is served on every node (svclb), and either replica takes what any node receives.
+# Here, not in deploy/k8s: the kustomization there puts every resource into namespace highload, and k3s reads the
+# HelmChartConfig only in kube-system. Its middlewares and transports stay in deploy/k8s/traefik.yaml.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    deployment:
+      replicas: 2
+    podDisruptionBudget:
+      enabled: true
+      minAvailable: 1
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: traefik
+            topologyKey: kubernetes.io/hostname

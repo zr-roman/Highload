@@ -1,0 +1,21 @@
+# Settings of what k3s itself installs (Traefik), synced by Argo CD from deploy/cluster. Applied once by hand:
+#   kubectl apply -f deploy/argocd/cluster.yaml
+# A separate application: deploy/k8s puts everything into namespace highload, these live in kube-system.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cluster
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/zr-roman/Highload.git
+    targetRevision: main
+    path: deploy/cluster
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

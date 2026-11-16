@@ -19,7 +19,8 @@ metadata:
   labels:
     app.kubernetes.io/name: antifraud
 spec:
-  replicas: 1
+  # Two, on two nodes: every payment asks antifraud, and its state is in Redis, so any replica answers for any merchant.
+  replicas: 2
   selector:
     matchLabels:
       app.kubernetes.io/name: antifraud
@@ -28,6 +29,14 @@ spec:
       labels:
         app.kubernetes.io/name: antifraud
     spec:
+      # The replicas on different nodes, as in payments-api.yaml: a node going down takes one of them.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: antifraud
       # Restricted, as the Pod Security Standard of the namespace demands (namespace.yaml, docs/security.md).
       # The image names its user (USER antifraud), Kubernetes needs the number to check it is not root.
       securityContext:

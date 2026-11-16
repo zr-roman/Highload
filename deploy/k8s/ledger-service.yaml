@@ -24,8 +24,9 @@ metadata:
     app.kubernetes.io/name: ledger-service
 spec:
   # Up to 8 replicas make sense: the consumer group spreads the 8 partitions of payments.captured among them,
-  # and each partition keeps a single writer.
-  replicas: 1
+  # and each partition keeps a single writer. Two, on two nodes: when one goes with its node, the consumer group gives
+  # its partitions to the other within the session timeout (10 s, PaymentsConsumer), instead of waiting for a new pod.
+  replicas: 2
   selector:
     matchLabels:
       app.kubernetes.io/name: ledger-service
@@ -34,6 +35,14 @@ spec:
       labels:
         app.kubernetes.io/name: ledger-service
     spec:
+      # The replicas on different nodes, as in payments-api.yaml: a node going down takes one of them.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: ledger-service
       # Counted from the start of preStop: 5 s of the pause, then up to 30 s for the app to stop (HostOptions.ShutdownTimeout
       # is 25 s in Platform, a margin before SIGKILL).
       terminationGracePeriodSeconds: 35

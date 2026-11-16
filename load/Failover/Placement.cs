@@ -15,7 +15,9 @@ public static class Placement
 {
     private const string ServerNode = "k3d-highload-server-0";
 
-    // One replica each: namespace, Deployment, the label of its pods.
+    // Moved off the node before a run: namespace, Deployment, the label of its pods. Most have one replica; Traefik,
+    // Ledger.Service and antifraud have two on two nodes now, and their copy on the node is moved all the same, so
+    // that the run measures the scenario, not their failover.
     private static readonly (string Namespace, string Deployment, string Selector)[] Singletons =
     [
         ("kube-system", "traefik", "app.kubernetes.io/name=traefik"),
