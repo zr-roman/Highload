@@ -24,6 +24,10 @@ public sealed class Report(
               "После возвращения в сеть нода перезапускается: в k3d сеть подов после переподключения не восстанавливается сама. "
             : $"Нода `{options.NodeName}` остановлена на {options.BeforeSeconds}-й секунде нагрузки на {options.DownSeconds} с (`docker stop`: процессы завершаются и закрывают свои соединения). ");
         text.Append($"Нагрузка — {options.Rate} платежей в секунду, {options.LoadSeconds} с, через Traefik.\n\n");
+        if (outage.Checkpoint is { } checkpoint)
+            text.Append($"Перед отказом на основном выполнен `CHECKPOINT` (`--pre-checkpoint`): {checkpoint.TotalSeconds.ToString("0.0", Numbers)} с.\n\n");
+        if (options.Scenario == Scenario.PgPrimary)
+            text.Append("Строки логов о переключении по времени — `switchover.md`.\n\n");
 
         text.Append("## Перед отказом\n\n");
         text.Append($"- основной PostgreSQL — `{placement.PgPrimary}` на `{placement.PgPrimaryNode}`\n");

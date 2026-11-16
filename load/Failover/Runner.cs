@@ -7,13 +7,16 @@ namespace Failover;
 public sealed record Check(string Name, bool Ok, string Detail);
 
 /// <summary>When the node went down and came back, from the start of the load.</summary>
-public sealed class Outage(FailoverOptions options, Stopwatch clock)
+public sealed class Outage(FailoverOptions options, PlacementInfo placement, Stopwatch clock)
 {
     public TimeSpan? Stopped { get; private set; }
     public TimeSpan? Started { get; private set; }
 
     /// <summary>When the node was restarted after a partition, to set the pod network up again.</summary>
     public TimeSpan? Restarted { get; private set; }
+
+    /// <summary>How long the CHECKPOINT of --pre-checkpoint took, if it ran.</summary>
+    public TimeSpan? Checkpoint { get; private set; }
 
     /// <summary>When kubectl drain finished: every pod it could evict was gone from the node.</summary>
     public TimeSpan? Drained { get; private set; }
@@ -37,6 +40,16 @@ public sealed class Outage(FailoverOptions options, Stopwatch clock)
         }
 
         await Task.Delay(TimeSpan.FromSeconds(options.BeforeSeconds), ct);
+        if (options.PreCheckpoint)
+        {
+            // Dirty pages written now, while the primary still takes writes: its shutdown checkpoint has little left.
+            var at = clock.Elapsed;
+            var done = await Cluster.PsqlAsync(placement.PgPrimary, "CHECKPOINT", TimeSpan.FromSeconds(60));
+            Checkpoint = clock.Elapsed - at;
+            Console.WriteLine(done is null
+                ? $"CHECKPOINT on {placement.PgPrimary} failed after {Checkpoint.Value.TotalSeconds:0.0} s"
+                : $"CHECKPOINT on {placement.PgPrimary} took {Checkpoint.Value.TotalSeconds:0.0} s");
+        }
         if (options.Mode == FailureMode.Drain)
         {
             // The drain starts the outage; it may take a while, as each eviction waits for its budget, and the time
@@ -116,12 +129,13 @@ public static class Runner
 
         var startedAt = await Cluster.PgNowAsync(placement.PgPrimary) ?? throw new FailoverException("Cannot read the time of PostgreSQL");
         using var traefik = new Traefik(reports);
+        using var logs = options.Scenario == Scenario.PgPrimary ? new LogStreams(reports) : null;
         await Task.Delay(TimeSpan.FromSeconds(3), ct);
         var before = await traefik.CountsAsync();
 
         var clock = Stopwatch.StartNew();
         var sampler = new Sampler(options, placement, clock);
-        var outage = new Outage(options, clock);
+        var outage = new Outage(options, placement, clock);
         using var sampling = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var samplingTask = sampler.RunAsync(sampling.Token);
         var outageTask = outage.RunAsync(ct);
@@ -136,6 +150,7 @@ public static class Runner
         var settled = await SettleAsync(sampler, loadEnded, TimeSpan.FromSeconds(options.SettleSeconds), clock, ct);
         sampling.Cancel();
         await samplingTask;
+        logs?.Dispose();
 
         var checks = await ChecksAsync(options, placement, sampler, outage, k6, startedAt, settled);
         checks.Add(await BrokerRestartsCheckAsync(placement, reports));

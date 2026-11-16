@@ -42,7 +42,7 @@ public enum FailureMode
 
 /// <summary>The command line of the tool.</summary>
 public sealed record FailoverOptions(
-    Scenario Scenario, string Node, int Rate, int BeforeSeconds, int DownSeconds, int LoadSeconds, int SettleSeconds, FailureMode Mode)
+    Scenario Scenario, string Node, int Rate, int BeforeSeconds, int DownSeconds, int LoadSeconds, int SettleSeconds, FailureMode Mode, bool PreCheckpoint = false)
 {
     public const string Usage = """
         A node of the k3d cluster fails under load: prepares the stand for the scenario, stops the node, samples the
@@ -70,6 +70,9 @@ public sealed record FailoverOptions(
           --down S      seconds the node stays down (default: 90)
           --load S      seconds of load in all (default: 150)
           --settle S    after the load, how long to wait for the stand to recover before the checks (default: 180)
+          --pre-checkpoint
+                        run CHECKPOINT on the primary just before the outage, so that its shutdown has little
+                        to write: shows how much of a switchover is the checkpoint
         """;
 
     public static FailoverOptions Parse(string[] args)
@@ -78,6 +81,11 @@ public sealed record FailoverOptions(
         for (var i = 0; i < args.Length; i++)
         {
             var name = args[i];
+            if (name == "--pre-checkpoint")
+            {
+                options = options with { PreCheckpoint = true };
+                continue;
+            }
             if (i + 1 >= args.Length)
                 throw new FailoverException($"{name} needs a value. {Usage}");
             var value = args[++i];
