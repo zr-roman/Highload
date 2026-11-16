@@ -70,6 +70,14 @@
    ```
    Затем коммит и push: Argo CD применит SealedSecret, контроллер обновит Secret. Grafana читает пароль при старте: после смены — `kubectl -n monitoring rollout restart deployment/monitoring-grafana`.
 
+   Токен бота Telegram для Alertmanager — тоже SealedSecret. Токен выдаёт @BotFather (`/mybots` → бот → API Token); вводится скрыто:
+   ```powershell
+   $token = Read-Host "Токен бота" -MaskInput
+   kubectl -n monitoring create secret generic alertmanager-telegram --from-literal=bot-token=$token --dry-run=client -o yaml |
+       kubeseal -o yaml > deploy/monitoring/secrets/alertmanager-telegram-sealed.yaml
+   Remove-Variable token
+   ```
+
    Ключи хранилища резервных копий PostgreSQL (`backup-store.yaml`) — тоже SealedSecret. Ключи случайные, помнить их не нужно: их читают только RustFS и плагин Barman Cloud из одного Secret.
    ```powershell
    $key = -join ((48..57) + (97..122) | Get-Random -Count 20 | % { [char]$_ })
