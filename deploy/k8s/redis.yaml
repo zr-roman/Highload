@@ -37,16 +37,23 @@ data:
   configure.sh: |
     set -eu
     self="$(hostname).redis.${POD_NAMESPACE}.svc.cluster.local"
+    # Asked for 30 s, not once: a new pod's first connections can be dropped for a few seconds, until the network
+    # policies know its address (docs/postgres-failover.md, finding 6). Asked once, redis-0 moved by a drain heard
+    # no Sentinel and started as a second master beside the real one, until the Sentinels made it a replica.
     master=""
-    for i in 0 1 2; do
-      [ "redis-$i" = "$(hostname)" ] && continue
-      peer="redis-$i.redis.${POD_NAMESPACE}.svc.cluster.local"
-      answer="$(timeout 3 redis-cli -h "$peer" -p 26379 --raw sentinel get-master-addr-by-name mymaster 2>/dev/null | head -n 1 || true)"
-      if [ -n "$answer" ]; then
-        master="$answer"
-        echo "Sentinel of redis-$i: the master is $master"
-        break
-      fi
+    deadline=$(( $(date +%s) + 30 ))
+    while [ -z "$master" ] && [ "$(date +%s)" -lt "$deadline" ]; do
+      for i in 0 1 2; do
+        [ "redis-$i" = "$(hostname)" ] && continue
+        peer="redis-$i.redis.${POD_NAMESPACE}.svc.cluster.local"
+        answer="$(timeout 3 redis-cli -h "$peer" -p 26379 --raw sentinel get-master-addr-by-name mymaster 2>/dev/null | head -n 1 || true)"
+        if [ -n "$answer" ]; then
+          master="$answer"
+          echo "Sentinel of redis-$i: the master is $master"
+          break
+        fi
+      done
+      [ -z "$master" ] && sleep 2
     done
     if [ -z "$master" ]; then
       master="redis-0.redis.${POD_NAMESPACE}.svc.cluster.local"
