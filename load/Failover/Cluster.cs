@@ -113,9 +113,9 @@ public static partial class Cluster
     /// The topic and the lag of the Ledger, through the Kafka tools in a broker's pod. Each tool is a JVM that takes
     /// a few seconds to start, so Kafka is sampled by a loop of its own, as often as that allows.
     /// </summary>
-    public static async Task<KafkaState?> KafkaStateAsync(string brokerPod)
+    public static async Task<KafkaState?> KafkaStateAsync(string probePod)
     {
-        var describe = await KafkaToolAsync(brokerPod, $"kafka-topics.sh --describe --topic {Topic}");
+        var describe = await KafkaToolAsync(probePod, $"kafka-topics.sh --describe --topic {Topic}");
         if (!describe.Ok)
             return null;
 
@@ -135,7 +135,7 @@ public static partial class Cluster
         if (minIsr == int.MaxValue)
             return null;
 
-        var groups = await KafkaToolAsync(brokerPod, $"kafka-consumer-groups.sh --describe --group {LedgerGroup}");
+        var groups = await KafkaToolAsync(probePod, $"kafka-consumer-groups.sh --describe --group {LedgerGroup}");
         long? lag = null;
         if (groups.Ok)
         {
@@ -148,14 +148,17 @@ public static partial class Cluster
 
     // The admin client of the Kafka tools waits 30 s for a broker by default, and a broker on a stopped node never
     // answers: every probe during the outage would time out. Short timeouts make it give up on that broker and ask
-    // another. The file goes to /tmp of the broker's pod, an emptyDir.
+    // another. The file goes to /tmp of the probe pod, an emptyDir.
     private const string ProbeConfig =
         "request.timeout.ms=5000\ndefault.api.timeout.ms=10000\nsocket.connection.setup.timeout.ms=2000\nsocket.connection.setup.timeout.max.ms=3000\n";
 
-    private static Task<CommandResult> KafkaToolAsync(string brokerPod, string tool) =>
-        Shell.Kubectl(TimeSpan.FromSeconds(30), "-n", Namespace, "exec", brokerPod, "--", "bash", "-c",
-            $"printf '{ProbeConfig}' > /tmp/failover-probe.properties && /opt/kafka/bin/{tool} " +
-            "--bootstrap-server localhost:9092 --command-config /tmp/failover-probe.properties");
+    // In a pod of its own (KafkaProbe), never in a broker's: each tool is a JVM, and in a broker's container it
+    // shares the broker's memory limit. The first run of the tool ran them in broker 2, and broker 2 died as one
+    // of them finished.
+    private static Task<CommandResult> KafkaToolAsync(string probePod, string tool) =>
+        Shell.Kubectl(TimeSpan.FromSeconds(30), "-n", Namespace, "exec", probePod, "--", "bash", "-c",
+            $"printf '{ProbeConfig}' > /tmp/failover-probe.properties && KAFKA_HEAP_OPTS=-Xmx128m /opt/kafka/bin/{tool} " +
+            "--bootstrap-server kafka-kafka-bootstrap:9092 --command-config /tmp/failover-probe.properties");
 
     /// <summary>The Ledger's /invariants: every payment balanced, every account matching its postings.</summary>
     public static async Task<(bool Ok, string Text)> InvariantsAsync()
