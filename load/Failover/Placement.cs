@@ -124,7 +124,7 @@ public static class Placement
         var brokerId = int.Parse(onNode.Name[(onNode.Name.LastIndexOf('-') + 1)..], CultureInfo.InvariantCulture);
         var restarts = await BrokerRestartsAsync();
 
-        var kafka = await Cluster.KafkaStateAsync(KafkaProbe.Name) ?? throw new FailoverException("The Kafka tools failed in the pod " + KafkaProbe.Name);
+        var kafka = await Cluster.KafkaStateAsync(KafkaProbe.Name) ?? throw new FailoverException($"The Kafka tools failed in the pod {KafkaProbe.Name}: {Cluster.LastKafkaError}");
         if (kafka.UnderReplicated > 0)
             throw new FailoverException($"{kafka.UnderReplicated} partitions of {Cluster.Topic} are under-replicated: wait for the brokers to catch up");
         var led = kafka.LeadersByBroker.GetValueOrDefault(brokerId);
