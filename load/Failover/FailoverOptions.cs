@@ -11,8 +11,25 @@ public enum Scenario
     KafkaBroker,
 }
 
+/// <summary>How the node goes away.</summary>
+public enum FailureMode
+{
+    /// <summary>
+    /// docker stop: the node's container is stopped. Its processes get a signal and exit, and their connections are
+    /// closed properly: the peers see the close at once.
+    /// </summary>
+    Stop,
+
+    /// <summary>
+    /// docker network disconnect: the node drops out of the network with everything on it still running. Nothing is
+    /// closed: the peers' connections to it just go silent, as when a machine loses power or its switch port.
+    /// </summary>
+    Partition,
+}
+
 /// <summary>The command line of the tool.</summary>
-public sealed record FailoverOptions(Scenario Scenario, string Node, int Rate, int BeforeSeconds, int DownSeconds, int LoadSeconds, int SettleSeconds)
+public sealed record FailoverOptions(
+    Scenario Scenario, string Node, int Rate, int BeforeSeconds, int DownSeconds, int LoadSeconds, int SettleSeconds, FailureMode Mode)
 {
     public const string Usage = """
         A node of the k3d cluster fails under load: prepares the stand for the scenario, stops the node, samples the
@@ -21,10 +38,15 @@ public sealed record FailoverOptions(Scenario Scenario, string Node, int Rate, i
         From the repository root, with the cluster up and no other load:
           dotnet run --project load\Failover -c Release
           dotnet run --project load\Failover -c Release -- --scenario kafka-broker --node agent-0 --rate 50
+          dotnet run --project load\Failover -c Release -- --mode partition
 
           --scenario S  what to put on the node (default: kafka-broker)
                           kafka-broker  a Kafka broker that leads partitions and the leader of the outbox relay;
                                         the primary of PostgreSQL is moved away from the node
+          --mode M      how the node goes away (default: stop)
+                          stop       docker stop: its processes exit and close their connections
+                          partition  docker network disconnect: it stays up but drops out of the network;
+                                     nothing is closed, the peers' connections go silent
           --node N      the agent node to stop: agent-0 or agent-1 (default: agent-1). Not the server node:
                         the operators and the control plane live there
           --rate R      payments a second (default: 50)
@@ -36,7 +58,7 @@ public sealed record FailoverOptions(Scenario Scenario, string Node, int Rate, i
 
     public static FailoverOptions Parse(string[] args)
     {
-        var options = new FailoverOptions(Scenario.KafkaBroker, "agent-1", 50, 30, 90, 150, 180);
+        var options = new FailoverOptions(Scenario.KafkaBroker, "agent-1", 50, 30, 90, 150, 180, FailureMode.Stop);
         for (var i = 0; i < args.Length; i++)
         {
             var name = args[i];
@@ -47,6 +69,12 @@ public sealed record FailoverOptions(Scenario Scenario, string Node, int Rate, i
             {
                 "--scenario" => options with { Scenario = ParseScenario(value) },
                 "--node" => options with { Node = value },
+                "--mode" => options with { Mode = value switch
+                {
+                    "stop" => FailureMode.Stop,
+                    "partition" => FailureMode.Partition,
+                    _ => throw new FailoverException($"Unknown mode {value}: stop or partition"),
+                } },
                 "--rate" => options with { Rate = Positive(name, value) },
                 "--before" => options with { BeforeSeconds = Positive(name, value) },
                 "--down" => options with { DownSeconds = Positive(name, value) },
@@ -71,6 +99,8 @@ public sealed record FailoverOptions(Scenario Scenario, string Node, int Rate, i
         Scenario.KafkaBroker => "kafka-broker",
         _ => scenario.ToString(),
     };
+
+    public static string ModeName(FailureMode mode) => mode == FailureMode.Partition ? "partition" : "stop";
 
     private static Scenario ParseScenario(string value) => value switch
     {

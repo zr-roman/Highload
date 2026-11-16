@@ -14,10 +14,12 @@ public sealed class Report(
     public string Markdown()
     {
         var text = new StringBuilder();
-        text.Append($"# Отказ ноды: сценарий `{FailoverOptions.ScenarioName(options.Scenario)}`\n\n");
+        text.Append($"# Отказ ноды: сценарий `{FailoverOptions.ScenarioName(options.Scenario)}`, режим `{FailoverOptions.ModeName(options.Mode)}`\n\n");
         text.Append($"{started:dd.MM.yyyy HH:mm}. ");
         text.Append(commit is null ? "Коммит неизвестен. " : $"Коммит `{commit}`{(dirty ? " и незакоммиченные изменения" : "")}. ");
-        text.Append($"Нода `{options.NodeName}` остановлена на {options.BeforeSeconds}-й секунде нагрузки на {options.DownSeconds} с (`docker stop`, как падение машины). ");
+        text.Append(options.Mode == FailureMode.Partition
+            ? $"Нода `{options.NodeName}` отключена от сети на {options.BeforeSeconds}-й секунде нагрузки на {options.DownSeconds} с (`docker network disconnect`: всё на ней работает, но соединения с ней замолкают, ничего не закрывается). "
+            : $"Нода `{options.NodeName}` остановлена на {options.BeforeSeconds}-й секунде нагрузки на {options.DownSeconds} с (`docker stop`: процессы завершаются и закрывают свои соединения). ");
         text.Append($"Нагрузка — {options.Rate} платежей в секунду, {options.LoadSeconds} с, через Traefik.\n\n");
 
         text.Append("## Перед отказом\n\n");
@@ -79,9 +81,9 @@ public sealed class Report(
         var stopped = outage.Stopped ?? TimeSpan.Zero;
 
         if (outage.Stopped is { } s)
-            events.Add((s, $"`docker stop {options.NodeName}` завершился"));
+            events.Add((s, options.Mode == FailureMode.Partition ? "нода отключена от сети" : $"`docker stop {options.NodeName}` завершился"));
         if (outage.Started is { } r)
-            events.Add((r, $"`docker start {options.NodeName}`"));
+            events.Add((r, options.Mode == FailureMode.Partition ? "нода снова в сети" : $"`docker start {options.NodeName}`"));
         if (samples.FirstOrDefault(x => x.At > stopped && x.NodeReady == false) is { } notReady)
             events.Add((notReady.At, "нода NotReady"));
         if (outage.Started is { } back && samples.FirstOrDefault(x => x.At > back && x.NodeReady == true) is { } ready)

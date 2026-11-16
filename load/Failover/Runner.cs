@@ -14,11 +14,27 @@ public sealed class Outage(FailoverOptions options, Stopwatch clock)
 
     public async Task RunAsync(CancellationToken ct)
     {
+        // The node's place in the Docker network of k3d, read before it leaves: it comes back to the same address,
+        // which Kubernetes and flannel know it by.
+        var network = "";
+        var ip = "";
+        if (options.Mode == FailureMode.Partition)
+        {
+            var inspect = await Shell.RunAsync("docker",
+                ["inspect", "-f", "{{range $name, $n := .NetworkSettings.Networks}}{{$name}} {{$n.IPAddress}}{{end}}", options.NodeName]);
+            var fields = inspect.Output.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (!inspect.Ok || fields.Length != 2)
+                throw new FailoverException($"Cannot read the network of {options.NodeName}: {inspect.Output} {inspect.Errors}");
+            (network, ip) = (fields[0], fields[1]);
+        }
+
         await Task.Delay(TimeSpan.FromSeconds(options.BeforeSeconds), ct);
-        Console.WriteLine($"Stopping {options.NodeName}");
-        var stop = await Shell.RunAsync("docker", ["stop", options.NodeName], TimeSpan.FromSeconds(60), ct);
-        if (!stop.Ok)
-            throw new FailoverException($"docker stop {options.NodeName} failed: {stop.Errors}");
+        var down = options.Mode == FailureMode.Partition
+            ? await Shell.RunAsync("docker", ["network", "disconnect", network, options.NodeName], TimeSpan.FromSeconds(60), ct)
+            : await Shell.RunAsync("docker", ["stop", options.NodeName], TimeSpan.FromSeconds(60), ct);
+        Console.WriteLine(options.Mode == FailureMode.Partition ? $"Disconnected {options.NodeName} from {network}" : $"Stopped {options.NodeName}");
+        if (!down.Ok)
+            throw new FailoverException($"Could not take {options.NodeName} down: {down.Errors}");
         Stopped = clock.Elapsed;
         try
         {
@@ -26,9 +42,11 @@ public sealed class Outage(FailoverOptions options, Stopwatch clock)
         }
         finally
         {
-            // Started again even when the run is stopped halfway: a node left down would break the next run.
-            Console.WriteLine($"Starting {options.NodeName} again");
-            await Shell.RunAsync("docker", ["start", options.NodeName], TimeSpan.FromSeconds(60));
+            // Back even when the run is stopped halfway: a node left down would break the next run.
+            var up = options.Mode == FailureMode.Partition
+                ? await Shell.RunAsync("docker", ["network", "connect", "--ip", ip, network, options.NodeName], TimeSpan.FromSeconds(60))
+                : await Shell.RunAsync("docker", ["start", options.NodeName], TimeSpan.FromSeconds(60));
+            Console.WriteLine(up.Ok ? $"{options.NodeName} is back" : $"Could not bring {options.NodeName} back: {up.Errors}");
             Started = clock.Elapsed;
         }
     }
@@ -50,7 +68,7 @@ public static class Runner
         var commit = await Shell.RunAsync("git", ["rev-parse", "--short=12", "HEAD"]);
         var dirty = await Shell.RunAsync("git", ["status", "--porcelain", "--untracked-files=no"]);
 
-        Console.WriteLine($"Scenario {FailoverOptions.ScenarioName(options.Scenario)}, node {options.NodeName}: preparing the stand");
+        Console.WriteLine($"Scenario {FailoverOptions.ScenarioName(options.Scenario)}, mode {FailoverOptions.ModeName(options.Mode)}, node {options.NodeName}: preparing the stand");
         await using var probe = await KafkaProbe.StartAsync(ct);
         var placement = await Placement.PrepareAsync(options, ct);
         Console.WriteLine($"PostgreSQL primary {placement.PgPrimary} ({placement.PgPrimaryNode}); outbox relay {placement.OutboxLeaderPod}; " +
