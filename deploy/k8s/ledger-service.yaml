@@ -64,8 +64,7 @@ spec:
             # Command Timeout), and opening one waits 15 s; statement_timeout cannot help, the server is gone. With them
             # a request fails within seconds and frees its connection (docs/postgres-failover.md, «Опыт 3»).
             - name: ConnectionStrings__Ledger
-              # Through PgBouncer (pooler.yaml): see payments-api.yaml for No Reset On Close and the missing -c options.
-              value: Host=pg-pooler-rw;Port=5432;Database=ledger;Username=app;Password=$(PG_PASSWORD);Maximum Pool Size=8;Minimum Pool Size=8;Timeout=3;Command Timeout=10;No Reset On Close=true
+              value: Host=pg-rw;Port=5432;Database=ledger;Username=app;Password=$(PG_PASSWORD);Maximum Pool Size=8;Minimum Pool Size=8;Timeout=3;Command Timeout=10;Options=-c idle_in_transaction_session_timeout=15s -c statement_timeout=10s
             - name: ConnectionStrings__Kafka
               value: kafka-kafka-bootstrap:9092
             # To the OpenTelemetry Collector (otel-collector.yaml), which sends metrics on to Prometheus and everything
