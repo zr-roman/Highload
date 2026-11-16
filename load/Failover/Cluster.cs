@@ -155,10 +155,21 @@ public static partial class Cluster
     // In a pod of its own (KafkaProbe), never in a broker's: each tool is a JVM, and in a broker's container it
     // shares the broker's memory limit. The first run of the tool ran them in broker 2, and broker 2 died as one
     // of them finished.
-    private static Task<CommandResult> KafkaToolAsync(string probePod, string tool) =>
-        Shell.Kubectl(TimeSpan.FromSeconds(30), "-n", Namespace, "exec", probePod, "--", "bash", "-c",
+    private static async Task<CommandResult> KafkaToolAsync(string probePod, string tool)
+    {
+        var result = await Shell.Kubectl(TimeSpan.FromSeconds(30), "-n", Namespace, "exec", probePod, "--", "bash", "-c",
             $"printf '{ProbeConfig}' > /tmp/failover-probe.properties && KAFKA_HEAP_OPTS=-Xmx128m /opt/kafka/bin/{tool} " +
             "--bootstrap-server kafka-kafka-bootstrap:9092 --command-config /tmp/failover-probe.properties");
+        if (!result.Ok)
+            LastKafkaError = $"{tool}: exit code {result.ExitCode}; {Tail(result.Errors.Length > 0 ? result.Errors : result.Output)}";
+        return result;
+    }
+
+    /// <summary>What the last failed Kafka tool wrote, for a message that says why.</summary>
+    public static string LastKafkaError { get; private set; } = "";
+
+    private static string Tail(string text) =>
+        string.Join(" | ", text.Split('\n', StringSplitOptions.RemoveEmptyEntries).TakeLast(5));
 
     /// <summary>The Ledger's /invariants: every payment balanced, every account matching its postings.</summary>
     public static async Task<(bool Ok, string Text)> InvariantsAsync()
