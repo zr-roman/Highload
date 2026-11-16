@@ -18,7 +18,8 @@ public sealed class Report(
         text.Append($"{started:dd.MM.yyyy HH:mm}. ");
         text.Append(commit is null ? "Коммит неизвестен. " : $"Коммит `{commit}`{(dirty ? " и незакоммиченные изменения" : "")}. ");
         text.Append(options.Mode == FailureMode.Partition
-            ? $"Нода `{options.NodeName}` отключена от сети на {options.BeforeSeconds}-й секунде нагрузки на {options.DownSeconds} с (`docker network disconnect`: всё на ней работает, но соединения с ней замолкают, ничего не закрывается). "
+            ? $"Нода `{options.NodeName}` отключена от сети на {options.BeforeSeconds}-й секунде нагрузки на {options.DownSeconds} с (`docker network disconnect`: всё на ней работает, но соединения с ней замолкают, ничего не закрывается). " +
+              "После возвращения в сеть нода перезапускается: в k3d сеть подов после переподключения не восстанавливается сама. "
             : $"Нода `{options.NodeName}` остановлена на {options.BeforeSeconds}-й секунде нагрузки на {options.DownSeconds} с (`docker stop`: процессы завершаются и закрывают свои соединения). ");
         text.Append($"Нагрузка — {options.Rate} платежей в секунду, {options.LoadSeconds} с, через Traefik.\n\n");
 
@@ -82,6 +83,8 @@ public sealed class Report(
 
         if (outage.Stopped is { } s)
             events.Add((s, options.Mode == FailureMode.Partition ? "нода отключена от сети" : $"`docker stop {options.NodeName}` завершился"));
+        if (outage.Restarted is { } rr)
+            events.Add((rr, "нода перезапущена, чтобы k3s заново настроил сеть подов (ограничение стенда)"));
         if (outage.Started is { } r)
             events.Add((r, options.Mode == FailureMode.Partition ? "нода снова в сети" : $"`docker start {options.NodeName}`"));
         if (samples.FirstOrDefault(x => x.At > stopped && x.NodeReady == false) is { } notReady)

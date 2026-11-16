@@ -12,6 +12,9 @@ public sealed class Outage(FailoverOptions options, Stopwatch clock)
     public TimeSpan? Stopped { get; private set; }
     public TimeSpan? Started { get; private set; }
 
+    /// <summary>When the node was restarted after a partition, to set the pod network up again.</summary>
+    public TimeSpan? Restarted { get; private set; }
+
     public async Task RunAsync(CancellationToken ct)
     {
         // The node's place in the Docker network of k3d, read before it leaves: it comes back to the same address,
@@ -48,6 +51,18 @@ public sealed class Outage(FailoverOptions options, Stopwatch clock)
                 : await Shell.RunAsync("docker", ["start", options.NodeName], TimeSpan.FromSeconds(60));
             Console.WriteLine(up.Ok ? $"{options.NodeName} is back" : $"Could not bring {options.NodeName} back: {up.Errors}");
             Started = clock.Elapsed;
+
+            // A limit of the stand, not of Kubernetes: after docker network disconnect and connect the node is Ready
+            // again, but the overlay network between its pods and those of the other nodes stays broken (the brokers
+            // on it never rejoined the ISR, the copy of CoreDNS on it answered no one). k3s sets flannel up again when
+            // the node starts, so the node is restarted once it is back: what the run measures, the outage itself,
+            // is over by then.
+            if (options.Mode == FailureMode.Partition && up.Ok)
+            {
+                await Shell.RunAsync("docker", ["restart", options.NodeName], TimeSpan.FromSeconds(120));
+                Console.WriteLine($"{options.NodeName} restarted, so that k3s sets the pod network up again");
+                Restarted = clock.Elapsed;
+            }
         }
     }
 }
