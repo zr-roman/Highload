@@ -28,7 +28,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # In Kubernetes: the Sentinels say which copy is the master, asked again on each new connection, so after
         # a failover the pool reaches the new master. They get longer timeouts than Redis: a slow answer about
         # the master is better than none.
-        sentinel = Sentinel(settings.redis_sentinels, sentinel_kwargs={"socket_timeout": 0.5, "socket_connect_timeout": 0.5})
+        sentinel = Sentinel(
+            settings.redis_sentinels,
+            sentinel_kwargs={"socket_timeout": 0.5, "socket_connect_timeout": 0.5},
+        )
         app.state.redis = sentinel.master_for(
             settings.redis_master,
             decode_responses=True,

@@ -39,7 +39,7 @@ class Settings:
 
 
 def parse_sentinels(value: str) -> tuple[tuple[str, int], ...]:
-    """"host:port,host:port" -> ((host, port), ...); empty -> ()."""
+    """Parse "host:port,host:port" into ((host, port), ...); an empty value gives ()."""
     sentinels = []
     for item in filter(None, (part.strip() for part in value.split(","))):
         host, separator, port = item.rpartition(":")
