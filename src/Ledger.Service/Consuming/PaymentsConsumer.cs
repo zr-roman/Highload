@@ -77,6 +77,13 @@ public sealed class PaymentsConsumer(
             GroupId = settings.GroupId,
             EnableAutoCommit = false,                   // offsets are committed after the database write
             AutoOffsetReset = AutoOffsetReset.Earliest, // a new group starts from the beginning of the topic
+            // How long the group coordinator may go without a heartbeat, and so how long the consumer waits for a
+            // coordinator that went silent before it finds another. Default 45 s: when the network to the node of the
+            // coordinator broke, the Ledger read nothing for 45 s (docs/kafka-failover.md). 10 s is enough to ride
+            // out a short pause of the process; a longer one costs a rebalance, and the redelivered messages are
+            // skipped by processed_payments. Heartbeats a third of it apart, as Kafka advises.
+            SessionTimeoutMs = 10_000,
+            HeartbeatIntervalMs = 3_000,
         };
 
         return new ConsumerBuilder<string, string>(config)
