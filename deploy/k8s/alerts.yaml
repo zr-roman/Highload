@@ -68,6 +68,36 @@ spec:
             summary: "{{ $labels.pod }} cannot archive WAL"
             description: "Recovery from backup reaches only to the last archived segment. kubectl -n highload logs {{ $labels.pod }} -c plugin-barman-cloud"
 
+        # The daily base backup (ScheduledBackup pg-daily, 03:00) stopped. The WAL archive goes on without it, so
+        # PostgresWalArchivingFailing stays quiet; but a recovery then replays the WAL of every day since the last
+        # backup, and once that backup is past the retention of 7 days there is nothing to recover from.
+        # The times come from the Barman Cloud plugin: with backups by a plugin, the same metrics of the operator
+        # itself (cnpg_collector_last_available_backup_timestamp) stay 0. Every instance reports the same value.
+        # 26 h: a day between backups and room for a long one. No metric at all is an alert too: the plugin or its
+        # scraping is gone, and so is the only way to know.
+        - alert: PostgresBackupTooOld
+          expr: |
+            time() - max by (namespace) (barman_cloud_cloudnative_pg_io_last_available_backup_timestamp{namespace="highload"}) > 26 * 3600
+              or absent(barman_cloud_cloudnative_pg_io_last_available_backup_timestamp{namespace="highload"})
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "The last base backup of PostgreSQL is older than 26 hours"
+            description: "kubectl -n highload get backup --sort-by=.status.stoppedAt; kubectl -n highload get scheduledbackup pg-daily"
+
+        # A backup failed after the last one that worked: at once, not a day later.
+        - alert: PostgresBackupFailed
+          expr: |
+            max by (namespace) (barman_cloud_cloudnative_pg_io_last_failed_backup_timestamp{namespace="highload"})
+              > max by (namespace) (barman_cloud_cloudnative_pg_io_last_available_backup_timestamp{namespace="highload"})
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "The last base backup of PostgreSQL failed"
+            description: "kubectl -n highload get backup --sort-by=.status.stoppedAt; kubectl -n highload describe backup <the last one>"
+
     - name: highload.cluster
       rules:
         # From kube-state-metrics, which stays on the server node (deploy/monitoring/values.yaml): a stopped agent
