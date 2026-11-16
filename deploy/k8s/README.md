@@ -30,6 +30,11 @@
      --k3s-arg "--kube-controller-manager-arg=node-monitor-grace-period=20s@server:0"
    kubectl -n kube-system scale deployment/coredns --replicas=2
    ```
+   Затем третья рабочая нода, для сервисов: у хранилищ (PostgreSQL, Kafka, Redis) по копии на server-0, agent-0 и agent-1, а Traefik, Payments.Api, Ledger и antifraud в двух копиях получают ещё одну ноду, куда разойтись. Добавляется отдельной командой и после того, как хранилища поднялись, а не `--agents 3` сразу: иначе их копии могут сесть на любые три из четырёх нод, а опыты `load/Failover` с отказом agent-0 или agent-1 рассчитывают найти на ней копию.
+   ```powershell
+   k3d node create highload-agent-2 --cluster highload --role agent
+   ```
+
    Порт API задан явно и ниже 49152. Без `--api-port` k3d берёт случайный порт из динамического диапазона, а Windows (WinNAT, Hyper-V) после перезагрузки резервирует в этом диапазоне свои блоки: если порт кластера попал в такой блок, балансировщик k3d не стартует с ошибкой `bind: An attempt was made to access a socket in a way forbidden by its access permissions`, и `kubectl` не подключается. Занятые блоки: `netsh interface ipv4 show excludedportrange protocol=tcp`. Вторая реплика CoreDNS — см. [ниже](#coredns-в-двух-экземплярах).
 
    `node-monitor-grace-period=20s` вместо 50 с по умолчанию: остановленную ноду Kubernetes замечает за ~15 с, а не за ~50, и Traefik раньше перестаёт слать запросы в поды на ней ([опыт](../../docs/observability.md#время-обнаружения-отказа-50-с--20-с)). Цена: нода, которая молчит дольше 20 с, считается мёртвой, и поды с неё выселяются — так бывает и при перезапуске контейнера server-0. На уже созданном кластере:

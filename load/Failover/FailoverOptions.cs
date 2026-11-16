@@ -63,7 +63,8 @@ public sealed record FailoverOptions(
                           partition  docker network disconnect: it stays up but drops out of the network;
                                      nothing is closed, the peers' connections go silent
                           drain      kubectl drain: planned maintenance, pods evicted within their budgets
-          --node N      the agent node to stop: agent-0 or agent-1 (default: agent-1). Not the server node:
+          --node N      the agent node to stop: agent-0, agent-1 or agent-2-0 (default: agent-1). It must hold a
+                        broker (kafka-broker) or an instance of PostgreSQL (pg-primary). Not the server node:
                         the operators and the control plane live there
           --rate R      payments a second (default: 50)
           --before S    seconds of load before the node is stopped (default: 30)
@@ -109,8 +110,11 @@ public sealed record FailoverOptions(
             };
         }
 
-        if (options.Node is not ("agent-0" or "agent-1"))
-            throw new FailoverException($"--node must be agent-0 or agent-1, got {options.Node}: the server node keeps the operators");
+        // Any agent node, agent-2-0 included: Placement finds what is on it and says so when a scenario needs a broker
+        // or an instance of PostgreSQL that the node does not have.
+        if (!System.Text.RegularExpressions.Regex.IsMatch(options.Node, @"^agent-\d+(-\d+)?$"))
+            throw new FailoverException($"--node must be an agent node, agent-0, agent-1 or agent-2-0, got {options.Node}: " +
+                "the server node keeps the operators");
         if (options.BeforeSeconds + options.DownSeconds >= options.LoadSeconds)
             throw new FailoverException("--before + --down must be shorter than --load: the node comes back under load");
         return options;
