@@ -46,6 +46,12 @@ spec:
     - to:
         - podSelector:
             matchLabels:
+              cnpg.io/poolerName: pg-pooler-rw
+      ports:
+        - port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
               strimzi.io/cluster: kafka
               strimzi.io/pool-name: broker
       ports:
@@ -97,6 +103,12 @@ spec:
     - to:
         - podSelector:
             matchLabels:
+              cnpg.io/poolerName: pg-pooler-rw
+      ports:
+        - port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
               strimzi.io/cluster: kafka
               strimzi.io/pool-name: broker
       ports:
@@ -127,6 +139,31 @@ spec:
       ports:
         - port: 6379
         - port: 26379
+---
+# PgBouncer: the primary, and the API server, from which it learns where the primary is and reads its credentials.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-pooler
+spec:
+  podSelector:
+    matchExpressions:
+      - key: cnpg.io/poolerName
+        operator: Exists
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: pg
+      ports:
+        - port: 5432
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 6443
+        - port: 443
 ---
 # Redis: the replicas and the Sentinels reach the master and each other.
 apiVersion: networking.k8s.io/v1

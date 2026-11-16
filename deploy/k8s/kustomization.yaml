@@ -13,6 +13,7 @@ resources:
   - namespace.yaml
   - kafka.yaml
   - redis.yaml
+  - pooler.yaml
   - dashboard.yaml
   - bank-emulator.yaml
   - antifraud.yaml

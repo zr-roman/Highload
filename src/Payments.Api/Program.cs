@@ -3,6 +3,7 @@ using Contracts;
 using Microsoft.Extensions.Http.Resilience;
 using Npgsql;
 using Payments.Api.Acquiring;
+using Payments.Api.Database;
 using Payments.Api.Outbox;
 using Payments.Api.Payments;
 using Payments.Api.RateLimiting;
@@ -37,6 +38,11 @@ builder.Services.AddOptions<MerchantRateLimitOptions>()
     .Bind(builder.Configuration.GetSection("RateLimiting:Merchant"));
 
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(postgres));
+
+// The leader locks on their own connections straight to the primary, when the main ones go through PgBouncer
+// (LeaderDataSource). One per job, held for as long as the replica leads: a small pool of its own.
+if (builder.Configuration.GetConnectionString("PaymentsLeader") is { Length: > 0 } leader)
+    builder.Services.AddSingleton(_ => new LeaderDataSource(NpgsqlDataSource.Create(leader)));
 builder.Services.AddSingleton<IProducer<string, string>>(_ => new ProducerBuilder<string, string>(new ProducerConfig
 {
     BootstrapServers = kafka,

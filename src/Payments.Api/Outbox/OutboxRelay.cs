@@ -20,7 +20,8 @@ public sealed class OutboxRelay(
     IProducer<string, string> producer,
     IOptions<OutboxOptions> options,
     PaymentsMetrics metrics,
-    ILogger<OutboxRelay> logger) : BackgroundService
+    ILogger<OutboxRelay> logger,
+    LeaderDataSource? leaderDataSource = null) : BackgroundService
 {
     private sealed record OutboxMessage(long Id, string Topic, string Key, string Payload, DateTimeOffset CreatedAt);
 
@@ -28,7 +29,8 @@ public sealed class OutboxRelay(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await using var _ = await AdvisoryLeaderLock.AcquireAsync(dataSource, AdvisoryLockKeys.OutboxRelay, "Outbox Relay", logger, stoppingToken);
+        await using var _ = await AdvisoryLeaderLock.AcquireAsync(
+            leaderDataSource?.Value ?? dataSource, AdvisoryLockKeys.OutboxRelay, "Outbox Relay", logger, stoppingToken);
 
         var minIdleDelay = TimeSpan.FromMilliseconds(options.Value.IdleDelayMs);
         var maxIdleDelay = TimeSpan.FromMilliseconds(options.Value.MaxIdleDelayMs);

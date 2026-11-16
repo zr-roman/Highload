@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Options;
 using Npgsql;
 using OpenTelemetry;
 using Payments.Api.Acquiring;
@@ -16,7 +16,8 @@ public sealed class PaymentRecovery(
     IServiceScopeFactory serviceScopeFactory, 
     IOptions<RecoveryOptions> options,
     TimeProvider timeProvider,
-    ILogger<PaymentRecovery> logger) : BackgroundService
+    ILogger<PaymentRecovery> logger,
+    LeaderDataSource? leaderDataSource = null) : BackgroundService
 {
     private const string RecoveredTemplate = "Payment {PaymentId} recovered as {Status}: {Reason}";
     private readonly RecoveryOptions settings = options.Value;
@@ -24,7 +25,7 @@ public sealed class PaymentRecovery(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await using var _ = await AdvisoryLeaderLock
-            .AcquireAsync(dataSource, AdvisoryLockKeys.PaymentRecovery, "Payment Recovery", logger, stoppingToken);
+            .AcquireAsync(leaderDataSource?.Value ?? dataSource, AdvisoryLockKeys.PaymentRecovery, "Payment Recovery", logger, stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {

@@ -85,8 +85,15 @@ spec:
             # packets are dropped, not refused: without them a query on an open connection waits 30 s (the default
             # Command Timeout), and opening one waits 15 s; statement_timeout cannot help, the server is gone. With them
             # a request fails within seconds and frees its connection (docs/postgres-failover.md, «Опыт 3»).
+            # Through PgBouncer (pooler.yaml), which drops the -c options: Command Timeout is the statement limit here.
+            # No Reset On Close: Npgsql would send DISCARD ALL when a connection goes back to its pool, which in
+            # transaction mode resets a server connection someone else may already be using.
             - name: ConnectionStrings__Payments
-              value: Host=pg-rw;Port=5432;Database=payments;Username=app;Password=$(PG_PASSWORD);Maximum Pool Size=16;Minimum Pool Size=16;Timeout=3;Command Timeout=5;Options=-c idle_in_transaction_session_timeout=15s -c statement_timeout=5s
+              value: Host=pg-pooler-rw;Port=5432;Database=payments;Username=app;Password=$(PG_PASSWORD);Maximum Pool Size=16;Minimum Pool Size=16;Timeout=3;Command Timeout=5;No Reset On Close=true
+            # The leader locks of the outbox relay and of payment recovery, session advisory locks: straight to the
+            # primary, past PgBouncer, which would not keep the session (LeaderDataSource). One connection per job.
+            - name: ConnectionStrings__PaymentsLeader
+              value: Host=pg-rw;Port=5432;Database=payments;Username=app;Password=$(PG_PASSWORD);Maximum Pool Size=2;Minimum Pool Size=0;Timeout=3;Command Timeout=5;Options=-c idle_in_transaction_session_timeout=15s -c statement_timeout=5s
             - name: ConnectionStrings__Kafka
               value: kafka-kafka-bootstrap:9092
             - name: ConnectionStrings__Redis

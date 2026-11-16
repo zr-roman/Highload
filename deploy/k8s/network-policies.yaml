@@ -147,6 +147,14 @@ spec:
                 values: [payments-api, ledger-service]
       ports:
         - port: 5432
+    # PgBouncer (pooler.yaml) on behalf of the services.
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: cnpg.io/poolerName
+                operator: Exists
+      ports:
+        - port: 5432
     - from:
         - podSelector:
             matchExpressions:
@@ -191,3 +199,24 @@ spec:
               app.kubernetes.io/name: backup-bucket
       ports:
         - port: 9000
+---
+# PgBouncer (pooler.yaml): the services connect to it instead of the primary.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pooler
+spec:
+  podSelector:
+    matchExpressions:
+      - key: cnpg.io/poolerName
+        operator: Exists
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [payments-api, ledger-service]
+      ports:
+        - port: 5432
