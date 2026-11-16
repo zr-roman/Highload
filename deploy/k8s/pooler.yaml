@@ -35,6 +35,18 @@ spec:
       max_prepared_statements: "200"
       # A client idle inside a transaction for 15 s loses its connection, as idle_in_transaction_session_timeout did.
       idle_transaction_timeout: "15"
+      # When the primary changes (docs/postgres-failover.md, «PgBouncer»). With the defaults the first drain through
+      # the pooler failed 65 % of the payments, against 21 % straight to pg-rw: a query for a primary that is gone
+      # waited in PgBouncer's queue for up to 120 s, holding its Npgsql connection, until the pools of the services
+      # ran dry; and one failed login made PgBouncer refuse every client for 15 s without trying again.
+      # A query waits for a server connection no longer than the client waits for its answer (Command Timeout 5 s)...
+      query_wait_timeout: "3"
+      # ...a failed login is tried again after a second, a connection that does not open is given up after 3 s...
+      server_login_retry: "1"
+      server_connect_timeout: "3"
+      # ...and once the operator points PgBouncer at the new primary, connections to the old one are closed as soon
+      # as their transaction ends, not when they are next used.
+      server_fast_close: "1"
   template:
     metadata:
       labels:
