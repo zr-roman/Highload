@@ -59,7 +59,7 @@ images:
     newTag: a0c0150beba8
     newName: ghcr.io/zr-roman/ledger-service
   - name: bank-emulator
-    newTag: f427aee5187e
+    newTag: 590fb3f1c52b
     newName: ghcr.io/zr-roman/bank-emulator
   - name: antifraud
     newTag: 08802f33fba6
