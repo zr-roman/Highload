@@ -156,3 +156,129 @@ func TestProcessingDelay(t *testing.T) {
 		t.Errorf("latency 50ms, jitter 20ms, random() returns 0.5: want %v, got %v", want, got)
 	}
 }
+
+func TestVoidApproved(t *testing.T) {
+	b := NewBank(Config{DeclinePercent: 0})
+	approved, err := b.Authorize(testRequest("p-1"))
+	if err != nil {
+		t.Fatalf("Authorize returned an error: %v", err)
+	}
+
+	voided, err := b.Void("p-1")
+	if err != nil {
+		t.Fatalf("Void returned an error: %v", err)
+	}
+	if voided.Status != StatusVoided || voided.VoidedAt == nil {
+		t.Fatalf("want a voided authorization with VoidedAt, got %+v", voided)
+	}
+	// The void adds to the decision, it does not replace it.
+	if voided.AuthorizationCode != approved.AuthorizationCode || !voided.DecidedAt.Equal(approved.DecidedAt) {
+		t.Errorf("the code and DecidedAt must stay: approved %+v, voided %+v", approved, voided)
+	}
+}
+
+func TestVoidRepeatGetsTheSameAnswer(t *testing.T) {
+	b := NewBank(Config{DeclinePercent: 0})
+	if _, err := b.Authorize(testRequest("p-1")); err != nil {
+		t.Fatalf("Authorize returned an error: %v", err)
+	}
+	first, err := b.Void("p-1")
+	if err != nil {
+		t.Fatalf("Void returned an error: %v", err)
+	}
+
+	second, err := b.Void("p-1")
+	if err != nil {
+		t.Fatalf("repeat: Void returned an error: %v", err)
+	}
+	if second.Status != StatusVoided || !second.VoidedAt.Equal(*first.VoidedAt) {
+		t.Errorf("a repeat must get the same void: first %+v (at %v), repeat %+v (at %v)", first, *first.VoidedAt, second, second.VoidedAt)
+	}
+}
+
+func TestVoidDeclined(t *testing.T) {
+	b := NewBank(Config{DeclinePercent: 100})
+	if _, err := b.Authorize(testRequest("p-1")); err != nil {
+		t.Fatalf("Authorize returned an error: %v", err)
+	}
+
+	if _, err := b.Void("p-1"); !errors.Is(err, ErrNotApproved) {
+		t.Fatalf("void of a declined payment: want ErrNotApproved, got %v", err)
+	}
+	if got, _ := b.Get("p-1"); got.Status != StatusDeclined {
+		t.Errorf("a refused void must not change the decision: want %q, got %q", StatusDeclined, got.Status)
+	}
+}
+
+func TestVoidUnknown(t *testing.T) {
+	b := NewBank(Config{})
+
+	if _, err := b.Void("p-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("void of an unknown payment: want ErrNotFound, got %v", err)
+	}
+	if _, ok := b.Get("p-1"); ok {
+		t.Error("a void of an unknown payment must not create a decision")
+	}
+}
+
+func TestAfterVoidGetAndAuthorizeSeeIt(t *testing.T) {
+	b := NewBank(Config{DeclinePercent: 0})
+	if _, err := b.Authorize(testRequest("p-1")); err != nil {
+		t.Fatalf("Authorize returned an error: %v", err)
+	}
+	if _, err := b.Void("p-1"); err != nil {
+		t.Fatalf("Void returned an error: %v", err)
+	}
+
+	if got, _ := b.Get("p-1"); got.Status != StatusVoided {
+		t.Errorf("Get after Void: want %q, got %q", StatusVoided, got.Status)
+	}
+	// A repeated authorization must not approve the payment again: it gets the decision as it is now.
+	again, err := b.Authorize(testRequest("p-1"))
+	if err != nil || again.Status != StatusVoided {
+		t.Errorf("Authorize after Void: want %q, got %+v (error: %v)", StatusVoided, again, err)
+	}
+}
+
+// Run with -race as well: go test -race ./...
+func TestConcurrentVoidsGetOneVoid(t *testing.T) {
+	b := NewBank(Config{DeclinePercent: 0})
+	if _, err := b.Authorize(testRequest("p-1")); err != nil {
+		t.Fatalf("Authorize returned an error: %v", err)
+	}
+
+	const n = 100
+	results := make([]Authorization, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i], errs[i] = b.Void("p-1")
+		}()
+	}
+	wg.Wait()
+
+	for i := range n {
+		if errs[i] != nil {
+			t.Fatalf("void %d: Void returned an error: %v", i, errs[i])
+		}
+		if !results[i].VoidedAt.Equal(*results[0].VoidedAt) {
+			t.Fatalf("void %d at %v, void 0 at %v: one payment must be voided once", i, results[i].VoidedAt, results[0].VoidedAt)
+		}
+	}
+}
+
+func TestMerchantOf(t *testing.T) {
+	b := NewBank(Config{})
+	if _, ok := b.MerchantOf("p-1"); ok {
+		t.Fatal("MerchantOf found a merchant before any Authorize")
+	}
+	if _, err := b.Authorize(testRequest("p-1")); err != nil {
+		t.Fatalf("Authorize returned an error: %v", err)
+	}
+	if got, ok := b.MerchantOf("p-1"); !ok || got != 42 {
+		t.Errorf("want merchant 42, got %d (found: %v)", got, ok)
+	}
+}

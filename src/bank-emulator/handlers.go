@@ -14,6 +14,7 @@ func NewHandler(b *Bank) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/authorizations", b.handleAuthorize)
 	mux.HandleFunc("GET /v1/authorizations/{paymentId}", b.handleGet)
+	mux.HandleFunc("POST /v1/authorizations/{paymentId}/void", b.handleVoid)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})
@@ -76,6 +77,52 @@ func (b *Bank) handleGet(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		writeError(w, http.StatusNotFound, "there is no decision")
 		return
+	}
+
+	writeJSON(w, http.StatusOK, auth)
+}
+
+// handleVoid: POST /v1/authorizations/{paymentId}/void. No body: the payment id is in the path.
+// The failures are the same as for an authorization, so Payments.Api retries a void the same way.
+func (b *Bank) handleVoid(w http.ResponseWriter, r *http.Request) {
+	paymentID := r.PathValue("paymentId")
+
+	// First the merchant: the request carries none, and BANK_ERROR_MERCHANT fails by merchant.
+	merchantID, ok := b.MerchantOf(paymentID)
+	if !ok {
+		writeError(w, http.StatusNotFound, ErrNotFound.Error())
+		return
+	}
+
+	if merchantID == b.cfg.ErrorMerchant {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("simulated bank failure for merchant %d", merchantID))
+		return
+	}
+
+	if b.chance(b.cfg.ErrorPercent) {
+		writeError(w, http.StatusInternalServerError, "simulated bank failure")
+		return
+	}
+
+	if !sleep(r.Context(), b.processingDelay()) {
+		return // the client left while the bank was working: nothing is voided
+	}
+
+	auth, err := b.Void(paymentID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	case errors.Is(err, ErrNotApproved):
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if b.chance(b.cfg.SlowPercent) && !sleep(r.Context(), b.cfg.SlowDelay) {
+		return // the client did not wait, but the void is already done
 	}
 
 	writeJSON(w, http.StatusOK, auth)

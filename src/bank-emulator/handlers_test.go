@@ -183,3 +183,111 @@ func TestHealthz(t *testing.T) {
 		t.Errorf(`want 200 "ok", got %d %q`, rec.Code, rec.Body.String())
 	}
 }
+
+const voidPath = "/v1/authorizations/p-1/void"
+
+func TestVoidHandler(t *testing.T) {
+	h := NewHandler(NewBank(Config{}))
+	if rec := call(t, h, http.MethodPost, voidPath, ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("before any POST: want 404, got %d: %s", rec.Code, rec.Body)
+	}
+
+	call(t, h, http.MethodPost, "/v1/authorizations", validBody)
+	rec := call(t, h, http.MethodPost, voidPath, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("void of an approved payment: want 200, got %d: %s", rec.Code, rec.Body)
+	}
+	voided := decode[Authorization](t, rec)
+	if voided.Status != StatusVoided || voided.VoidedAt == nil {
+		t.Fatalf("want a voided authorization with voidedAt, got %+v", voided)
+	}
+
+	repeat := call(t, h, http.MethodPost, voidPath, "")
+	if repeat.Code != http.StatusOK || repeat.Body.String() != rec.Body.String() {
+		t.Errorf("a repeated void must get the same answer: first %s, repeat %d %s", rec.Body, repeat.Code, repeat.Body)
+	}
+	if got := call(t, h, http.MethodGet, "/v1/authorizations/p-1", ""); got.Body.String() != rec.Body.String() {
+		t.Errorf("GET after the void must show it: want %s, got %s", rec.Body, got.Body)
+	}
+}
+
+func TestVoidHandlerDeclined(t *testing.T) {
+	h := NewHandler(NewBank(Config{DeclinePercent: 100}))
+	call(t, h, http.MethodPost, "/v1/authorizations", validBody)
+
+	rec := call(t, h, http.MethodPost, voidPath, "")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("void of a declined payment: want 409, got %d: %s", rec.Code, rec.Body)
+	}
+	if e := decode[errorResponse](t, rec); e.Error == "" {
+		t.Error(`a 409 needs a JSON body like {"error": "what is wrong"}`)
+	}
+}
+
+func TestVoidSimulatedErrorVoidsNothing(t *testing.T) {
+	b := NewBank(Config{})
+	h := NewHandler(b)
+	call(t, h, http.MethodPost, "/v1/authorizations", validBody)
+
+	b.cfg.ErrorPercent = 100
+	if rec := call(t, h, http.MethodPost, voidPath, ""); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("ErrorPercent=100: want 500, got %d: %s", rec.Code, rec.Body)
+	}
+	if got, _ := b.Get("p-1"); got.Status != StatusApproved {
+		t.Errorf("a failure before the void must void nothing: want %q, got %q", StatusApproved, got.Status)
+	}
+}
+
+func TestVoidErrorMerchantFailsAlone(t *testing.T) {
+	b := NewBank(Config{})
+	h := NewHandler(b)
+	call(t, h, http.MethodPost, "/v1/authorizations", validBody)
+	other := strings.NewReplacer(`"p-1"`, `"p-2"`, `"merchantId":42`, `"merchantId":7`).Replace(validBody)
+	call(t, h, http.MethodPost, "/v1/authorizations", other)
+
+	b.cfg.ErrorMerchant = 42 // the merchant's authorizations went through, now its bank fails
+	if rec := call(t, h, http.MethodPost, voidPath, ""); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("ErrorMerchant=42: want 500 for a void of merchant 42, got %d: %s", rec.Code, rec.Body)
+	}
+	if got, _ := b.Get("p-1"); got.Status != StatusApproved {
+		t.Errorf("the failed void must void nothing: want %q, got %q", StatusApproved, got.Status)
+	}
+	if rec := call(t, h, http.MethodPost, "/v1/authorizations/p-2/void", ""); rec.Code != http.StatusOK {
+		t.Errorf("ErrorMerchant=42: want 200 for a void of merchant 7, got %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestVoidSlowAnswerComesAfterTheVoid(t *testing.T) {
+	const slow = 300 * time.Millisecond
+	b := NewBank(Config{})
+	h := NewHandler(b)
+	call(t, h, http.MethodPost, "/v1/authorizations", validBody)
+
+	b.cfg.SlowPercent, b.cfg.SlowDelay = 100, slow
+	done := make(chan *httptest.ResponseRecorder)
+	go func() { done <- call(t, h, http.MethodPost, voidPath, "") }()
+
+	// The answer is still on its way, but the void must already be done.
+	time.Sleep(slow / 3)
+	if got, _ := b.Get("p-1"); got.Status != StatusVoided {
+		t.Errorf("while the answer is late: want %q (voided first, answered later), got %q", StatusVoided, got.Status)
+	}
+	if rec := <-done; rec.Code != http.StatusOK {
+		t.Fatalf("slow answer: want 200, got %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestVoidClientGivesUpBeforeTheVoid(t *testing.T) {
+	b := NewBank(Config{})
+	h := NewHandler(b)
+	call(t, h, http.MethodPost, "/v1/authorizations", validBody)
+
+	b.cfg.Latency = 300 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, voidPath, nil).WithContext(ctx))
+
+	if got, _ := b.Get("p-1"); got.Status != StatusApproved {
+		t.Errorf("a void abandoned during processing must void nothing: want %q, got %q", StatusApproved, got.Status)
+	}
+}

@@ -11,10 +11,19 @@ import (
 const (
 	StatusApproved = "approved"
 	StatusDeclined = "declined"
+	StatusVoided   = "voided" // approved, then cancelled before the money was taken
 )
 
-// ErrConflict: the payment id was already used for a payment with other details.
-var ErrConflict = errors.New("payment id already used with different payment details")
+var (
+	// ErrConflict: the payment id was already used for a payment with other details.
+	ErrConflict = errors.New("payment id already used with different payment details")
+
+	// ErrNotFound: the bank has no decision for this payment id.
+	ErrNotFound = errors.New("no decision for this payment")
+
+	// ErrNotApproved: the payment was declined, so there is no authorization to void.
+	ErrNotApproved = errors.New("payment was declined, there is nothing to void")
+)
 
 // AuthorizationRequest is what Payments.Api asks the bank.
 type AuthorizationRequest struct {
@@ -24,12 +33,14 @@ type AuthorizationRequest struct {
 	Currency   string `json:"currency"` // ISO 4217, for example "RUB"
 }
 
-// Authorization is the bank's decision. The same payment id always gets the same decision.
+// Authorization is the bank's decision. The same payment id always gets the same decision;
+// the only change it can see later is a void of an approved payment.
 type Authorization struct {
-	PaymentID         string    `json:"paymentId"`
-	Status            string    `json:"status"`                      // StatusApproved or StatusDeclined
-	AuthorizationCode string    `json:"authorizationCode,omitempty"` // six digits, only for approved payments
-	DecidedAt         time.Time `json:"decidedAt"`
+	PaymentID         string     `json:"paymentId"`
+	Status            string     `json:"status"`                      // StatusApproved, StatusDeclined or StatusVoided
+	AuthorizationCode string     `json:"authorizationCode,omitempty"` // six digits, only for approved payments
+	DecidedAt         time.Time  `json:"decidedAt"`
+	VoidedAt          *time.Time `json:"voidedAt,omitempty"` // only for voided payments
 }
 
 // decision is what the bank remembers about a payment: the request, to detect conflicts, and the answer.
@@ -85,6 +96,34 @@ func (b *Bank) Authorize(req AuthorizationRequest) (Authorization, error) {
 	return auth, nil
 }
 
+// Void cancels an approved authorization: the hold on the customer's money is released.
+// Idempotent: voiding a voided payment returns the same authorization, with the same VoidedAt.
+// ErrNotFound if the bank has no decision for the payment, ErrNotApproved if it was declined.
+func (b *Bank) Void(paymentID string) (Authorization, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	d, ok := b.decisions[paymentID]
+	if !ok {
+		return Authorization{}, ErrNotFound
+	}
+
+	switch d.authorization.Status {
+	case StatusVoided:
+		return d.authorization, nil
+	case StatusDeclined:
+		return Authorization{}, ErrNotApproved
+	}
+
+	// Status = Approved: keep the code and the time of the decision, add the time of the void.
+	now := time.Now().UTC()
+	d.authorization.VoidedAt = &now
+	d.authorization.Status = StatusVoided
+	b.decisions[paymentID] = d // the map holds copies: the changed one has to be stored back
+
+	return d.authorization, nil
+}
+
 // Get returns the decision for a payment id, if the bank has made one.
 func (b *Bank) Get(paymentID string) (Authorization, bool) {
 	b.mu.Lock()
@@ -92,6 +131,16 @@ func (b *Bank) Get(paymentID string) (Authorization, bool) {
 
 	d, ok := b.decisions[paymentID]
 	return d.authorization, ok
+}
+
+// MerchantOf returns the merchant of a payment the bank has decided on. The void handler needs it
+// to fail the requests of BANK_ERROR_MERCHANT: a void carries only the payment id.
+func (b *Bank) MerchantOf(paymentID string) (int64, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	d, ok := b.decisions[paymentID]
+	return d.request.MerchantID, ok
 }
 
 // chance reports true with the given probability in percent: 0 never, 100 always.
