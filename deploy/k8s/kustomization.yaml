@@ -53,16 +53,16 @@ configMapGenerator:
 # look unchanged. The tag is the commit the image was built from; newName appears with the first release to ghcr.io.
 images:
   - name: payments-api
-    newTag: a8431855a01d
+    newTag: 61085c5eff47
     newName: ghcr.io/zr-roman/payments-api
   - name: ledger-service
-    newTag: a8431855a01d
+    newTag: 61085c5eff47
     newName: ghcr.io/zr-roman/ledger-service
   - name: bank-emulator
     newTag: 590fb3f1c52b
     newName: ghcr.io/zr-roman/bank-emulator
   - name: antifraud
-    newTag: a8431855a01d
+    newTag: 61085c5eff47
     newName: ghcr.io/zr-roman/antifraud
 
 # The Postgres password is not in git at all: CloudNativePG generates it in the cluster (Secret pg-app, postgres.yaml),
