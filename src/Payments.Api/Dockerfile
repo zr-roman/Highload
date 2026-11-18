@@ -2,7 +2,7 @@
 # Platform and Contracts:
 #   docker build -t payments-api:dev -f src/Payments.Api/Dockerfile .
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
 WORKDIR /repo
 
 # Restore from the project files alone: the layer with the packages is reused until a csproj
