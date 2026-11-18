@@ -1,7 +1,7 @@
 # Release of services to the k3d stand through git: build the image tagged with the commit, load it into the nodes,
 # write the tag into deploy/k8s/kustomization.yaml, commit and push, then wait until Argo CD has applied the commit
 # and the pods have rolled.
-# The usual way is CI (.github/workflows/ci.yml): it builds the images in GitHub Actions, pushes them to ghcr.io and
+# The usual way is Backend CI (.github/workflows/backend-ci.yml): it builds the images in GitHub Actions, pushes them to ghcr.io and
 # commits the tags. This script is the way without CI or without the internet: the image gets the same name as from
 # CI, but it is built here and loaded into the nodes; imagePullPolicy IfNotPresent keeps the cluster from pulling it.
 #

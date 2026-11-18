@@ -1,5 +1,5 @@
 # Dependabot: pull requests with new versions of the dependencies, once a week. Each pull request runs the tests of
-# CI (.github/workflows/ci.yml); merged, it goes out like any other change. Security fixes come at once, outside
+# Backend CI (.github/workflows/backend-ci.yml); merged, it goes out like any other change. Security fixes come at once, outside
 # the schedule.
 #
 # cooldown: a release must be a few days old before Dependabot offers it. Most hijacked packages are found and pulled

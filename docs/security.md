@@ -9,9 +9,9 @@
 | Сеть | Внутри `highload` всё закрыто в обе стороны, открыто только нужное (NetworkPolicy): кто может прийти к поду и куда может пойти сам под | [network-policies.yaml](../deploy/k8s/network-policies.yaml), [network-policies-egress.yaml](../deploy/k8s/network-policies-egress.yaml) |
 | Под | Не root, без capabilities, без повышения привилегий, seccomp, корневая ФС только для чтения | `securityContext` в манифестах `deploy/k8s/*.yaml` |
 | Namespace | API-сервер отказывает поду, нарушающему профиль `restricted` (Pod Security Admission) | [deploy/k8s/namespace.yaml](../deploy/k8s/namespace.yaml) |
-| Образ | Trivy проверяет образ до push в ghcr.io: критическая уязвимость с исправлением останавливает релиз | [.github/workflows/ci.yml](../.github/workflows/ci.yml) |
+| Образ | Trivy проверяет образ до push в ghcr.io: критическая уязвимость с исправлением останавливает релиз | [.github/workflows/backend-ci.yml](../.github/workflows/backend-ci.yml) |
 | Манифесты | kubeconform проверяет каждый манифест по схемам API Kubernetes и CRD до того, как его увидит Argo CD | [.github/workflows/manifests.yml](../.github/workflows/manifests.yml) |
-| Происхождение | CI подписывает каждый образ (cosign, без ключей) и прикладывает к нему подписанный SBOM | [.github/workflows/ci.yml](../.github/workflows/ci.yml) |
+| Происхождение | Backend CI подписывает каждый образ (cosign, без ключей) и прикладывает к нему подписанный SBOM | [.github/workflows/backend-ci.yml](../.github/workflows/backend-ci.yml) |
 | Зависимости | Dependabot: actions, NuGet, uv, базовые образы — раз в неделю, не раньше 7 дней после выхода версии | [.github/dependabot.yml](../.github/dependabot.yml) |
 | Секреты | Пароль PostgreSQL генерирует оператор в кластере и в git его нет; пароль Grafana в git только зашифрованным (Sealed Secrets) | [gitops.md](gitops.md) |
 
@@ -93,9 +93,9 @@ k3s применяет NetworkPolicy сам: в него встроен конт
 
 Trivy отвечает на вопрос «нет ли в образе известных уязвимостей». Ещё три вопроса — что в кластер попадёт корректный манифест, что запущенный образ собран нашим CI, и что именно в нём лежит.
 
-**kubeconform.** Отдельный workflow `manifests.yml` на каждый push и pull request, меняющий `deploy/**` (`ci.yml` такие коммиты пропускает). Он рендерит `deploy/k8s` так же, как Argo CD, через `kustomize build`, и проверяет 38 ресурсов по схемам Kubernetes 1.35, а также Applications Argo CD и SealedSecrets. Схемы CRD (CNPG, Prometheus Operator, Traefik, Argo CD, Sealed Secrets) берутся из каталога datreeio/CRDs-catalog. Режим `-strict`: неизвестное поле — ошибка, поэтому ловится и опечатка в необязательном поле, которое иначе API-сервер молча отбросил бы. Тип без схемы тоже ошибка, а не пропуск: новый CRD нужно добавить осознанно. Без этой проверки опечатка видна только как упавшая синхронизация в Argo CD, уже после push. Проверено: `contianers:` вместо `containers:` — `Invalid: 1`. Бинарники kustomize и kubeconform скачиваются фиксированных версий и сверяются с SHA-256 из их релизов.
+**kubeconform.** Отдельный workflow `manifests.yml` на каждый push и pull request, меняющий `deploy/**` (`backend-ci.yml` такие коммиты пропускает). Он рендерит `deploy/k8s` так же, как Argo CD, через `kustomize build`, и проверяет 38 ресурсов по схемам Kubernetes 1.35, а также Applications Argo CD и SealedSecrets. Схемы CRD (CNPG, Prometheus Operator, Traefik, Argo CD, Sealed Secrets) берутся из каталога datreeio/CRDs-catalog. Режим `-strict`: неизвестное поле — ошибка, поэтому ловится и опечатка в необязательном поле, которое иначе API-сервер молча отбросил бы. Тип без схемы тоже ошибка, а не пропуск: новый CRD нужно добавить осознанно. Без этой проверки опечатка видна только как упавшая синхронизация в Argo CD, уже после push. Проверено: `contianers:` вместо `containers:` — `Invalid: 1`. Бинарники kustomize и kubeconform скачиваются фиксированных версий и сверяются с SHA-256 из их релизов.
 
-**Подпись образа (cosign, keyless).** После push CI подписывает образ по digest, а не по тегу: тег можно перевесить на другой образ, digest — нет. Ключа нет вообще, хранить и утечь нечему. cosign обменивает OIDC-токен прогона GitHub Actions (`id-token: write`) на сертификат Fulcio сроком в минуты. В сертификате записано, кто подписал: репозиторий, workflow и ветка. Подпись ложится в GHCR рядом с образом, запись о ней — в публичный журнал прозрачности Rekor. Проверка подписи отвечает на вопрос «собран ли этот образ workflow `ci.yml` из `main` репозитория zr-roman/Highload» — а не «у кого был ключ».
+**Подпись образа (cosign, keyless).** После push CI подписывает образ по digest, а не по тегу: тег можно перевесить на другой образ, digest — нет. Ключа нет вообще, хранить и утечь нечему. cosign обменивает OIDC-токен прогона GitHub Actions (`id-token: write`) на сертификат Fulcio сроком в минуты. В сертификате записано, кто подписал: репозиторий, workflow и ветка. Подпись ложится в GHCR рядом с образом, запись о ней — в публичный журнал прозрачности Rekor. Проверка подписи отвечает на вопрос «собран ли этот образ workflow `backend-ci.yml` из `main` репозитория zr-roman/Highload» — а не «у кого был ключ».
 
 **SBOM.** Trivy составляет список пакетов образа в формате CycloneDX: пакеты ОС, NuGet, pip, Go-модули с версиями. cosign прикладывает его к образу как подписанную аттестацию. Когда выходит новая CVE в какой-то библиотеке, ответ на вопрос «в каких образах она есть» берётся из реестра, без скачивания и сканирования всех образов заново.
 
@@ -133,11 +133,14 @@ kubectl -n highload run psa-test --rm -it --restart=Never --image=busybox:1.37 -
 # Манифесты: та же проверка, что в CI (kustomize и kubeconform в PATH)
 kustomize build deploy/k8s | kubeconform -strict -summary -kubernetes-version 1.35.0 -schema-location default -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' -
 
-# Подпись и SBOM образа: собран ли он ci.yml из main этого репозитория
-$id = '--certificate-identity=https://github.com/zr-roman/Highload/.github/workflows/ci.yml@refs/heads/main'
+# Подпись и SBOM: старые образы подписаны прежним путём workflow, новые — новым
+$oldId = '--certificate-identity=https://github.com/zr-roman/Highload/.github/workflows/ci.yml@refs/heads/main'
+$newId = '--certificate-identity=https://github.com/zr-roman/Highload/.github/workflows/backend-ci.yml@refs/heads/main'
 $iss = '--certificate-oidc-issuer=https://token.actions.githubusercontent.com'
-cosign verify $id $iss ghcr.io/zr-roman/ledger-service:<тег>
-cosign verify-attestation --type cyclonedx $id $iss ghcr.io/zr-roman/ledger-service:<тег> > $null
+cosign verify $oldId $iss ghcr.io/zr-roman/ledger-service:<старый-тег>
+cosign verify-attestation --type cyclonedx $oldId $iss ghcr.io/zr-roman/ledger-service:<старый-тег> > $null
+cosign verify $newId $iss ghcr.io/zr-roman/ledger-service:<новый-тег>
+cosign verify-attestation --type cyclonedx $newId $iss ghcr.io/zr-roman/ledger-service:<новый-тег> > $null
 
 # Образ: то же сканирование, что в CI
 docker run --rm aquasec/trivy:0.72.0 image --severity HIGH,CRITICAL --ignore-unfixed --no-progress ghcr.io/zr-roman/ledger-service:<тег>

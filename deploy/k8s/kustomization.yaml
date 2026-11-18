@@ -48,7 +48,7 @@ configMapGenerator:
         grafana_dashboard: "1"
 
 # The image of each service. The manifests say <name>:dev; newName and newTag here replace them. A release changes them
-# here and nowhere else: CI (.github/workflows/ci.yml, deploy/ci-release.py) for every service whose sources changed,
+# here and nowhere else: Backend CI (.github/workflows/backend-ci.yml, deploy/ci-release.py) for every service whose sources changed,
 # or deploy/release.ps1 by hand. A new tag in git is what makes Argo CD roll the pods, since the same tag rebuilt would
 # look unchanged. The tag is the commit the image was built from; newName appears with the first release to ghcr.io.
 images:

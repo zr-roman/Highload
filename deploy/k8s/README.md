@@ -143,7 +143,7 @@ kubectl -n highload exec $p -c postgres -- psql -U postgres -c "select applicati
 
 ## Выкатка новой версии
 
-Кластер синхронизирует из git Argo CD (`deploy/argocd/highload.yaml`), поэтому новая версия выкатывается через git, а не через `kubectl`. Обычно — сама: push в `main` запускает CI (`.github/workflows/ci.yml`), он прогоняет тесты, собирает образы изменившихся сервисов в `ghcr.io/zr-roman/…` и коммитит их теги. Подробно — в [docs/gitops.md](../../docs/gitops.md#выкатка-новой-версии).
+Кластер синхронизирует из git Argo CD (`deploy/argocd/highload.yaml`), поэтому новая версия выкатывается через git, а не через `kubectl`. Обычно — сама: push backend-кода в `main` запускает Backend CI (`.github/workflows/backend-ci.yml`), он прогоняет тесты, собирает образы изменившихся сервисов в `ghcr.io/zr-roman/…` и коммитит их теги. Подробно — в [docs/gitops.md](../../docs/gitops.md#выкатка-новой-версии).
 ```powershell
 git push                                  # дальше CI; через несколько минут — коммит «Release: … (CI)»
 git pull                                  # коммит бота, прежде чем коммитить своё

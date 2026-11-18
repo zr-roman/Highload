@@ -1,17 +1,24 @@
-# CI of the platform: tests of all four services on every push and pull request; on main also the images of the
-# services whose sources changed, pushed to GitHub Container Registry, and their new tags committed to
-# deploy/k8s/kustomization.yaml. Argo CD picks the commit up and rolls the pods (docs/gitops.md): CI never talks to
-# the cluster, git is the only way in.
-name: CI
+# Backend CI: test the platform when backend code, tests, shared build files or release logic change. On main, also
+# build and push images for services whose sources changed, then commit their new tags. Argo CD picks the commit up
+# and rolls the pods (docs/gitops.md): CI never talks to the cluster, git is the only way in.
+name: Backend CI
 
 on:
   push:
     branches: [main]
-    # Documentation and manifests alone need no tests and no images. Argo CD applies manifests by itself.
-    paths-ignore:
-      - "docs/**"
-      - "deploy/**"
-      - "**/*.md"
+    # Frontend and docs have their own workflow or need no tests. Manifests are checked by manifests.yml.
+    paths:
+      - ".github/workflows/backend-ci.yml"
+      - ".github/scripts/detect-changes.py"
+      - "src/**"
+      - "tests/**"
+      - "db/**"
+      - "Directory.Build.props"
+      - "Directory.Packages.props"
+      - "global.json"
+      - "payments-platform.slnx"
+      - "deploy/ci-release.py"
+  # Run on every PR so the stable summary check exists even when backend jobs are skipped.
   pull_request:
   # By hand, from the Actions tab: releases every service whose image is behind its sources, like a push would.
   workflow_dispatch:
@@ -29,8 +36,26 @@ env:
   REGISTRY: ghcr.io/zr-roman
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.detect.outputs.backend }}
+      frontend: ${{ steps.detect.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Fetch pull request head
+        if: github.event_name == 'pull_request'
+        run: git fetch --no-tags origin "refs/pull/${{ github.event.pull_request.number }}/head"
+      - id: detect
+        run: python3 .github/scripts/detect-changes.py
+
   dotnet:
     name: .NET tests
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -42,6 +67,8 @@ jobs:
 
   go:
     name: Bank emulator tests
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -58,6 +85,8 @@ jobs:
 
   python:
     name: Antifraud tests
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -70,9 +99,41 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run pytest
 
+  backend-check:
+    name: Backend checks
+    if: always()
+    needs: [changes, dotnet, go, python]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify backend checks
+        env:
+          DETECT_RESULT: ${{ needs.changes.result }}
+          BACKEND_CHANGED: ${{ needs.changes.outputs.backend }}
+          DOTNET_RESULT: ${{ needs.dotnet.result }}
+          GO_RESULT: ${{ needs.go.result }}
+          PYTHON_RESULT: ${{ needs.python.result }}
+        run: |
+          if [[ "$DETECT_RESULT" != "success" ]]; then
+            echo "Change detection did not succeed."
+            exit 1
+          fi
+
+          if [[ "$BACKEND_CHANGED" != "true" ]]; then
+            echo "No backend changes; backend checks are not needed."
+            exit 0
+          fi
+
+          for result in "$DOTNET_RESULT" "$GO_RESULT" "$PYTHON_RESULT"; do
+            if [[ "$result" != "success" ]]; then
+              echo "A required backend test job did not succeed: $result"
+              exit 1
+            fi
+          done
+
   plan:
     name: What to release
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: changes
+    if: needs.changes.outputs.backend == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -86,8 +147,8 @@ jobs:
 
   images:
     name: Image ${{ matrix.service }}
-    needs: [dotnet, go, python, plan]
-    if: needs.plan.outputs.services != ''
+    needs: [changes, dotnet, go, python, plan]
+    if: always() && needs.changes.outputs.backend == 'true' && needs.dotnet.result == 'success' && needs.go.result == 'success' && needs.python.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.services != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -160,7 +221,8 @@ jobs:
 
   release:
     name: Tags to git
-    needs: [plan, images]
+    needs: [changes, plan, images]
+    if: always() && needs.changes.outputs.backend == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.plan.result == 'success' && needs.plan.outputs.services != '' && needs.images.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -1,0 +1,76 @@
+name: Frontend CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/scripts/detect-changes.py"
+      - ".github/workflows/frontend-ci.yml"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.detect.outputs.backend }}
+      frontend: ${{ steps.detect.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Fetch pull request head
+        if: github.event_name == 'pull_request'
+        run: git fetch --no-tags origin "refs/pull/${{ github.event.pull_request.number }}/head"
+      - id: detect
+        run: python3 .github/scripts/detect-changes.py
+
+  build:
+    name: React build
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  frontend-check:
+    name: Frontend checks
+    if: always()
+    needs: [changes, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify frontend build
+        env:
+          DETECT_RESULT: ${{ needs.changes.result }}
+          FRONTEND_CHANGED: ${{ needs.changes.outputs.frontend }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          if [[ "$DETECT_RESULT" != "success" ]]; then
+            echo "Change detection did not succeed."
+            exit 1
+          fi
+
+          if [[ "$FRONTEND_CHANGED" != "true" ]]; then
+            echo "No frontend changes; frontend build is not needed."
+            exit 0
+          fi
+
+          if [[ "$BUILD_RESULT" != "success" ]]; then
+            echo "The frontend build did not succeed: $BUILD_RESULT"
+            exit 1
+          fi

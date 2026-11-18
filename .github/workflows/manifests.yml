@@ -2,7 +2,7 @@
 # Argo CD Applications and the SealedSecrets, against the API schemas of Kubernetes and of the CRDs in use (CNPG,
 # Prometheus Operator, Traefik, Argo CD, Sealed Secrets). A misspelt field, a string where a number goes, a field this
 # Kubernetes version does not have: without this check such a mistake shows only as a failed sync in Argo CD, after the
-# push. A workflow of its own, not a job in ci.yml: ci.yml ignores deploy/**, and here deploy/** is all that matters.
+# push. A workflow of its own, not a job in backend-ci.yml: backend-ci.yml ignores deploy/**, and here deploy/** is all that matters.
 name: Manifests
 
 on:
