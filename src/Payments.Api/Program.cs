@@ -91,7 +91,8 @@ var app = builder.Build();
 // The topic is created by the OutboxRelay before its first message.
 await StartupRetry.RunAsync("Database schema", ct => DatabaseSchema.ApplyAsync(
     app.Services.GetRequiredService<NpgsqlDataSource>(),
-    Path.Combine(app.Environment.ContentRootPath, "Database", "schema.sql"), ct), app.Logger);
+    Path.Combine(app.Environment.ContentRootPath, "Database", "schema.sql"),
+    Path.Combine(app.Environment.ContentRootPath, "Database", "schema-after.sql"), ct), app.Logger);
 
 // Connect at startup, not on the first request that needs Redis: the first attempt may take up to connectTimeout.
 app.Services.GetRequiredService<IConnectionMultiplexer>();

@@ -184,6 +184,29 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Authorized_Payment_Is_Taken_From_The_Queue_But_Left_For_The_Saga()
+    {
+        var authorized = await db.InsertPaymentAsync(TimeSpan.FromMinutes(2), "authorized", Ct);   // the oldest
+        var voided = await db.InsertPaymentAsync(Stale, "voided", Ct);
+        var stuck = await db.InsertPaymentAsync(Stale, cancellationToken: Ct);
+        bank.Answer(stuck, AcquirerOutcome.Approved);
+
+        await using var host = await RecoveryHost.StartAsync(db, bank, time, cancellationToken: Ct);
+        await host.WaitForPassesAsync(1);
+
+        // In the batch, but the bank is not asked: resuming from 'authorized' is stage 4, task 5.
+        Assert.Equal(stuck, Assert.Single(bank.LookupOrder));
+        Assert.Equal("authorized", await db.GetStatusAsync(authorized, Ct));
+        Assert.Equal("voided", await db.GetStatusAsync(voided, Ct));
+        Assert.Equal(1L, await db.CountPendingAsync(Ct));       // the authorized one waits in the queue
+
+        var pass = Assert.Single(host.Passes);
+        Assert.Equal(2, Tag(pass, "recovery.batch.size"));
+        Assert.Equal(1, Tag(pass, "recovery.captured"));
+        Assert.Equal(1, Tag(pass, "recovery.skipped"));
+    }
+
+    [Fact]
     public async Task Oldest_Payments_Are_Recovered_First()
     {
         // Inserted out of order, so the order of the lookups can only come from created_at.

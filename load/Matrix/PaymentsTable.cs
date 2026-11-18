@@ -25,7 +25,7 @@ public sealed class PaymentsTable(NpgsqlDataSource payments)
     private const string StaleSearch = """
         SELECT p.id, p.merchant_id, p.idempotency_key, p.request_hash, p.amount, p.currency, p.fee, p.status, p.created_at
         FROM pending_payments q JOIN payments p ON p.id = q.id
-        WHERE q.created_at < now() - interval '30 seconds' AND p.status = 'created'
+        WHERE q.created_at < now() - interval '30 seconds' AND p.status IN ('created', 'authorized')
         ORDER BY q.created_at LIMIT 100
         """;
 

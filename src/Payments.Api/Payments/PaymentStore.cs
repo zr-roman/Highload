@@ -45,7 +45,9 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
     /// <summary>
     /// The status change and the outbox row are written by one statement: they commit together,
     /// and the outbox row appears only if the payment really moved out of 'created'. The same statement takes
-    /// the payment out of pending_payments.
+    /// the payment out of pending_payments: captured is final. Of the statuses only 'authorized' is not final and
+    /// keeps the payment in the queue, for recovery to finish the saga.
+    /// Only from 'created' for now; the capture of an authorized payment comes with the saga (stage 4, task 5).
     /// The message key decides the partition, and so the Ledger consumer (Topics.PaymentsCapturedKey).
     /// </summary>
     public async Task<bool> MarkCapturedAsync(PaymentCaptured captured, string messageKey, CancellationToken cancellationToken)
@@ -74,6 +76,9 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
         return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 
+    /// <summary>
+    /// The bank declined: a final status, so the payment leaves pending_payments in the same statement, as on capture.
+    /// </summary>
     public async Task<bool> MarkDeclinedAsync(Guid paymentId, CancellationToken cancellationToken)
     {
         await using var command = dataSource.CreateCommand("""
@@ -109,8 +114,8 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
     }
 
     /// <summary>
-    /// The oldest payments in 'created', from pending_payments: the payments in progress, not all of them. The status
-    /// is checked on payments all the same: a row of the queue without its payment in 'created' must not take a place
+    /// The oldest payments in progress, 'created' or 'authorized', from pending_payments, not all of them. The status
+    /// is checked on payments all the same: a row of the queue whose payment is already final must not take a place
     /// in the batch.
     /// </summary>
     public async Task<IReadOnlyList<Payment>> FindStaleCreatedAsync(TimeSpan staleAfter, int batchSize, CancellationToken cancellationToken)
@@ -118,7 +123,7 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
         var sql = $"""
             SELECT {SelectPaymentColumns}
             FROM pending_payments q JOIN payments p ON p.id = q.id
-            WHERE q.created_at < now() - $1 AND p.status = 'created'
+            WHERE q.created_at < now() - $1 AND p.status IN ('created', 'authorized')
             ORDER BY q.created_at LIMIT $2
             """;
         await using var command = dataSource.CreateCommand(sql);

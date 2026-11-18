@@ -96,7 +96,10 @@ public sealed class PaymentRecovery(
 
     private async Task RecoverAsync(Payment payment, IAcquirer acquirer, RecoveryPass pass, CancellationToken cancellationToken)
     {
-        if (Volatile.Read(ref pass.BankUnavailable))
+        // The search returns 'authorized' too, but resuming from it (antifraud, then capture or void) is stage 4,
+        // task 5. Until then nothing writes that status; a payment in it is left in the queue, not counted as progress,
+        // so a batch of them is not taken again at once.
+        if (payment.Status != PaymentStatus.Created || Volatile.Read(ref pass.BankUnavailable))
         {
             Interlocked.Increment(ref pass.Skipped);
             return;

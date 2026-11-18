@@ -9,6 +9,10 @@ public sealed class PostgresFixture : IAsyncLifetime
 {
     private readonly PostgreSqlContainer container = new PostgreSqlBuilder("postgres:17-alpine").Build();
 
+    public static string SchemaPath => Path.Combine(AppContext.BaseDirectory, "Database", "schema.sql");
+
+    public static string SchemaAfterPath => Path.Combine(AppContext.BaseDirectory, "Database", "schema-after.sql");
+
     public NpgsqlDataSource DataSource { get; private set; } = null!;
 
     /// <summary>Every RecoveryHost opens its own pool with it, like a separate process.</summary>
@@ -18,7 +22,7 @@ public sealed class PostgresFixture : IAsyncLifetime
     {
         await container.StartAsync();
         DataSource = NpgsqlDataSource.Create(container.GetConnectionString());
-        await DatabaseSchema.ApplyAsync(DataSource, Path.Combine(AppContext.BaseDirectory, "Database", "schema.sql"));
+        await DatabaseSchema.ApplyAsync(DataSource, SchemaPath, SchemaAfterPath);
     }
 
     public async ValueTask DisposeAsync()
@@ -39,7 +43,7 @@ public sealed class PostgresFixture : IAsyncLifetime
         var id = Guid.NewGuid();
 
         // Only the id, the status and the age vary; the idempotency key reuses the id, so it is unique as well.
-        // A payment in 'created' is also in pending_payments, as PaymentStore.TryInsertAsync writes it.
+        // A payment in progress, 'created' or 'authorized', is also in pending_payments, as PaymentStore writes it.
         await using var command = DataSource.CreateCommand("""
         WITH payment AS (
             INSERT INTO payments (id, merchant_id, idempotency_key, request_hash, amount, currency, status, created_at)
@@ -47,7 +51,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             RETURNING id, created_at, status
         )
         INSERT INTO pending_payments (id, created_at)
-        SELECT id, created_at FROM payment WHERE status = 'created'
+        SELECT id, created_at FROM payment WHERE status IN ('created', 'authorized')
         """);
         command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = id });
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = status });
@@ -66,13 +70,15 @@ public sealed class PostgresFixture : IAsyncLifetime
 
     /// <summary>
     /// Changes a payment behind recovery's back: this is how a test plays the endpoint that finished first.
-    /// Like the endpoint, it takes the payment out of pending_payments when the payment leaves 'created'.
+    /// Like the endpoint, it takes the payment out of pending_payments when the status is final: not 'created'
+    /// and not 'authorized'.
     /// </summary>
     public async Task SetStatusAsync(Guid id, string status, CancellationToken cancellationToken = default)
     {
         await using var command = DataSource.CreateCommand("""
             WITH changed AS (UPDATE payments SET status = $2, updated_at = now() WHERE id = $1 RETURNING id, status)
-            DELETE FROM pending_payments WHERE id IN (SELECT id FROM changed WHERE status <> 'created')
+            DELETE FROM pending_payments
+            WHERE id IN (SELECT id FROM changed WHERE status IN ('captured', 'declined', 'voided'))
             """);
         command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = id });
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = status });

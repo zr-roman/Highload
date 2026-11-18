@@ -8,5 +8,6 @@
   </ItemGroup>
   <ItemGroup>
     <None Update="Database\schema.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Database\schema-after.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

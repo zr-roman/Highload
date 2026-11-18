@@ -96,7 +96,8 @@ public static class PaymentEndpoints
             return Results.Problem("This Idempotency-Key was already used with a different request.",
                 statusCode: StatusCodes.Status422UnprocessableEntity);
 
-        if (existing.Status == PaymentStatus.Created)
+        // Still in progress: the same 202 as the first request whose outcome is not known yet.
+        if (existing.Status is PaymentStatus.Created or PaymentStatus.Authorized)
         {
             metrics.Replayed();
             return Results.Accepted($"/payments/{existing.Id}", PaymentResponse.From(existing));
