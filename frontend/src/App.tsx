@@ -152,6 +152,7 @@ function App() {
 
     let parsedMerchantId: number;
     let amountInKopecks: number;
+
     try {
       parsedMerchantId = parseMerchantId(merchantId);
       amountInKopecks = parseAmount(amount);
@@ -161,10 +162,10 @@ function App() {
     }
 
     const fingerprint = `${parsedMerchantId}:${amountInKopecks}:RUB`;
-    if (pendingAttempt.current?.fingerprint !== fingerprint) {
-      pendingAttempt.current = { fingerprint, key: crypto.randomUUID() };
-    }
 
+    if (pendingAttempt.current?.fingerprint !== fingerprint)
+      pendingAttempt.current = { fingerprint, key: crypto.randomUUID() };
+    
     activeRequest.current?.abort();
     const controller = new AbortController();
     activeRequest.current = controller;
@@ -176,6 +177,7 @@ function App() {
         pendingAttempt.current.key,
         controller.signal,
       );
+
       pendingAttempt.current = null;
       setCreatedPayment(payment);
       setCreateMessage(pendingStatuses.has(payment.status.toLowerCase())
@@ -224,6 +226,7 @@ function App() {
     }
 
     setLookingUp(true);
+    
     try {
       setFoundPayment(await getPayment(id));
     } catch (error) {
