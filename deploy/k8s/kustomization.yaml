@@ -66,7 +66,8 @@ images:
     newTag: 61085c5eff47
     newName: ghcr.io/zr-roman/antifraud
   - name: frontend
-    newTag: dev
+    newTag: bf347016d15a
+    newName: ghcr.io/zr-roman/frontend
 
 # The Postgres password is not in git at all: CloudNativePG generates it in the cluster (Secret pg-app, postgres.yaml),
 # and the Deployments read it from there.
