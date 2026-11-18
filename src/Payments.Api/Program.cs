@@ -16,6 +16,14 @@ var builder = WebApplication.CreateBuilder(args);
 builder.AddPlatformTelemetry("payments-api", PaymentsMetrics.MeterName);
 builder.AddPlatformRedis(keyPrefix: "payments:");
 
+var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
+if (corsOrigins.Length > 0)
+    builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy
+        .WithOrigins(corsOrigins)
+        .WithMethods("GET", "POST")
+        .WithHeaders("Content-Type", "Idempotency-Key")
+        .WithExposedHeaders("Retry-After")));
+
 var postgres = builder.Configuration.GetConnectionString("Payments")
     ?? throw new InvalidOperationException("Connection string 'Payments' is not configured.");
 var kafka = builder.Configuration.GetConnectionString("Kafka")
@@ -83,6 +91,8 @@ builder.Services.AddHealthChecks()
     .AddCheck<PostgresHealthCheck>("postgres", tags: [HealthCheckEndpoints.ReadyTag], timeout: TimeSpan.FromSeconds(2));
 
 var app = builder.Build();
+if (corsOrigins.Length > 0)
+    app.UseCors();
 
 // From the content root, like appsettings.json. Not from AppContext.BaseDirectory: when the end-to-end tests host
 // both services in one process, that is the tests' folder, and both services' schema.sql would land on one path there.

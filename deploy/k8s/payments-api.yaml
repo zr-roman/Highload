@@ -73,6 +73,11 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             # Environment variables override appsettings.json: __ stands for the : of a configuration key.
+            # Allow the local React dev server when the APIs are reached through kubectl port-forward.
+            - name: Cors__AllowedOrigins__0
+              value: http://localhost:5173
+            - name: Cors__AllowedOrigins__1
+              value: http://127.0.0.1:5173
             # PostgreSQL in the cluster (postgres.yaml): pg-rw always points at the current primary. The password is the
             # one CloudNativePG generated for the owner app (Secret pg-app): it never leaves the cluster. Kubernetes puts
             # it into the connection string below through $(PG_PASSWORD).

@@ -1,7 +1,7 @@
 :root {
   font-family: Inter, "Segoe UI", Arial, sans-serif;
-  color: #15233b;
-  background: #f4f7fb;
+  color: #172b45;
+  background: #f5f7fa;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -16,4 +16,11 @@ body {
   min-width: 320px;
   min-height: 100vh;
   margin: 0;
+  background: #f5f7fa;
+}
+
+button:focus-visible,
+a:focus-visible {
+  outline: 3px solid rgb(53 122 178 / 38%);
+  outline-offset: 3px;
 }
