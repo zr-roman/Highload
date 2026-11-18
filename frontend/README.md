@@ -26,4 +26,4 @@ npm run preview
 
 Сборка создаётся в `dist/`. Значения `VITE_*` подставляются во время сборки; секреты в них хранить нельзя.
 
-В Kubernetes приложение должно открываться через общий входной адрес с API-маршрутами `/payments` и `/balances`; если UI и API находятся на одном origin, отдельное правило CORS не требуется. Для другого адреса стенда укажите `VITE_PAYMENTS_API_URL` и `VITE_LEDGER_API_URL` при сборке и внесите origin интерфейса в `Cors:AllowedOrigins` API.
+Docker-образ собирается из корня репозитория командой `docker build -t frontend:dev -f frontend/Dockerfile .`. В Kubernetes его обслуживают две реплики непривилегированного NGINX; Traefik направляет `/` на React, а `/payments` и `/balances` — на API. Весь стенд доступен по `http://localhost:8080`, браузер обращается к UI и API на одном origin, поэтому отдельное правило CORS для этого сценария не требуется. В CI образ публикуется в `ghcr.io/zr-roman/frontend:<коммит>`, а Argo CD выкатывает его после обновления тега в Kustomize.

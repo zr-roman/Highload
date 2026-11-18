@@ -9,9 +9,9 @@
 | Сеть | Внутри `highload` всё закрыто в обе стороны, открыто только нужное (NetworkPolicy): кто может прийти к поду и куда может пойти сам под | [network-policies.yaml](../deploy/k8s/network-policies.yaml), [network-policies-egress.yaml](../deploy/k8s/network-policies-egress.yaml) |
 | Под | Не root, без capabilities, без повышения привилегий, seccomp, корневая ФС только для чтения | `securityContext` в манифестах `deploy/k8s/*.yaml` |
 | Namespace | API-сервер отказывает поду, нарушающему профиль `restricted` (Pod Security Admission) | [deploy/k8s/namespace.yaml](../deploy/k8s/namespace.yaml) |
-| Образ | Trivy проверяет образ до push в ghcr.io: критическая уязвимость с исправлением останавливает релиз | [.github/workflows/backend-ci.yml](../.github/workflows/backend-ci.yml) |
+| Образ | Trivy проверяет образ до push в ghcr.io: критическая уязвимость с исправлением останавливает релиз | [Backend CI](../.github/workflows/backend-ci.yml), [Frontend CI](../.github/workflows/frontend-ci.yml) |
 | Манифесты | kubeconform проверяет каждый манифест по схемам API Kubernetes и CRD до того, как его увидит Argo CD | [.github/workflows/manifests.yml](../.github/workflows/manifests.yml) |
-| Происхождение | Backend CI подписывает каждый образ (cosign, без ключей) и прикладывает к нему подписанный SBOM | [.github/workflows/backend-ci.yml](../.github/workflows/backend-ci.yml) |
+| Происхождение | CI подписывает каждый образ (cosign, без ключей) и прикладывает к нему подписанный SBOM | [Backend CI](../.github/workflows/backend-ci.yml), [Frontend CI](../.github/workflows/frontend-ci.yml) |
 | Зависимости | Dependabot: actions, NuGet, uv, базовые образы — раз в неделю, не раньше 7 дней после выхода версии | [.github/dependabot.yml](../.github/dependabot.yml) |
 | Секреты | Пароль PostgreSQL генерирует оператор в кластере и в git его нет; пароль Grafana в git только зашифрованным (Sealed Secrets) | [gitops.md](gitops.md) |
 
@@ -21,7 +21,7 @@
 
 | Куда | Кому можно |
 |---|---|
-| payments-api, ledger-service, dashboard UI | Traefik из `kube-system` |
+| frontend, payments-api, ledger-service, dashboard UI | Traefik из `kube-system` |
 | redis (6379 и Sentinel 26379) | payments-api, antifraud, сами копии Redis |
 | kafka (политику делает Strimzi, `networkPolicyPeers` в kafka.yaml) | payments-api, ledger-service, сами брокеры, под замеров `kafka-probe` |
 | bank-emulator, antifraud | payments-api |
@@ -39,13 +39,14 @@ k3s применяет NetworkPolicy сам: в него встроен конт
 | payments-api | PostgreSQL 5432, брокеры Kafka 9092, redis, bank-emulator, antifraud, otel-collector |
 | ledger-service | PostgreSQL 5432, брокеры Kafka 9092, otel-collector |
 | antifraud | redis |
+| frontend | только DNS; API-запросы браузера проходят через Traefik |
 | redis | копии Redis друг к другу: репликация и Sentinel |
 | otel-collector | dashboard (OTLP), Prometheus в `monitoring` |
 | PostgreSQL (CNPG) | друг к другу 5432/8000, хранилище копий 9000, API Kubernetes |
 | Kafka (Strimzi) | брокеры друг к другу 9090–9092, API Kubernetes (Topic Operator) |
 | bank-emulator, dashboard, backup-store | никуда, кроме DNS |
 
-**Упрощение:** закрыт только вход. Исходящие открыты: Postgres живёт на хосте, и список разрешённых исходящих требовал бы его адреса, DNS и API-сервера. Хранилища, которые важны, закрыты на входе.
+**Упрощение:** для сервисов, которым нужен внешний кластер, исходящие правила адаптированы под сеть k3d. Для фронтенда наружу разрешён только DNS; браузер ходит к API через Traefik.
 
 ## Под: securityContext и Pod Security Admission
 
@@ -62,6 +63,7 @@ k3s применяет NetworkPolicy сам: в него встроен конт
 | Сервис | Пользователь | Почему |
 |---|---|---|
 | payments-api, ledger-service | 1654 из образа | `aspnet:10.0-noble-chiseled` уже без root |
+| frontend | 101 из образа | `nginx-unprivileged`, слушает порт 8080 |
 | bank-emulator | 65532 из образа | `distroless/static:nonroot` |
 | antifraud | 10001 | `USER antifraud` в Dockerfile |
 | redis | 999:1000 | образ стартует от root и сам переключается на `redis` — здесь сразу `redis` |
@@ -70,7 +72,7 @@ k3s применяет NetworkPolicy сам: в него встроен конт
 
 На namespace стоит `pod-security.kubernetes.io/enforce: restricted`: даже если настройки уберут из манифеста, API-сервер такой под не создаст.
 
-**Проверено:** все поды `1/1`; Redis работает как `uid=999(redis)`, запись в корень — `Read-only file system`; под busybox от root отклонён: `violates PodSecurity "restricted:latest"` со списком нарушений.
+**Проверено:** прикладные поды запускаются без root; Redis работает как `uid=999(redis)`, запись в корень — `Read-only file system`; под busybox от root отклонён: `violates PodSecurity "restricted:latest"` со списком нарушений.
 
 ## Образы и зависимости
 
@@ -99,7 +101,7 @@ Trivy отвечает на вопрос «нет ли в образе изве�
 
 **SBOM.** Trivy составляет список пакетов образа в формате CycloneDX: пакеты ОС, NuGet, pip, Go-модули с версиями. cosign прикладывает его к образу как подписанную аттестацию. Когда выходит новая CVE в какой-то библиотеке, ответ на вопрос «в каких образах она есть» берётся из реестра, без скачивания и сканирования всех образов заново.
 
-Подписаны только образы, собранные после этого изменения: релиз собирает образ, только когда изменились его исходники.
+Подписаны только образы, собранные после этого изменения: CI собирает образ, только когда изменились его исходники. Для проверки фронтенда используется identity workflow `frontend-ci.yml`, для сервисов — `backend-ci.yml`.
 
 ## Что упрощено по сравнению с продакшеном
 
@@ -136,11 +138,14 @@ kustomize build deploy/k8s | kubeconform -strict -summary -kubernetes-version 1.
 # Подпись и SBOM: старые образы подписаны прежним путём workflow, новые — новым
 $oldId = '--certificate-identity=https://github.com/zr-roman/Highload/.github/workflows/ci.yml@refs/heads/main'
 $newId = '--certificate-identity=https://github.com/zr-roman/Highload/.github/workflows/backend-ci.yml@refs/heads/main'
+$frontendId = '--certificate-identity=https://github.com/zr-roman/Highload/.github/workflows/frontend-ci.yml@refs/heads/main'
 $iss = '--certificate-oidc-issuer=https://token.actions.githubusercontent.com'
 cosign verify $oldId $iss ghcr.io/zr-roman/ledger-service:<старый-тег>
 cosign verify-attestation --type cyclonedx $oldId $iss ghcr.io/zr-roman/ledger-service:<старый-тег> > $null
 cosign verify $newId $iss ghcr.io/zr-roman/ledger-service:<новый-тег>
 cosign verify-attestation --type cyclonedx $newId $iss ghcr.io/zr-roman/ledger-service:<новый-тег> > $null
+cosign verify $frontendId $iss ghcr.io/zr-roman/frontend:<тег>
+cosign verify-attestation --type cyclonedx $frontendId $iss ghcr.io/zr-roman/frontend:<тег> > $null
 
 # Образ: то же сканирование, что в CI
 docker run --rm aquasec/trivy:0.72.0 image --severity HIGH,CRITICAL --ignore-unfixed --no-progress ghcr.io/zr-roman/ledger-service:<тег>

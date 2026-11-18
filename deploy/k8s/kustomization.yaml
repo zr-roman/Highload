@@ -1,4 +1,4 @@
-# The stand in Kubernetes (k3d): the four services, PostgreSQL (CloudNativePG), Kafka, Redis and the telemetry dashboard.
+# The stand in Kubernetes (k3d): the five application services, PostgreSQL (CloudNativePG), Kafka, Redis and telemetry.
 #   synced by Argo CD from git (deploy/argocd/highload.yaml); by hand: kubectl apply -k deploy/k8s
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -16,6 +16,7 @@ resources:
   - dashboard.yaml
   - bank-emulator.yaml
   - antifraud.yaml
+  - frontend.yaml
   - payments-api.yaml
   - pdb.yaml
   - hpa.yaml
@@ -48,8 +49,8 @@ configMapGenerator:
         grafana_dashboard: "1"
 
 # The image of each service. The manifests say <name>:dev; newName and newTag here replace them. A release changes them
-# here and nowhere else: Backend CI (.github/workflows/backend-ci.yml, deploy/ci-release.py) for every service whose sources changed,
-# or deploy/release.ps1 by hand. A new tag in git is what makes Argo CD roll the pods, since the same tag rebuilt would
+# here and nowhere else: Backend CI, Frontend CI, or deploy/release.ps1 by hand, only for images whose sources changed.
+# A new tag in git is what makes Argo CD roll the pods, since the same tag rebuilt would
 # look unchanged. The tag is the commit the image was built from; newName appears with the first release to ghcr.io.
 images:
   - name: payments-api
@@ -64,6 +65,8 @@ images:
   - name: antifraud
     newTag: 61085c5eff47
     newName: ghcr.io/zr-roman/antifraud
+  - name: frontend
+    newTag: dev
 
 # The Postgres password is not in git at all: CloudNativePG generates it in the cluster (Secret pg-app, postgres.yaml),
 # and the Deployments read it from there.

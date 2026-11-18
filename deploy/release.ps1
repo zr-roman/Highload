@@ -1,13 +1,13 @@
 # Release of services to the k3d stand through git: build the image tagged with the commit, load it into the nodes,
 # write the tag into deploy/k8s/kustomization.yaml, commit and push, then wait until Argo CD has applied the commit
 # and the pods have rolled.
-# The usual way is Backend CI (.github/workflows/backend-ci.yml): it builds the images in GitHub Actions, pushes them to ghcr.io and
-# commits the tags. This script is the way without CI or without the internet: the image gets the same name as from
+# The usual way is CI: Backend CI or Frontend CI builds the image in GitHub Actions, pushes it to ghcr.io and commits
+# the tag. This script is the way without CI or without the internet: the image gets the same name as from
 # CI, but it is built here and loaded into the nodes; imagePullPolicy IfNotPresent keeps the cluster from pulling it.
 #
 #   .\deploy\release.ps1 -Services payments-api                  # one service
 #   .\deploy\release.ps1 -Services payments-api,ledger-service
-#   .\deploy\release.ps1                                         # all four
+#   .\deploy\release.ps1                                         # all five
 #   .\deploy\release.ps1 -Services payments-api -NoPush          # commit only, push later
 #
 # The image is built from the working tree, but tagged with HEAD: so the sources of a service must be committed,
@@ -15,8 +15,8 @@
 # sources have uncommitted changes.
 
 param(
-    [ValidateSet("payments-api", "ledger-service", "bank-emulator", "antifraud")]
-    [string[]]$Services = @("payments-api", "ledger-service", "bank-emulator", "antifraud"),
+    [ValidateSet("payments-api", "ledger-service", "bank-emulator", "antifraud", "frontend")]
+    [string[]]$Services = @("payments-api", "ledger-service", "bank-emulator", "antifraud", "frontend"),
     [string]$Cluster = "highload",
     [switch]$NoPush
 )
@@ -28,12 +28,14 @@ $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
 
 # What each image is built from: its Dockerfile and the sources that go into it.
+$buildContext = @(".dockerignore")
 $dotnetShared = @("src/Platform", "src/Contracts", "Directory.Build.props", "Directory.Packages.props")
 $catalog = @{
-    "payments-api"   = @{ Dockerfile = "src/Payments.Api/Dockerfile";        Sources = @("src/Payments.Api") + $dotnetShared }
-    "ledger-service" = @{ Dockerfile = "src/Ledger.Service/Dockerfile";      Sources = @("src/Ledger.Service") + $dotnetShared }
-    "bank-emulator"  = @{ Dockerfile = "src/bank-emulator/Dockerfile";       Sources = @("src/bank-emulator") }
-    "antifraud"      = @{ Dockerfile = "src/antifraud-service/Dockerfile";   Sources = @("src/antifraud-service") }
+    "payments-api"   = @{ Dockerfile = "src/Payments.Api/Dockerfile";        Sources = @("src/Payments.Api") + $dotnetShared + $buildContext }
+    "ledger-service" = @{ Dockerfile = "src/Ledger.Service/Dockerfile";      Sources = @("src/Ledger.Service") + $dotnetShared + $buildContext }
+    "bank-emulator"  = @{ Dockerfile = "src/bank-emulator/Dockerfile";       Sources = @("src/bank-emulator") + $buildContext }
+    "antifraud"      = @{ Dockerfile = "src/antifraud-service/Dockerfile";   Sources = @("src/antifraud-service") + $buildContext }
+    "frontend"       = @{ Dockerfile = "frontend/Dockerfile";                 Sources = @("frontend") + $buildContext }
 }
 
 function Invoke-Checked([string]$what, [scriptblock]$command) {

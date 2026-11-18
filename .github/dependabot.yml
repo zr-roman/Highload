@@ -49,6 +49,7 @@ updates:
       - /src/Ledger.Service
       - /src/bank-emulator
       - /src/antifraud-service
+      - /frontend
       - /deploy/k8s
     schedule:
       interval: weekly

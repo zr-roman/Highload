@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Which services CI releases, and how it writes their new images into deploy/k8s/kustomization.yaml.
 
-    python3 .github/scripts/release.py plan                      # writes matrix=... and services=... to $GITHUB_OUTPUT
-    python3 .github/scripts/release.py apply <tag> <service>...  # newTag and newName of those services
+    python3 deploy/ci-release.py plan [service-to-exclude...]   # writes matrix=... and services=... to $GITHUB_OUTPUT
+    python3 deploy/ci-release.py apply <tag> <service>...       # newTag and newName of those services
 
 A service is released when its sources changed since the commit its current image was built from. The tag in
 kustomization.yaml is that commit (deploy/release.ps1 and CI both tag images with the commit), so git answers the
@@ -20,12 +20,14 @@ REGISTRY = "ghcr.io/zr-roman"
 KUSTOMIZATION = "deploy/k8s/kustomization.yaml"
 
 # What each image is built from: the same catalog as in deploy/release.ps1.
+BUILD_CONTEXT = [".dockerignore"]
 DOTNET_SHARED = ["src/Platform", "src/Contracts", "Directory.Build.props", "Directory.Packages.props"]
 CATALOG = {
-    "payments-api": {"dockerfile": "src/Payments.Api/Dockerfile", "sources": ["src/Payments.Api", *DOTNET_SHARED]},
-    "ledger-service": {"dockerfile": "src/Ledger.Service/Dockerfile", "sources": ["src/Ledger.Service", *DOTNET_SHARED]},
-    "bank-emulator": {"dockerfile": "src/bank-emulator/Dockerfile", "sources": ["src/bank-emulator"]},
-    "antifraud": {"dockerfile": "src/antifraud-service/Dockerfile", "sources": ["src/antifraud-service"]},
+    "payments-api": {"dockerfile": "src/Payments.Api/Dockerfile", "sources": ["src/Payments.Api", *DOTNET_SHARED, *BUILD_CONTEXT]},
+    "ledger-service": {"dockerfile": "src/Ledger.Service/Dockerfile", "sources": ["src/Ledger.Service", *DOTNET_SHARED, *BUILD_CONTEXT]},
+    "bank-emulator": {"dockerfile": "src/bank-emulator/Dockerfile", "sources": ["src/bank-emulator", *BUILD_CONTEXT]},
+    "antifraud": {"dockerfile": "src/antifraud-service/Dockerfile", "sources": ["src/antifraud-service", *BUILD_CONTEXT]},
+    "frontend": {"dockerfile": "frontend/Dockerfile", "sources": ["frontend", *BUILD_CONTEXT]},
 }
 
 # An entry of the images block: "- name: <service>", then newTag, then newName if the image is in the registry.
@@ -53,10 +55,13 @@ def built_from(tag: str) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def plan() -> None:
+def plan(excluded: set[str] | None = None) -> None:
+    excluded = excluded or set()
     text = read()
     include = []
     for service, spec in CATALOG.items():
+        if service in excluded:
+            continue
         match = entry(service).search(text)
         if not match:
             sys.exit(f"No images entry for {service} in {KUSTOMIZATION}")
@@ -114,7 +119,7 @@ def apply(tag: str, services: list[str]) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) >= 2 and sys.argv[1] == "plan":
-        plan()
+        plan(set(sys.argv[2:]))
     elif len(sys.argv) >= 4 and sys.argv[1] == "apply":
         apply(sys.argv[2], sys.argv[3:])
     else:

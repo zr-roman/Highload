@@ -1,6 +1,6 @@
-# Стенд в Kubernetes (k3d), этап 1
+# Стенд в Kubernetes (k3d)
 
-Четыре сервиса, PostgreSQL, Kafka, Redis и дашборд телеметрии — в кластере k3d. PostgreSQL — три экземпляра под оператором CloudNativePG, с синхронной репликацией; как он переживает отказ ноды с основной базой — в [docs/postgres-failover.md](../../docs/postgres-failover.md).
+Пять сервисов, включая React-интерфейс, PostgreSQL, Kafka, Redis и дашборд телеметрии — в кластере k3d. PostgreSQL — три экземпляра под оператором CloudNativePG, с синхронной репликацией; как он переживает отказ ноды с основной базой — в [docs/postgres-failover.md](../../docs/postgres-failover.md).
 
 | Манифест | Что | Порт в кластере |
 |---|---|---|
@@ -9,9 +9,10 @@
 | `dashboard.yaml` | Aspire dashboard: UI и приём OTLP | `dashboard:18888`, `dashboard:18889` |
 | `bank-emulator.yaml` | эмулятор банка (Go), одна реплика: решения в памяти | `bank-emulator:5300` |
 | `antifraud.yaml` | антифрод (Python) | `antifraud:8000` |
+| `frontend.yaml` | React-приложение, две реплики NGINX без root | `frontend:8080` |
 | `payments-api.yaml` | Payments.Api, от 2 до 4 реплик на разных нодах | `payments-api:8080` |
 | `ledger-service.yaml` | Ledger.Service | `ledger-service:8080` |
-| `ingress.yaml` | вход через Traefik | `localhost:8080` снаружи |
+| `ingress.yaml` | `/` — React; `/payments`, `/balances`, `/invariants` — API через Traefik | `localhost:8080` снаружи |
 | `traefik.yaml` | Traefik: таймаут подключения 1 с вместо 30 и повтор запроса на другом поде | — |
 | `hpa.yaml` | HorizontalPodAutoscaler Payments.Api: 2–4 реплики по CPU | — |
 | `otel-collector.yaml` | OpenTelemetry Collector: телеметрия сервисов — метрики в Prometheus, всё в Aspire dashboard | `otel-collector:4317` |
@@ -20,7 +21,7 @@
 | `alerts.yaml` | правила алертов Prometheus | — |
 | `postgres.yaml` | PostgreSQL: кластер CloudNativePG из трёх экземпляров и база `ledger`; пароль генерирует оператор (Secret `pg-app`) | `pg-rw:5432` — основной экземпляр |
 | `network-policies.yaml` | кто к кому может подключаться внутри `highload`: всё закрыто, открыто только нужное ([docs/security.md](../../docs/security.md)) | — |
-| `pdb.yaml` | PodDisruptionBudget Payments.Api: при `kubectl drain` одна реплика всегда в работе | — |
+| `pdb.yaml` | PodDisruptionBudget для API, Ledger и фронтенда: при `kubectl drain` остаётся доступная реплика | — |
 
 ## Запуск
 
@@ -48,7 +49,8 @@
    docker build -t ledger-service:dev -f src/Ledger.Service/Dockerfile .
    docker build -t bank-emulator:dev  -f src/bank-emulator/Dockerfile .
    docker build -t antifraud:dev      -f src/antifraud-service/Dockerfile .
-   k3d image import payments-api:dev ledger-service:dev bank-emulator:dev antifraud:dev -c highload
+   docker build -t frontend:dev       -f frontend/Dockerfile .
+   k3d image import payments-api:dev ledger-service:dev bank-emulator:dev antifraud:dev frontend:dev -c highload
    ```
    Образы Kafka, Redis и дашборда ноды скачают сами. Если они уже есть локально после `docker compose`, их можно загрузить так же, без повторного скачивания:
    ```powershell
@@ -116,6 +118,7 @@
 
 | Адрес | Куда |
 |---|---|
+| `http://localhost:8080/` | React-интерфейс |
 | `http://localhost:8080/payments` | Payments.Api |
 | `http://localhost:8080/balances/...`, `/invariants` | Ledger.Service |
 | `http://dashboard.localhost:8080` | дашборд телеметрии (в браузере) |
@@ -143,7 +146,7 @@ kubectl -n highload exec $p -c postgres -- psql -U postgres -c "select applicati
 
 ## Выкатка новой версии
 
-Кластер синхронизирует из git Argo CD (`deploy/argocd/highload.yaml`), поэтому новая версия выкатывается через git, а не через `kubectl`. Обычно — сама: push backend-кода в `main` запускает Backend CI (`.github/workflows/backend-ci.yml`), он прогоняет тесты, собирает образы изменившихся сервисов в `ghcr.io/zr-roman/…` и коммитит их теги. Подробно — в [docs/gitops.md](../../docs/gitops.md#выкатка-новой-версии).
+Кластер синхронизирует из git Argo CD (`deploy/argocd/highload.yaml`), поэтому новая версия выкатывается через git, а не через `kubectl`. Backend CI проверяет и выпускает изменившиеся backend-сервисы. Frontend CI проверяет React и его Docker-образ, публикует `ghcr.io/zr-roman/frontend:<коммит>` и коммитит тег в Kustomize. Argo CD выкатывает новую версию после этого коммита. Подробно — в [docs/gitops.md](../../docs/gitops.md#выкатка-новой-версии).
 ```powershell
 git push                                  # дальше CI; через несколько минут — коммит «Release: … (CI)»
 git pull                                  # коммит бота, прежде чем коммитить своё

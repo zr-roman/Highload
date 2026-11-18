@@ -10,6 +10,7 @@ on:
     paths:
       - ".github/workflows/backend-ci.yml"
       - ".github/scripts/detect-changes.py"
+      - ".dockerignore"
       - "src/**"
       - "tests/**"
       - "db/**"
@@ -143,7 +144,7 @@ jobs:
         with:
           fetch-depth: 0 # the commits the current tags name
       - id: plan
-        run: python3 deploy/ci-release.py plan
+        run: python3 deploy/ci-release.py plan frontend
 
   images:
     name: Image ${{ matrix.service }}

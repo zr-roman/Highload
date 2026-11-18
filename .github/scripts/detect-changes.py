@@ -20,8 +20,10 @@ BACKEND_FILES = {
 }
 FRONTEND_PREFIXES = ("frontend/",)
 FRONTEND_FILES = {
+    ".dockerignore",
     ".github/scripts/detect-changes.py",
     ".github/workflows/frontend-ci.yml",
+    "deploy/ci-release.py",
 }
 ZERO_SHA = "0" * 40
 
