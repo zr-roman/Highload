@@ -63,7 +63,7 @@ spec:
         - name: rustfs
           # The glibc build: the musl one is noticeably slower (rustfs/rustfs#1662). The version the plugin's
           # end-to-end tests run against.
-          image: rustfs/rustfs:1.0.4-glibc
+          image: rustfs/rustfs:1.0.5-glibc
           command: ["/usr/bin/rustfs"]
           env:
             - name: RUSTFS_ADDRESS

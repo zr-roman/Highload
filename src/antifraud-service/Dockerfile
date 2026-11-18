@@ -1,7 +1,7 @@
 # The build context is the repository root, like for the other services:
 #   docker build -t antifraud:dev -f src/antifraud-service/Dockerfile .
 
-FROM python:3.12-slim AS build
+FROM python:3.15-slim AS build
 COPY --from=ghcr.io/astral-sh/uv:0.13.4 /uv /bin/uv
 WORKDIR /app
 # Bytecode compiled at build time, so the first requests do not wait for it; files copied, not hard-linked,
@@ -13,7 +13,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY src/antifraud-service/antifraud ./antifraud
 
 # The same base image as the build stage: the venv refers to /usr/local/bin/python3.12.
-FROM python:3.12-slim
+FROM python:3.15-slim
 RUN useradd --system --uid 10001 --no-create-home antifraud
 WORKDIR /app
 COPY --from=build /app/.venv ./.venv

@@ -122,7 +122,7 @@ spec:
           type: RuntimeDefault
       initContainers:
         - name: configure
-          image: redis:7.4-alpine
+          image: redis:8.10-alpine
           command: ["sh", "/scripts/configure.sh"]
           env:
             - name: POD_NAMESPACE
@@ -147,7 +147,7 @@ spec:
               memory: 32Mi
       containers:
         - name: redis
-          image: redis:7.4-alpine
+          image: redis:8.10-alpine
           args: ["redis-server", "/data/redis.conf"]
           ports:
             - name: redis
@@ -167,7 +167,7 @@ spec:
             limits:
               memory: 256Mi
         - name: sentinel
-          image: redis:7.4-alpine
+          image: redis:8.10-alpine
           args: ["redis-sentinel", "/data/sentinel.conf"]
           ports:
             - name: sentinel
