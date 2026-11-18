@@ -1,0 +1,55 @@
+.app-shell {
+  width: min(100% - 2rem, 56rem);
+  margin: 0 auto;
+  padding: 4rem 0;
+}
+
+.eyebrow {
+  margin: 0 0 0.75rem;
+  color: #53627b;
+  font-size: 0.875rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  color: #15233b;
+  font-size: clamp(2rem, 6vw, 3.5rem);
+  line-height: 1.1;
+}
+
+.app-description {
+  max-width: 42rem;
+  margin: 1rem 0 2rem;
+  color: #53627b;
+  font-size: 1.125rem;
+  line-height: 1.6;
+}
+
+.api-list {
+  display: grid;
+  gap: 1rem;
+  margin: 0;
+}
+
+.api-list div {
+  padding: 1rem 1.25rem;
+  border: 1px solid #dce3ed;
+  border-radius: 0.75rem;
+  background: #fff;
+}
+
+.api-list dt {
+  margin-bottom: 0.25rem;
+  color: #53627b;
+  font-size: 0.875rem;
+}
+
+.api-list dd {
+  margin: 0;
+  color: #15233b;
+  font-family: Consolas, monospace;
+  overflow-wrap: anywhere;
+}
