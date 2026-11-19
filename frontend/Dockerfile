@@ -13,6 +13,8 @@ FROM nginx/nginx-unprivileged:1.31.7-alpine3.24
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist/ /usr/share/nginx/html/
 # Pull security fixes published after the pinned base-image tag was built.
+USER root
 RUN apk upgrade --no-cache && nginx -t
+USER 101
 
 EXPOSE 8080
