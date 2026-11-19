@@ -17,6 +17,9 @@
 **/obj
 **/node_modules
 **/dist
+frontend/.env.local
+frontend/.env.*.local
+frontend/test-results/
 TestResults
 **/TestResults
 

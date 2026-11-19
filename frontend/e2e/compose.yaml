@@ -1,0 +1,103 @@
+name: highload-frontend-e2e
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: e2e
+    volumes:
+      - ../../db/create-databases.sql:/docker-entrypoint-initdb.d/01-databases.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "ledger"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  kafka:
+    image: apache/kafka:4.3.2
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+
+  redis:
+    image: redis:7.4-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  bank:
+    build:
+      context: ../..
+      dockerfile: src/bank-emulator/Dockerfile
+    environment:
+      BANK_DECLINE_PERCENT: 0
+      BANK_LATENCY_MS: 0
+      BANK_JITTER_MS: 0
+
+  payments:
+    build:
+      context: ../..
+      dockerfile: src/Payments.Api/Dockerfile
+    depends_on:
+      postgres: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      bank: { condition: service_started }
+    environment:
+      ConnectionStrings__Payments: Host=postgres;Database=payments;Username=postgres;Password=e2e
+      ConnectionStrings__Kafka: kafka:9092
+      ConnectionStrings__Redis: redis:6379
+      Acquirer__BaseAddress: http://bank:5300/
+      Acquirer__Resilience__AttemptTimeout__Timeout: "00:00:02"
+      Acquirer__Resilience__TotalRequestTimeout__Timeout: "00:00:06"
+
+  ledger:
+    build:
+      context: ../..
+      dockerfile: src/Ledger.Service/Dockerfile
+    depends_on:
+      postgres: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    environment:
+      ConnectionStrings__Ledger: Host=postgres;Database=ledger;Username=postgres;Password=e2e
+      ConnectionStrings__Kafka: kafka:9092
+      Cors__AllowedOrigins__0: http://127.0.0.1:18080
+
+  frontend:
+    build:
+      context: ../..
+      dockerfile: frontend/Dockerfile
+    depends_on: [payments, ledger]
+    ports:
+      - "127.0.0.1:18080:8081"
+    tmpfs:
+      - /tmp:mode=1777,size=32m
+    volumes:
+      - ./gateway.conf:/etc/nginx/conf.d/e2e-gateway.conf:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          wget -q -O /dev/null http://127.0.0.1:8081/ &&
+          wget -q -O /dev/null http://payments:8080/health/ready &&
+          wget -q -O /dev/null http://ledger:8080/health/ready &&
+          wget -q -O /dev/null http://bank:5300/healthz
+      interval: 3s
+      timeout: 5s
+      retries: 40
