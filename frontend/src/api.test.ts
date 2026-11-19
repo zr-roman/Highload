@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, createPayment, getMerchantBalance } from "./api";
+import { createPayment, getMerchantBalance } from "./api";
 
 describe("API client", () => {
   beforeEach(() => vi.stubGlobal("fetch", vi.fn()));
@@ -22,7 +22,7 @@ describe("API client", () => {
       headers: { "Retry-After": "7" },
     }));
 
-    await expect(getMerchantBalance(42)).rejects.toMatchObject<ApiError>({
+    await expect(getMerchantBalance(42)).rejects.toMatchObject({
       status: 429,
       message: "Too many requests",
       retryAfterSeconds: 7,

@@ -6,8 +6,13 @@ import type { Payment } from "./api";
 
 vi.mock("./api", () => ({
   ApiError: class ApiError extends Error {
-    constructor(message: string, public status: number, public retryAfterSeconds: number | null = null) {
+    status: number;
+    retryAfterSeconds: number | null;
+
+    constructor(message: string, status: number, retryAfterSeconds: number | null = null) {
       super(message);
+      this.status = status;
+      this.retryAfterSeconds = retryAfterSeconds;
     }
   },
   createPayment: vi.fn(),
