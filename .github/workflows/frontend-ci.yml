@@ -11,6 +11,11 @@ on:
       - ".github/workflows/frontend-ci.yml"
   pull_request:
   workflow_dispatch:
+    inputs:
+      e2e_base_url:
+        description: "Адрес изолированного тестового стенда, доступный GitHub Actions runner"
+        required: false
+        type: string
 
 concurrency:
   group: frontend-ci-${{ github.ref }}
@@ -104,10 +109,30 @@ jobs:
             fi
           done
 
+  e2e:
+    name: Browser end-to-end test
+    if: github.event_name == 'workflow_dispatch' && inputs.e2e_base_url != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - run: npm run test:e2e
+        working-directory: frontend
+        env:
+          E2E_BASE_URL: ${{ inputs.e2e_base_url }}
+
   publish:
     name: Publish frontend image
     needs: [changes, build, image-check]
-    if: needs.changes.outputs.frontend == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.build.result == 'success' && needs.image-check.result == 'success'
+    if: needs.changes.outputs.frontend == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.e2e_base_url == '') && needs.build.result == 'success' && needs.image-check.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -162,7 +187,7 @@ jobs:
   release:
     name: Update frontend tag in git
     needs: [changes, publish]
-    if: always() && needs.changes.outputs.frontend == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.publish.result == 'success'
+    if: always() && needs.changes.outputs.frontend == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.e2e_base_url == '') && needs.publish.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write

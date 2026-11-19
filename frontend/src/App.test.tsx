@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { createPayment, getMerchantBalance, getPayment } from "./api";
@@ -54,6 +54,36 @@ describe("payment dashboard", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Сумма должна быть больше нуля");
     expect(createPayment).not.toHaveBeenCalled();
+  });
+
+  it("polls a pending payment until Payments API returns a final status", async () => {
+    vi.useFakeTimers();
+    vi.mocked(createPayment).mockResolvedValue({ ...payment, status: "created" });
+    vi.mocked(getPayment).mockResolvedValue(payment);
+    render(<App />);
+    fireEvent.change(screen.getAllByLabelText("ID продавца")[0], { target: { value: "42" } });
+    fireEvent.change(screen.getByPlaceholderText("1250,00"), { target: { value: "1250,50" } });
+    fireEvent.click(screen.getByRole("button", { name: "Создать платёж" }));
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(screen.getByText("Проведён")).toBeInTheDocument();
+    expect(getPayment).toHaveBeenCalledWith(payment.id, expect.any(AbortSignal));
+    vi.useRealTimers();
+  });
+
+  it("reuses the idempotency key after a network error for the same payment", async () => {
+    vi.mocked(createPayment)
+      .mockRejectedValueOnce(new Error("Сеть недоступна"))
+      .mockResolvedValueOnce(payment);
+    render(<App />);
+    fireEvent.change(screen.getAllByLabelText("ID продавца")[0], { target: { value: "42" } });
+    fireEvent.change(screen.getByPlaceholderText("1250,00"), { target: { value: "1250,50" } });
+    fireEvent.click(screen.getByRole("button", { name: "Создать платёж" }));
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "Создать платёж" }));
+
+    await screen.findByText("Проведён");
+    expect(vi.mocked(createPayment).mock.calls[1][1]).toBe(vi.mocked(createPayment).mock.calls[0][1]);
   });
 
   it("looks up a payment by UUID", async () => {
