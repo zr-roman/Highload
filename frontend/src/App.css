@@ -205,6 +205,12 @@ input:focus {
   box-shadow: 0 0 0 3px rgb(53 122 178 / 13%);
 }
 
+/* A field whose label holds only its text (aria-describedby for the hint): laid out like a wrapping label. */
+.field {
+  display: grid;
+  gap: 0.45rem;
+}
+
 .input-suffix {
   position: relative;
 }

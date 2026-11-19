@@ -6,35 +6,40 @@ test("creates a payment, finds it by ID, and requests the merchant balance throu
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Платёжная платформа" })).toBeVisible();
 
-  const merchantId = String(randomInt(1_000_000_000_000, 2_000_000_000_000));
-  await page.locator(".create-panel").getByPlaceholder("Например, 42").fill(merchantId);
-  await page.getByPlaceholder("1250,00").fill("10,00");
-  await page.getByRole("button", { name: "Создать платёж" }).click();
+  // Panels are regions named by their headings; fields by their labels; result parts by data-testid.
+  // None of it depends on CSS classes, which change with the look.
+  const createPanel = page.getByRole("region", { name: "Создать платёж" });
+  const lookupPanel = page.getByRole("region", { name: "Найти платёж" });
+  const balancePanel = page.getByRole("region", { name: "Баланс" });
 
-  const createdPayment = page.locator(".create-panel .result-card");
+  const merchantId = String(randomInt(1_000_000_000_000, 2_000_000_000_000));
+  await createPanel.getByLabel("ID продавца").fill(merchantId);
+  await createPanel.getByLabel("Сумма платежа").fill("10,00");
+  await createPanel.getByRole("button", { name: "Создать платёж" }).click();
+
+  const createdPayment = createPanel.getByTestId("payment-card");
   await expect(createdPayment).toBeVisible();
-  await expect(createdPayment.locator(".mono")).toHaveText(/^[\da-f-]{36}$/i);
-  const status = createdPayment.locator(".status-pill");
+  await expect(createdPayment.getByTestId("payment-id")).toHaveText(/^[\da-f-]{36}$/i);
+  const status = createdPayment.getByTestId("payment-status");
   await expect(status).toHaveText(/^(Проведён|Отклонён|Отменён)$/, { timeout: 60_000 });
   const finalStatus = await status.innerText();
   if (process.env.E2E_EXPECT_CAPTURED === "true") expect(finalStatus).toBe("Проведён");
-  const paymentId = await createdPayment.locator(".mono").innerText();
+  const paymentId = await createdPayment.getByTestId("payment-id").innerText();
 
-  await page.getByPlaceholder("UUID платежа").fill(paymentId);
+  await lookupPanel.getByLabel("ID платежа").fill(paymentId);
   const [lookup] = await Promise.all([
     page.waitForResponse(response => new URL(response.url()).pathname === `/payments/${paymentId}` && response.request().method() === "GET"),
-    page.getByRole("button", { name: "Найти по ID" }).click(),
+    lookupPanel.getByRole("button", { name: "Найти по ID" }).click(),
   ]);
   expect(lookup.status()).toBe(200);
   const payment: Payment = await lookup.json();
   expect(payment).toMatchObject({ id: paymentId, amount: 1000, merchantId: Number(merchantId), currency: "RUB" });
-  const foundPayment = page.locator(".panel").filter({ has: page.getByRole("heading", { name: "Найти платёж" }) }).locator(".result-card");
+  const foundPayment = lookupPanel.getByTestId("payment-card");
   await expect(foundPayment).toBeVisible();
-  await expect(foundPayment.locator(".mono")).toHaveText(paymentId);
-  await expect(foundPayment.locator(".status-pill")).toHaveText(finalStatus);
+  await expect(foundPayment.getByTestId("payment-id")).toHaveText(paymentId);
+  await expect(foundPayment.getByTestId("payment-status")).toHaveText(finalStatus);
 
-  const balancePanel = page.locator(".balance-panel");
-  await balancePanel.getByPlaceholder("Например, 42").fill(merchantId);
+  await balancePanel.getByLabel("ID продавца").fill(merchantId);
   const requestBalance = async () => {
     const [response] = await Promise.all([
       page.waitForResponse(response => new URL(response.url()).pathname === `/balances/merchants/${merchantId}` && response.request().method() === "GET"),
@@ -54,6 +59,7 @@ test("creates a payment, finds it by ID, and requests the merchant balance throu
     .format((payment.amount - payment.fee) / 100);
   // Ledger creates the merchant account after consuming the capture event from Kafka.
   await expect.poll(requestBalance, { timeout: 30_000, intervals: [500, 1000, 2000] }).toBe(200);
-  const balance = balancePanel.locator(".balance-result").filter({ hasText: `продавец ${merchantId}` });
-  await expect(balance.locator("strong")).toHaveText(netAmount);
+  const balance = balancePanel.getByTestId("merchant-balance");
+  await expect(balance).toContainText(`продавец ${merchantId}`);
+  await expect(balance).toContainText(netAmount);
 });
