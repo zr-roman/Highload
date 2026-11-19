@@ -34,7 +34,6 @@ builder.Services.AddHealthChecks()
 var app = builder.Build();
 if (corsOrigins.Length > 0)
     app.UseCors();
-app.UseCors();
 
 // From the content root, like appsettings.json. Not from AppContext.BaseDirectory: when the end-to-end tests host
 // both services in one process, that is the tests' folder, and both services' schema.sql would land on one path there.
