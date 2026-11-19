@@ -1,5 +1,4 @@
 using Confluent.Kafka;
-using Contracts;
 using Microsoft.Extensions.Http.Resilience;
 using Npgsql;
 using Payments.Api.Acquiring;
