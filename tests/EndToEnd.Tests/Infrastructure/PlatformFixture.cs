@@ -46,6 +46,11 @@ public sealed class PlatformFixture : IAsyncLifetime
 
     public NpgsqlDataSource LedgerDb { get; private set; } = null!;
 
+    /// <summary>The services' containers, for what their HTTP APIs do not show, such as the environment they run in.</summary>
+    public IServiceProvider PaymentsServices => paymentsApi.Services;
+
+    public IServiceProvider LedgerServices => ledgerService.Services;
+
     public async ValueTask InitializeAsync()
     {
         await Task.WhenAll(postgres.StartAsync(), kafka.StartAsync(), redis.StartAsync());
@@ -161,3 +166,10 @@ public sealed class PlatformFixture : IAsyncLifetime
     private string ConnectionString(string database) =>
         new NpgsqlConnectionStringBuilder(postgres.GetConnectionString()) { Database = database }.ConnectionString;
 }
+
+/// <summary>
+/// One platform for all the end-to-end test classes: it takes half a minute to start, and the tests leave their
+/// payments in it anyway (MoneyAddsUpTests). The classes of a collection run one after another.
+/// </summary>
+[CollectionDefinition("Platform")]
+public sealed class PlatformCollection : ICollectionFixture<PlatformFixture>;

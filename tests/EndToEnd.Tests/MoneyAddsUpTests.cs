@@ -20,7 +20,8 @@ namespace EndToEnd.Tests;
 /// The tests share one platform and leave their payments in it, so the checks cover everything in the databases
 /// and hold whichever tests ran before.
 /// </remarks>
-public sealed class MoneyAddsUpTests(PlatformFixture platform, ITestOutputHelper output) : IClassFixture<PlatformFixture>
+[Collection("Platform")]
+public sealed class MoneyAddsUpTests(PlatformFixture platform, ITestOutputHelper output)
 {
     private const int Merchants = 50;
     private const int HotMerchant = 1;
