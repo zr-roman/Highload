@@ -34,8 +34,10 @@ public static class Placement
         var moves = new List<string>();
 
         var nodes = await Cluster.NodesReadyAsync() ?? throw new FailoverException("kubectl get nodes failed: is the cluster up?");
+
         if (!nodes.ContainsKey(node))
             throw new FailoverException($"No node {node} in the cluster");
+
         if (nodes.Where(n => !n.Value).Select(n => n.Key).ToList() is { Count: > 0 } notReady)
             throw new FailoverException($"Nodes not Ready: {string.Join(", ", notReady)}. The run needs a healthy cluster");
 
@@ -44,6 +46,7 @@ public static class Placement
         var cordoned = (await Shell.KubectlOrThrow("get", "nodes", "-o",
                 "jsonpath={range .items[?(@.spec.unschedulable==true)]}{.metadata.name} {end}"))
             .Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
         if (cordoned.Length > 0)
             throw new FailoverException($"Nodes closed to new pods: {string.Join(", ", cordoned)}. Open them first: " +
                 string.Join("; ", cordoned.Select(n => $"kubectl uncordon {n}")));
@@ -82,6 +85,7 @@ public static class Placement
             moves.Add($"основной PostgreSQL переключён с `{primary}` на `{target.Name}`");
             primary = target.Name;
         }
+
         await WaitAsync("the cluster pg to be healthy", TimeSpan.FromMinutes(3), ct, async () =>
             (await Shell.Kubectl("-n", Cluster.Namespace, "get", "cluster", "pg", "-o", "jsonpath={.status.phase}")).Output
             == "Cluster in healthy state");
@@ -116,16 +120,20 @@ public static class Placement
                 leader = holder.Name;
                 break;
             }
+
             // Whichever waiting replica polls first takes the lock: with up to 4 replicas on 4 nodes the one on the
             // node wins about one time in three, so a few tries are expected.
             if (attempt > 8)
                 throw new FailoverException($"The leader of the outbox relay did not move to {node}");
+
             if (holder is null)
             {
                 await Task.Delay(TimeSpan.FromSeconds(5), ct);
                 continue;
             }
+
             Console.WriteLine($"Moving the leadership of the outbox relay away from {holder.Name} ({holder.Node})");
+
             await WithCordonAsync([node], () => DeletePodAndWaitAsync(holder.Name));
             moves.Add($"лидерство outbox снято с `{holder.Name}` удалением пода");
         }
@@ -182,6 +190,7 @@ public static class Placement
     {
         var output = await Shell.KubectlOrThrow("-n", Cluster.Namespace, "get", "pods", "-l", "strimzi.io/cluster=kafka,strimzi.io/pool-name=broker",
             "-o", "jsonpath={range .items[*]}{.metadata.name} {.status.containerStatuses[0].restartCount}{\"\\n\"}{end}");
+
         return output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(line => line.Split(' '))
             .ToDictionary(f => f[0], f => int.Parse(f[1], CultureInfo.InvariantCulture));
@@ -213,8 +222,10 @@ public static class Placement
     private static async Task WithCordonAsync(IEnumerable<string> nodes, Func<Task> action)
     {
         var cordoned = nodes.ToList();
+
         foreach (var n in cordoned)
             await Shell.KubectlOrThrow("cordon", n);
+
         try
         {
             await action();
