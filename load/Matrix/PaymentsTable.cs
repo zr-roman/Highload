@@ -20,7 +20,7 @@ public sealed class PaymentsTable(NpgsqlDataSource payments)
     // by that measurement (--fresh keeps indexes) and to repeat it.
     public const string StaleIndex = "payments_stale_created";
 
-    // The search of PaymentStore.FindStaleCreatedAsync with the values of Recovery in appsettings.json: payments
+    // The search of PaymentStore.FindStaleInProgressAsync with the values of Recovery in appsettings.json: payments
     // older than 30 s, 100 at a time, from the queue pending_payments.
     private const string StaleSearch = """
         SELECT p.id, p.merchant_id, p.idempotency_key, p.request_hash, p.amount, p.currency, p.fee, p.status, p.created_at

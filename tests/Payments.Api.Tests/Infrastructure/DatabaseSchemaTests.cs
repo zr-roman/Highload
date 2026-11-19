@@ -179,6 +179,58 @@ public sealed class DatabaseSchemaTests(PostgresFixture db)
         });
     }
 
+    [Fact]
+    public async Task Check_With_Voided_But_Another_Set_Of_Statuses_Is_Replaced()
+    {
+        await WithDatabaseAsync(async connectionString =>
+        {
+            await using var dataSource = NpgsqlDataSource.Create(connectionString);
+            await ExecuteAsync(dataSource, PaymentsBeforeStage4);
+            // 'voided' is there, 'authorized' is not: a check for 'voided' alone would take it for migrated.
+            await ExecuteAsync(dataSource, """
+                ALTER TABLE payments DROP CONSTRAINT payments_status_check;
+                ALTER TABLE payments ADD CONSTRAINT payments_status_check
+                    CHECK (status IN ('created', 'captured', 'declined', 'voided'));
+                """);
+
+            await DatabaseSchema.ApplyAsync(dataSource, SchemaPath, SchemaAfterPath, Ct);
+
+            Assert.Contains("'authorized'", (await ReadStatusCheckAsync(dataSource)).Definition);
+            await InsertAsync(dataSource, "authorized");
+        });
+    }
+
+    [Fact]
+    public async Task Migration_Gives_Up_On_A_Held_Lock_Instead_Of_Queueing_The_Writes()
+    {
+        await WithDatabaseAsync(async connectionString =>
+        {
+            await using var dataSource = NpgsqlDataSource.Create(connectionString);
+            await ExecuteAsync(dataSource, PaymentsBeforeStage4);
+
+            // A long transaction that has read payments holds ACCESS SHARE until it ends; ALTER TABLE needs ACCESS
+            // EXCLUSIVE. Without lock_timeout the migration would wait for it, and every write behind the migration.
+            await using var holder = await dataSource.OpenConnectionAsync(Ct);
+            await using var holding = await holder.BeginTransactionAsync(Ct);
+            await using (var read = new NpgsqlCommand("SELECT count(*) FROM payments", holder, holding))
+                await read.ExecuteScalarAsync(Ct);
+
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
+            var failed = await Assert.ThrowsAsync<PostgresException>(
+                () => DatabaseSchema.ApplyAsync(dataSource, SchemaPath, Ct));
+
+            Assert.Equal(PostgresErrorCodes.LockNotAvailable, failed.SqlState);
+            Assert.True(StartupRetry.IsTransient(failed));       // the start tries again rather than failing
+            Assert.True(System.Diagnostics.Stopwatch.GetElapsedTime(started) < TimeSpan.FromSeconds(10));
+
+            // Rolled back as a whole: the old CHECK is still there, and once the lock is gone the migration goes through.
+            Assert.DoesNotContain("'voided'", (await ReadStatusCheckAsync(dataSource)).Definition);
+            await holding.RollbackAsync(Ct);
+            await DatabaseSchema.ApplyAsync(dataSource, SchemaPath, SchemaAfterPath, Ct);
+            Assert.True((await ReadStatusCheckAsync(dataSource)).Validated);
+        });
+    }
+
     // A database of its own: the fixture's one has the schema already.
     private async Task WithDatabaseAsync(Func<string, Task> test)
     {

@@ -45,5 +45,6 @@ public sealed class StartupRetryTests
         Assert.True(StartupRetry.IsTransient(new NpgsqlException("Failed to connect", new SocketException((int)SocketError.TryAgain))));
         Assert.True(StartupRetry.IsTransient(new KafkaException(ErrorCode.Local_TimedOut)));
         Assert.False(StartupRetry.IsTransient(new PostgresException("password authentication failed", "FATAL", "FATAL", "28P01")));
+        Assert.True(StartupRetry.IsTransient(new PostgresException("canceling statement due to lock timeout", "ERROR", "ERROR", "55P03")));
     }
 }

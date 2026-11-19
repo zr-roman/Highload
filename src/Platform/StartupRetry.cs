@@ -52,6 +52,9 @@ public static class StartupRetry
     /// </summary>
     public static bool IsTransient(Exception exception) => exception switch
     {
+        // lock_timeout of schema.sql: a long transaction held payments, and the next attempt may find it gone.
+        // Before NpgsqlException, of which PostgresException is one.
+        PostgresException { SqlState: PostgresErrorCodes.LockNotAvailable } => true,
         NpgsqlException npgsql => npgsql.IsTransient,   // network, DNS, timeouts, "the database system is starting up"
         CreateTopicsException => false,                 // Kafka answered, and the answer is no
         KafkaException => true,                         // no broker within the request timeout

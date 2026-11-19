@@ -1,4 +1,5 @@
--- Runs after schema.sql has committed, outside its transaction (DatabaseSchema.ApplyAsync).
+-- Runs after schema.sql has committed, in a transaction of its own: in the background once Payments.Api has started
+-- (SchemaAfterStart, DatabaseSchema.ApplyAfterStartAsync), so the scan does not hold up the start probe.
 --
 -- Reads the rows written before the CHECK of the statuses was replaced NOT VALID (schema.sql) and marks it valid.
 -- It scans all of payments, but under SHARE UPDATE EXCLUSIVE: inserts and updates go on, and of the other replicas

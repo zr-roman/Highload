@@ -118,7 +118,7 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
     /// is checked on payments all the same: a row of the queue whose payment is already final must not take a place
     /// in the batch.
     /// </summary>
-    public async Task<IReadOnlyList<Payment>> FindStaleCreatedAsync(TimeSpan staleAfter, int batchSize, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<Payment>> FindStaleInProgressAsync(TimeSpan staleAfter, int batchSize, CancellationToken cancellationToken)
     {
         var sql = $"""
             SELECT {SelectPaymentColumns}

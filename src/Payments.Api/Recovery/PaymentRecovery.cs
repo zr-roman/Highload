@@ -58,7 +58,7 @@ public sealed class PaymentRecovery(
     {
         // The poll runs every Interval and is usually empty: without this, every poll is a separate one-span trace.
         using (SuppressInstrumentationScope.Begin())
-            return await store.FindStaleCreatedAsync(settings.StaleAfter, settings.BatchSize, stoppingToken);
+            return await store.FindStaleInProgressAsync(settings.StaleAfter, settings.BatchSize, stoppingToken);
     }
 
     private async Task<RecoveryPass> RecoverBatchAsync(IReadOnlyList<Payment> batch, CancellationToken stoppingToken)

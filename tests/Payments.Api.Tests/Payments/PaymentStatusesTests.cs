@@ -47,7 +47,7 @@ public sealed class PaymentStatusesTests(PostgresFixture db) : IAsyncLifetime
         await db.SetStatusAsync(id, "authorized", Ct);
 
         Assert.Equal(1L, await db.CountPendingAsync(Ct));
-        var found = Assert.Single(await store.FindStaleCreatedAsync(TimeSpan.FromSeconds(30), 100, Ct));
+        var found = Assert.Single(await store.FindStaleInProgressAsync(TimeSpan.FromSeconds(30), 100, Ct));
         Assert.Equal(PaymentStatus.Authorized, found.Status);
     }
 
@@ -59,7 +59,7 @@ public sealed class PaymentStatusesTests(PostgresFixture db) : IAsyncLifetime
         await db.SetStatusAsync(id, "voided", Ct);
 
         Assert.Equal(0L, await db.CountPendingAsync(Ct));
-        Assert.Empty(await store.FindStaleCreatedAsync(TimeSpan.FromSeconds(30), 100, Ct));
+        Assert.Empty(await store.FindStaleInProgressAsync(TimeSpan.FromSeconds(30), 100, Ct));
     }
 
     [Theory]
@@ -72,7 +72,7 @@ public sealed class PaymentStatusesTests(PostgresFixture db) : IAsyncLifetime
         await QueueAsync(final);
         var created = await db.InsertPaymentAsync(Stale, cancellationToken: Ct);
 
-        var batch = await store.FindStaleCreatedAsync(TimeSpan.FromSeconds(30), 1, Ct);
+        var batch = await store.FindStaleInProgressAsync(TimeSpan.FromSeconds(30), 1, Ct);
 
         Assert.Equal(created, Assert.Single(batch).Id);
     }

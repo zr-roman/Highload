@@ -26,20 +26,16 @@ public static class DatabaseSchema
     /// first holds its locks, such as VALIDATE CONSTRAINT after an ADD CONSTRAINT ... NOT VALID.
     /// </summary>
     /// <remarks>
-    /// The second script runs with no transaction of its own and without the advisory lock: instances that start
-    /// together run it each, so it must be idempotent and safe to run concurrently.
+    /// A service whose second script may take long runs it with <see cref="ApplyAfterStartAsync"/> once it has
+    /// started instead (Payments.Api, SchemaAfterStart): here it delays the start by the whole scan.
     /// </remarks>
     public static async Task ApplyAsync(
         NpgsqlDataSource dataSource, string scriptPath, string? afterCommitScriptPath,
         CancellationToken cancellationToken = default)
     {
         var sql = await File.ReadAllTextAsync(scriptPath, cancellationToken);
-        var afterCommitSql = afterCommitScriptPath is null
-            ? null
-            : await File.ReadAllTextAsync(afterCommitScriptPath, cancellationToken);
 
-        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
-
+        await using (var connection = await dataSource.OpenConnectionAsync(cancellationToken))
         await using (var transaction = await connection.BeginTransactionAsync(cancellationToken))
         {
             // A transaction-level lock: the commit releases it, and so does the rollback if the script fails.
@@ -55,28 +51,37 @@ public static class DatabaseSchema
             await transaction.CommitAsync(cancellationToken);
         }
 
-        if (afterCommitSql is not null)
-            await ApplyAfterCommitAsync(connection, afterCommitSql, cancellationToken);
+        if (afterCommitScriptPath is not null)
+            await ApplyAfterStartAsync(dataSource, afterCommitScriptPath, cancellationToken);
     }
 
-    private static async Task ApplyAfterCommitAsync(
-        NpgsqlConnection connection, string sql, CancellationToken cancellationToken)
+    /// <summary>
+    /// A script for after <see cref="ApplyAsync(NpgsqlDataSource, string, CancellationToken)"/> has committed, in a
+    /// transaction of its own and without the advisory lock: instances that start together run it each, so it must
+    /// be idempotent and safe to run concurrently, as VALIDATE CONSTRAINT is (the second waits for the first, then
+    /// finds nothing to do).
+    /// </summary>
+    /// <remarks>
+    /// A scan of a big table takes longer than the statement_timeout of the connection string and the 30 s
+    /// CommandTimeout of Npgsql, so both are lifted for this transaction alone. SET LOCAL, not SET: the commit or the
+    /// rollback drops it, a broken connection included, and no connection goes back to the pool without a timeout.
+    /// A session-level SET would need a RESET afterwards, and a RESET on a broken connection fails and hides the
+    /// error of the script.
+    /// </remarks>
+    public static async Task ApplyAfterStartAsync(
+        NpgsqlDataSource dataSource, string scriptPath, CancellationToken cancellationToken = default)
     {
-        // A scan of a big table takes longer than the statement_timeout of the connection string and the 30 s
-        // CommandTimeout of Npgsql. With no transaction SET LOCAL has nothing to apply to, so the session setting is
-        // lifted and put back: the connection goes back to the pool for the service's own statements.
-        await using (var unlimited = new NpgsqlCommand("SET statement_timeout = 0", connection))
+        var sql = await File.ReadAllTextAsync(scriptPath, cancellationToken);
+
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        await using (var unlimited = new NpgsqlCommand("SET LOCAL statement_timeout = 0", connection, transaction))
             await unlimited.ExecuteNonQueryAsync(cancellationToken);
 
-        try
-        {
-            await using var command = new NpgsqlCommand(sql, connection) { CommandTimeout = 0 };
+        await using (var command = new NpgsqlCommand(sql, connection, transaction) { CommandTimeout = 0 })
             await command.ExecuteNonQueryAsync(cancellationToken);
-        }
-        finally
-        {
-            await using var reset = new NpgsqlCommand("RESET statement_timeout", connection);
-            await reset.ExecuteNonQueryAsync(CancellationToken.None);
-        }
+
+        await transaction.CommitAsync(cancellationToken);
     }
 }

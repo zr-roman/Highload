@@ -15,21 +15,33 @@ CREATE TABLE IF NOT EXISTS payments (
     CONSTRAINT payments_idempotency_key UNIQUE (merchant_id, idempotency_key)
 ) WITH (fillfactor = 80);
 
+-- A lock this script cannot get within 2 s fails it instead of waiting. ALTER TABLE below asks for ACCESS EXCLUSIVE,
+-- and a request in the lock queue blocks everyone behind it: while it waits for one long transaction on payments,
+-- every insert and update of every replica waits behind it, and payments stop being taken. The script runs in one
+-- transaction, so a failure leaves nothing half done, and StartupRetry tries the start again
+-- (55P03 lock_not_available is transient there). On a database with nothing to migrate no statement here waits for
+-- a lock on payments, and the timeout costs nothing.
+SET LOCAL lock_timeout = '2s';
+
 -- Stage 4 adds 'authorized' and 'voided' (the saga); a database made before it has the CHECK of three statuses.
 -- CREATE TABLE IF NOT EXISTS does not touch an existing table, so the constraint is replaced here, once: a rerun
--- finds 'voided' in it and does nothing. ALTER TABLE takes ACCESS EXCLUSIVE on payments until this transaction
--- commits, and every write of every replica waits behind it. NOT VALID makes the ADD instant: new rows are checked
--- at once, the old ones are not read. Reading them, VALIDATE CONSTRAINT, is in schema-after.sql, which DatabaseSchema
--- runs after the commit, under SHARE UPDATE EXCLUSIVE, which does not block inserts and updates.
+-- finds the same set of statuses in it and does nothing. The set, not one status in it, is compared: a status
+-- added later has to replace a CHECK that already has 'voided'. The statuses are taken from the definition as text
+-- between quotes, so the comparison does not depend on how Postgres prints the CHECK (IN, = ANY (ARRAY[...]), casts).
+-- ALTER TABLE takes ACCESS EXCLUSIVE on payments until this transaction commits (see lock_timeout above).
+-- NOT VALID makes the ADD instant: new rows are checked at once, the old ones are not read. Reading them,
+-- VALIDATE CONSTRAINT, is in schema-after.sql, which Payments.Api runs in the background once it has started
+-- (SchemaAfterStart), under SHARE UPDATE EXCLUSIVE, which does not block inserts and updates.
 DO $$
 DECLARE
-    definition text;
+    expected text[] := ARRAY['authorized', 'captured', 'created', 'declined', 'voided'];  -- sorted
+    actual   text[];
 BEGIN
-    SELECT pg_get_constraintdef(oid) INTO definition
-    FROM pg_constraint
-    WHERE conrelid = 'payments'::regclass AND conname = 'payments_status_check';
+    SELECT array_agg(DISTINCT m[1] ORDER BY m[1]) INTO actual
+    FROM pg_constraint c, regexp_matches(pg_get_constraintdef(c.oid), '''([^'']*)''', 'g') AS m
+    WHERE c.conrelid = 'payments'::regclass AND c.conname = 'payments_status_check';
 
-    IF definition IS NULL OR definition NOT LIKE '%''voided''%' THEN
+    IF actual IS DISTINCT FROM expected THEN
         ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_status_check;
         ALTER TABLE payments ADD CONSTRAINT payments_status_check
             CHECK (status IN ('created', 'authorized', 'captured', 'declined', 'voided')) NOT VALID;

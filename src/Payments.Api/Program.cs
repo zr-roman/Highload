@@ -80,6 +80,8 @@ builder.Services.AddSingleton(TimeProvider.System);
 
 builder.Services.AddHostedService<OutboxRelay>();
 builder.Services.AddHostedService<PaymentRecovery>();
+// VALIDATE CONSTRAINT of the stage 4 migration, after the start: see SchemaAfterStart.
+builder.Services.AddHostedService<SchemaAfterStart>();
 
 var acquirer = builder.Configuration.GetSection("Acquirer").Get<AcquirerOptions>() ?? new AcquirerOptions();
 if (acquirer.Mode == AcquirerMode.Http)
@@ -99,10 +101,10 @@ if (corsOrigins.Length > 0)
 // Postgres may be out of reach for a moment while a pod starts: see StartupRetry.
 // No Kafka here: payments are taken without it and wait in the outbox, so a pod must start while Kafka is down.
 // The topic is created by the OutboxRelay before its first message.
+// schema-after.sql, which may scan all of payments, runs after the start (SchemaAfterStart), not here.
 await StartupRetry.RunAsync("Database schema", ct => DatabaseSchema.ApplyAsync(
     app.Services.GetRequiredService<NpgsqlDataSource>(),
-    Path.Combine(app.Environment.ContentRootPath, "Database", "schema.sql"),
-    Path.Combine(app.Environment.ContentRootPath, "Database", "schema-after.sql"), ct), app.Logger);
+    Path.Combine(app.Environment.ContentRootPath, "Database", "schema.sql"), ct), app.Logger);
 
 // Connect at startup, not on the first request that needs Redis: the first attempt may take up to connectTimeout.
 app.Services.GetRequiredService<IConnectionMultiplexer>();
