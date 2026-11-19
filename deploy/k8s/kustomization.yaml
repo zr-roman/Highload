@@ -57,7 +57,7 @@ images:
     newTag: 59b81bfced65
     newName: ghcr.io/zr-roman/payments-api
   - name: ledger-service
-    newTag: 59b81bfced65
+    newTag: 8adef660b5b1
     newName: ghcr.io/zr-roman/ledger-service
   - name: bank-emulator
     newTag: 17fb5be5f485
