@@ -156,7 +156,7 @@ jobs:
       packages: write
       id-token: write # the OIDC token of this run, which cosign signs with instead of a key
     env:
-      TRIVY_VERSION: "0.72.0"
+      TRIVY_VERSION: "0.76.2"
     strategy:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:

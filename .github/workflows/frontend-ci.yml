@@ -162,7 +162,7 @@ jobs:
       packages: write
       id-token: write
     env:
-      TRIVY_VERSION: "0.72.0"
+      TRIVY_VERSION: "0.76.2"
     steps:
       - uses: actions/checkout@v7
       - uses: docker/login-action@v4
