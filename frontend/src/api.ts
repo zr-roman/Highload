@@ -109,3 +109,20 @@ export function getMerchantBalance(merchantId: number, signal?: AbortSignal): Pr
 export function getPlatformFees(signal?: AbortSignal): Promise<PlatformFees> {
   return request<PlatformFees>(`${appConfig.ledgerApiUrl}/balances/platform-fees`, { signal });
 }
+
+export interface LedgerInvariants {
+  ok: boolean;
+  payments: number;
+  unbalancedPayments: number;
+  mismatchedAccounts: number;
+  totalBalance: number;
+}
+
+export async function getLedgerInvariants(signal: AbortSignal): Promise<LedgerInvariants> {
+  const snapshot = await request<LedgerInvariants>(`${appConfig.ledgerApiUrl}/invariants`, { signal, cache: "no-store" });
+  if (typeof snapshot?.ok !== "boolean" ||
+      ![snapshot.payments, snapshot.unbalancedPayments, snapshot.mismatchedAccounts, snapshot.totalBalance].every(Number.isSafeInteger)) {
+    throw new Error("Ledger вернул некорректный результат проверки.");
+  }
+  return snapshot;
+}

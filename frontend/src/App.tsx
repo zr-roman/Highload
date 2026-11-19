@@ -403,6 +403,7 @@ function App() {
       </div>
 
       <footer className="footer">
+        <a href="/diagnostics">Диагностика Ledger</a>
         <span>Payments API <code>{appConfig.paymentsApiUrl || `через Vite → ${appConfig.apiProxyTarget}`}</code></span>
         <span>Ledger <code>{appConfig.ledgerApiUrl || `через Vite → ${appConfig.apiProxyTarget}`}</code></span>
       </footer>

@@ -19,6 +19,7 @@ export default defineConfig(({ mode }) => {
       proxy: {
         "/payments": { target: apiTarget, changeOrigin: true },
         "/balances": { target: apiTarget, changeOrigin: true },
+        "/invariants": { target: apiTarget, changeOrigin: true },
       },
     },
   }
