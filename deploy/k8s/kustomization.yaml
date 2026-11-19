@@ -63,7 +63,7 @@ images:
     newTag: bf347016d15a
     newName: ghcr.io/zr-roman/bank-emulator
   - name: antifraud
-    newTag: bf347016d15a
+    newTag: 7ef9ea312221
     newName: ghcr.io/zr-roman/antifraud
   - name: frontend
     newTag: bf347016d15a
