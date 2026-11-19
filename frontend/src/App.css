@@ -430,6 +430,36 @@ code {
   letter-spacing: -0.03em;
 }
 
+.fees-section {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 1.3rem;
+  padding-top: 1.2rem;
+  border-top: 1px solid #e5ebf0;
+}
+
+.fees-section .panel-heading {
+  margin-bottom: 0;
+}
+
+.fees-section .panel-heading h2 {
+  font-size: 1rem;
+}
+
+.fees-icon {
+  background: #f5effa;
+  color: #74519a;
+}
+
+.fees-result {
+  background: #f5f0fa;
+}
+
+.fees-result span,
+.fees-result strong {
+  color: #674987;
+}
+
 .footer {
   display: flex;
   flex-wrap: wrap;

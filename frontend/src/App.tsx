@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { ApiError, createPayment, getMerchantBalance, getPayment } from "./api";
-import type { MerchantBalance, Payment } from "./api";
+import { ApiError, createPayment, getMerchantBalance, getPayment, getPlatformFees } from "./api";
+import type { MerchantBalance, Payment, PlatformFees } from "./api";
 import { appConfig } from "./config";
 import "./App.css";
 
@@ -42,12 +42,14 @@ function parseMerchantId(value: string): number {
   return merchantId;
 }
 
-function describeError(error: unknown, context: "payment" | "balance" | "create" | "lookup"): string {
+function describeError(error: unknown, context: "payment" | "balance" | "platformFees" | "create" | "lookup"): string {
   if (error instanceof ApiError) {
     if (error.status === 404) {
       return context === "balance"
         ? "У продавца пока нет счёта в Ledger. После первого проведённого платежа баланс появится."
-        : "Платёж с таким ID не найден.";
+        : context === "platformFees"
+          ? "Данные о комиссиях платформы пока недоступны."
+          : "Платёж с таким ID не найден.";
     }
     if (error.status === 409) return "Не удалось безопасно повторить запрос. Обновите страницу и проверьте платёж по ID.";
     if (error.status === 422) return "Этот ключ идемпотентности уже использован с другими данными. Измените запрос и отправьте его заново.";
@@ -126,6 +128,9 @@ function App() {
   const [balanceIsEmpty, setBalanceIsEmpty] = useState(false);
   const [balanceError, setBalanceError] = useState("");
   const [loadingBalance, setLoadingBalance] = useState(false);
+  const [platformFees, setPlatformFees] = useState<PlatformFees | null>(null);
+  const [platformFeesError, setPlatformFeesError] = useState("");
+  const [loadingPlatformFees, setLoadingPlatformFees] = useState(false);
   const pendingAttempt = useRef<{ fingerprint: string; key: string } | null>(null);
   const activeRequest = useRef<AbortController | null>(null);
 
@@ -273,6 +278,18 @@ function App() {
     }
   }
 
+  async function handlePlatformFees() {
+    setPlatformFeesError("");
+    setLoadingPlatformFees(true);
+    try {
+      setPlatformFees(await getPlatformFees());
+    } catch (error) {
+      setPlatformFeesError(describeError(error, "platformFees"));
+    } finally {
+      setLoadingPlatformFees(false);
+    }
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -365,6 +382,23 @@ function App() {
               <strong>{minorUnitsToRubles(balance.balance)}</strong>
             </div>
           )}
+          <div className="fees-section">
+            <div className="panel-heading">
+              <span className="panel-icon fees-icon" aria-hidden="true">%</span>
+              <div><p className="section-kicker">Счёт платформы</p><h2>Комиссии</h2></div>
+            </div>
+            <p className="field-hint">Сумма комиссий, зачисленных на платформу.</p>
+            <button className="secondary-button" type="button" onClick={() => void handlePlatformFees()} disabled={loadingPlatformFees}>
+              {loadingPlatformFees ? <><span className="spinner dark" />Загружаем…</> : "Показать комиссии"}
+            </button>
+            {platformFeesError && <p className="message error-message" role="alert">{platformFeesError}</p>}
+            {platformFees && (
+              <div className="balance-result fees-result" aria-live="polite">
+                <span>Всего начислено комиссий</span>
+                <strong>{minorUnitsToRubles(platformFees.balance)}</strong>
+              </div>
+            )}
+          </div>
         </section>
       </div>
 

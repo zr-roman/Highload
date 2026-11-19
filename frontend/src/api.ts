@@ -15,6 +15,10 @@ export interface MerchantBalance {
   balance: number;
 }
 
+export interface PlatformFees {
+  balance: number;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly retryAfterSeconds: number | null;
@@ -100,4 +104,8 @@ export function getMerchantBalance(merchantId: number, signal?: AbortSignal): Pr
     `${appConfig.ledgerApiUrl}/balances/merchants/${encodeURIComponent(merchantId)}`,
     { signal },
   );
+}
+
+export function getPlatformFees(signal?: AbortSignal): Promise<PlatformFees> {
+  return request<PlatformFees>(`${appConfig.ledgerApiUrl}/balances/platform-fees`, { signal });
 }

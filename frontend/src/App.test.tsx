@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import { createPayment, getMerchantBalance, getPayment } from "./api";
+import { createPayment, getMerchantBalance, getPayment, getPlatformFees } from "./api";
 import type { Payment } from "./api";
 
 vi.mock("./api", () => ({
@@ -18,6 +18,7 @@ vi.mock("./api", () => ({
   createPayment: vi.fn(),
   getMerchantBalance: vi.fn(),
   getPayment: vi.fn(),
+  getPlatformFees: vi.fn(),
 }));
 
 const payment: Payment = {
@@ -105,5 +106,15 @@ describe("payment dashboard", () => {
 
     await waitFor(() => expect(screen.getByText(/Доступный баланс/)).toBeInTheDocument());
     expect(getMerchantBalance).toHaveBeenCalledWith(42);
+  });
+
+  it("shows platform fees returned by Ledger in rubles", async () => {
+    vi.mocked(getPlatformFees).mockResolvedValue({ balance: 123450 });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Показать комиссии" }));
+
+    expect(await screen.findByText("Всего начислено комиссий")).toBeInTheDocument();
+    expect(screen.getByText(/1\s?234,50/)).toBeInTheDocument();
+    expect(getPlatformFees).toHaveBeenCalledOnce();
   });
 });

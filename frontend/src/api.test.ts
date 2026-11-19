@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createPayment, getMerchantBalance } from "./api";
+import { createPayment, getMerchantBalance, getPlatformFees } from "./api";
 
 describe("API client", () => {
   beforeEach(() => vi.stubGlobal("fetch", vi.fn()));
@@ -27,5 +27,12 @@ describe("API client", () => {
       message: "Too many requests",
       retryAfterSeconds: 7,
     });
+  });
+
+  it("requests the platform fees balance from Ledger", async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ balance: 123450 }), { status: 200 }));
+
+    await expect(getPlatformFees()).resolves.toEqual({ balance: 123450 });
+    expect(fetch).toHaveBeenCalledWith("/balances/platform-fees", expect.objectContaining({ signal: undefined }));
   });
 });
