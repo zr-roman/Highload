@@ -128,6 +128,14 @@ public sealed class PaymentRecovery(
                     Interlocked.Increment(ref pass.Skipped);
                     return;
 
+                case AcquirerOutcome.Voided:
+                    // The bank has voided the authorization: no money is held. Writing 'voided' is the saga's job
+                    // (stage 4, task 5); until then the payment stays in the queue. Only this payment is skipped:
+                    // the bank answered, so the rest of the batch goes on.
+                    logger.LogWarning("Payment {PaymentId} is voided at the bank; left in progress until the saga can record it", payment.Id);
+                    Interlocked.Increment(ref pass.Skipped);
+                    return;
+
                 default:
                     throw new InvalidOperationException($"Unexpected acquirer outcome {decision.Outcome} for payment {payment.Id}");
             }

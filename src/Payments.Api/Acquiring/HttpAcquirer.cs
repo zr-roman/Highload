@@ -10,6 +10,7 @@ public sealed class HttpAcquirer(HttpClient http, MerchantQuotas quotas, ILogger
 {
     private const string ApprovedStatus = "approved";
     private const string DeclinedStatus = "declined";
+    private const string VoidedStatus = "voided";
     private const string AuthorizationsEndpoint = "v1/authorizations";
 
     public async Task<AcquirerDecision> AuthorizeAsync(Payment payment, CancellationToken cancellationToken)
@@ -42,7 +43,14 @@ public sealed class HttpAcquirer(HttpClient http, MerchantQuotas quotas, ILogger
             if (body is null)
                 throw new InvalidOperationException($"Contract violation, paymentId = {payment.Id}");
 
-            return CreateAcquirerDecision(payment.Id, body);
+            var decision = CreateAcquirerDecision(payment.Id, body);
+            if (decision.Outcome == AcquirerOutcome.Voided)
+            {
+                // Only a payment voided before can get this, and the request path does not void yet (stage 4, task 5).
+                logger.LogWarning("Bank answered the authorization of payment {PaymentId} with voided: it was voided before", payment.Id);
+            }
+
+            return decision;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or ExecutionRejectedException && !cancellationToken.IsCancellationRequested)
         {
@@ -97,10 +105,12 @@ public sealed class HttpAcquirer(HttpClient http, MerchantQuotas quotas, ILogger
         {
             ApprovedStatus => new AcquirerDecision(AcquirerOutcome.Approved, body.AuthorizationCode),
             DeclinedStatus => new AcquirerDecision(AcquirerOutcome.Declined, body.AuthorizationCode),
+            VoidedStatus => new AcquirerDecision(AcquirerOutcome.Voided, body.AuthorizationCode),
             _ => throw new InvalidOperationException($"Unknown bank status '{body.Status}' for payment {paymentId}"),
         };
     }
 }
 
 internal sealed record BankAuthorizationRequest(Guid PaymentId, long MerchantId, long Amount, string Currency);
-internal sealed record BankAuthorizationResponse(Guid PaymentId, string Status, string? AuthorizationCode, DateTimeOffset DecidedAt);
+internal sealed record BankAuthorizationResponse(
+    Guid PaymentId, string Status, string? AuthorizationCode, DateTimeOffset DecidedAt, DateTimeOffset? VoidedAt = null);

@@ -26,6 +26,7 @@ public sealed class HttpAcquirerTests : IDisposable
     [Theory]
     [InlineData("approved", AcquirerOutcome.Approved)]
     [InlineData("declined", AcquirerOutcome.Declined)]
+    [InlineData("voided", AcquirerOutcome.Voided)]      // a repeated authorization of a voided payment
     public async Task Bank_Decision_Becomes_The_Outcome(string status, AcquirerOutcome outcome)
     {
         bank.Decide(status, authorizationCode: "A-123");
@@ -191,6 +192,18 @@ public sealed class HttpAcquirerTests : IDisposable
         var request = Assert.Single(bank.Requests);
         Assert.Equal(HttpMethod.Get, request.Method);
         Assert.Equal($"/v1/authorizations/{paymentId}", request.Path);
+    }
+
+    [Fact]
+    public async Task Decision_Lookup_Of_A_Voided_Payment_Is_Voided_Not_An_Error()
+    {
+        // After the void the bank keeps the authorization code and reports the payment as voided.
+        bank.Decide("voided", authorizationCode: "A-9");
+
+        var decision = await host.Acquirer.FindDecisionAsync(Guid.NewGuid(), Ct);
+
+        Assert.Equal(new AcquirerDecision(AcquirerOutcome.Voided, "A-9"), decision);
+        Assert.Single(bank.Requests);       // an answer, not a failure: nothing to retry
     }
 
     [Fact]

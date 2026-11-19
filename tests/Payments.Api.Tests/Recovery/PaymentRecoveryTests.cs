@@ -69,6 +69,32 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Payment_Voided_At_The_Bank_Stays_In_Progress_And_The_Batch_Goes_On()
+    {
+        var voided = await db.InsertPaymentAsync(Stale, cancellationToken: Ct);
+        var approved = await db.InsertPaymentAsync(Stale, cancellationToken: Ct);
+        bank.Answer(voided, AcquirerOutcome.Voided);
+        bank.Answer(approved, AcquirerOutcome.Approved);
+
+        await using var host = await RecoveryHost.StartAsync(db, bank, time, cancellationToken: Ct);
+        await host.WaitForPassesAsync(1);
+
+        // Until the saga can write 'voided' (stage 4, task 5) the payment is neither captured nor declined:
+        // declining would hide that the bank had approved it, and nothing is booked for it.
+        Assert.Equal("created", await db.GetStatusAsync(voided, Ct));
+        Assert.Null(await db.GetFeeAsync(voided, Ct));
+        Assert.Equal(1L, await db.CountPendingAsync(Ct));           // still in the queue, for the saga to finish
+
+        // The bank answered, so it is not taken for down: the rest of the batch is recovered in the same pass.
+        Assert.Equal("captured", await db.GetStatusAsync(approved, Ct));
+        var pass = Assert.Single(host.Passes);
+        Assert.Equal(1, Tag(pass, "recovery.captured"));
+        Assert.Equal(1, Tag(pass, "recovery.skipped"));
+
+        Assert.Contains(host.Logs.GetSnapshot(), r => r.Level == LogLevel.Warning && r.Message.Contains(voided.ToString()));
+    }
+
+    [Fact]
     public async Task Each_Payment_Of_A_Batch_Gets_Its_Own_Outcome()
     {
         var approved = await db.InsertPaymentAsync(Stale, cancellationToken: Ct);

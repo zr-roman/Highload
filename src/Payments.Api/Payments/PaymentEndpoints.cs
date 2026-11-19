@@ -71,6 +71,12 @@ public static class PaymentEndpoints
                 metrics.Unknown();
                 return Results.Accepted($"/payments/{payment.Id}", PaymentResponse.From(payment));
 
+            case AcquirerOutcome.Voided:
+                // A voided authorization of a payment written just now: not a normal flow (HttpAcquirer logs it).
+                // Writing 'voided' comes with the saga (stage 4, task 5); until then the payment stays in 'created',
+                // and the client is told to ask later, as when the bank is silent. No money is held either way.
+                return Results.Accepted($"/payments/{payment.Id}", PaymentResponse.From(payment));
+
             default:
                 throw new InvalidOperationException($"Unexpected acquirer outcome {decision.Outcome} for payment {payment.Id}");
         }
