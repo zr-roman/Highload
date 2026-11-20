@@ -76,6 +76,10 @@ public sealed class FakeBank : IAcquirer
     public Task<AcquirerDecision> AuthorizeAsync(Payment payment, CancellationToken cancellationToken) =>
         throw new NotSupportedException("Recovery never authorizes payments");
 
+    // Recovery does not void yet: resuming the saga from 'authorized' is stage 4, task 5.
+    public Task<VoidOutcome> VoidAsync(Payment payment, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Recovery does not void payments yet");
+
     private static AcquirerDecision? Decision(AcquirerOutcome? outcome) =>
         outcome is { } value ? new AcquirerDecision(value) : null;
 }

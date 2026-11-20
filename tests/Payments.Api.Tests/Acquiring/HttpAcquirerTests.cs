@@ -227,6 +227,93 @@ public sealed class HttpAcquirerTests : IDisposable
         Assert.Equal(host.Attempts, bank.Requests.Count);
     }
 
+    [Fact]
+    public async Task Void_Is_A_Post_To_The_Payment_Without_A_Body()
+    {
+        var payment = NewPayment();
+        bank.Decide("voided");
+
+        Assert.Equal(VoidOutcome.Voided, await host.Acquirer.VoidAsync(payment, Ct));
+
+        // The contract with the Go emulator: POST /v1/authorizations/{paymentId}/void, no body.
+        var request = Assert.Single(bank.Requests);
+        Assert.Equal(HttpMethod.Post, request.Method);
+        Assert.Equal($"/v1/authorizations/{payment.Id}/void", request.Path);
+        Assert.Null(request.Body);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound, VoidOutcome.NotFound)]     // the bank lost the decision (emulator restart)
+    [InlineData(HttpStatusCode.Conflict, VoidOutcome.Conflict)]     // the bank declined it: nothing to void
+    public async Task Void_Answers_Of_The_Bank_Become_Outcomes_Without_Retries(HttpStatusCode status, VoidOutcome outcome)
+    {
+        bank.Status(status);
+
+        Assert.Equal(outcome, await host.Acquirer.VoidAsync(NewPayment(), Ct));
+        Assert.Single(bank.Requests);       // answers, not failures: a retry would get the same
+    }
+
+    [Fact]
+    public async Task Void_Error_Is_Retried_With_The_Same_Payment()
+    {
+        var payment = NewPayment();
+        bank.Status(HttpStatusCode.InternalServerError).Decide("voided");
+
+        Assert.Equal(VoidOutcome.Voided, await host.Acquirer.VoidAsync(payment, Ct));
+
+        // Safe only because the void is idempotent at the bank.
+        Assert.Equal(2, bank.Requests.Count);
+        Assert.All(bank.Requests, r => Assert.Equal($"/v1/authorizations/{payment.Id}/void", r.Path));
+    }
+
+    [Fact]
+    public async Task Failing_Void_Gives_Unknown_After_Every_Attempt()
+    {
+        bank.Status(HttpStatusCode.ServiceUnavailable);
+
+        Assert.Equal(VoidOutcome.Unknown, await host.Acquirer.VoidAsync(NewPayment(), Ct));
+        Assert.Equal(host.Attempts, bank.Requests.Count);
+    }
+
+    [Fact]
+    public async Task Hanging_Void_Gives_Unknown_Within_The_Total_Timeout()
+    {
+        bank.Hang();
+        var started = Stopwatch.GetTimestamp();
+
+        Assert.Equal(VoidOutcome.Unknown, await host.Acquirer.VoidAsync(NewPayment(), Ct));
+        Assert.Equal(host.Attempts, bank.Requests.Count);
+        Assert.True(Stopwatch.GetElapsedTime(started) < host.TotalTimeout);
+    }
+
+    [Fact]
+    public async Task Void_Answered_With_Another_Status_Is_A_Contract_Violation()
+    {
+        bank.Decide("approved");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => host.Acquirer.VoidAsync(NewPayment(), Ct));
+        Assert.Single(bank.Requests);
+    }
+
+    [Fact]
+    public async Task Failing_Voids_Of_A_Large_Merchant_Leave_The_Others_Calling_The_Bank()
+    {
+        // The bank fails the voids of the large merchant until its circuit opens.
+        bank.Status(HttpStatusCode.InternalServerError);
+        var calls = host.CircuitMinimumThroughput / host.Attempts + 1;
+        for (var i = 0; i < calls; i++)
+            Assert.Equal(VoidOutcome.Unknown, await host.Acquirer.VoidAsync(NewPayment(AcquirerHost.LargeMerchant), Ct));
+
+        // The bank answers again, but the large merchant's circuit is open: its void does not reach the bank.
+        bank.Decide("voided");
+        Assert.Equal(VoidOutcome.Unknown, await host.Acquirer.VoidAsync(NewPayment(AcquirerHost.LargeMerchant), Ct));
+        Assert.Equal(host.CircuitMinimumThroughput, bank.Requests.Count);
+
+        // The voids went through the merchant's pipeline, not the shared one: the others still reach the bank.
+        Assert.Equal(VoidOutcome.Voided, await host.Acquirer.VoidAsync(NewPayment(), Ct));
+        Assert.Equal(host.CircuitMinimumThroughput + 1, bank.Requests.Count);
+    }
+
     private static Payment NewPayment(long merchantId = 42) =>
         new(Guid.NewGuid(), merchantId, "key", "hash", 150000, "RUB", Fee: null, PaymentStatus.Created, DateTimeOffset.UtcNow);
 

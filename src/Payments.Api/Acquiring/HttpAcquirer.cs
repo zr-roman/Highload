@@ -99,6 +99,54 @@ public sealed class HttpAcquirer(HttpClient http, MerchantQuotas quotas, ILogger
         }
     }
 
+    // The void goes through the merchant's own pipeline, as the authorization does (BankPipeline): when the bank fails
+    // a large merchant, its voids must not open the circuit of everyone else. Retrying this POST is safe only because
+    // the void is idempotent at the bank: a repeat gets the same answer with the same voidedAt.
+    public async Task<VoidOutcome> VoidAsync(Payment payment, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"{AuthorizationsEndpoint}/{payment.Id}/void");
+            request.Options.Set(BankPipeline.Key, BankPipeline.Of(payment.MerchantId, quotas.Of(payment.MerchantId)));
+
+            using var response = await http.SendAsync(request, cancellationToken);
+
+            switch (response.StatusCode)
+            {
+                case HttpStatusCode.NotFound:
+                    // Not in the normal flow: the bank approved this payment before. The emulator forgets on restart.
+                    logger.LogWarning("Bank has no decision to void for payment {PaymentId}", payment.Id);
+                    return VoidOutcome.NotFound;
+
+                case HttpStatusCode.Conflict:
+                    logger.LogWarning("Bank declined payment {PaymentId}, there is nothing to void", payment.Id);
+                    return VoidOutcome.Conflict;
+            }
+
+            if ((int)response.StatusCode >= (int)HttpStatusCode.InternalServerError)
+            {
+                logger.LogWarning("Bank answered {StatusCode} to the void of payment {PaymentId}, outcome unknown", (int)response.StatusCode, payment.Id);
+                return VoidOutcome.Unknown;
+            }
+
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException($"Bank answered {(int)response.StatusCode} to the void of payment {payment.Id}");
+
+            var body = await response.Content.ReadFromJsonAsync<BankAuthorizationResponse>(cancellationToken);
+            if (body?.Status != VoidedStatus)
+                throw new InvalidOperationException($"Contract violation: the void of payment {payment.Id} answered status '{body?.Status}'");
+
+            return VoidOutcome.Voided;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or ExecutionRejectedException && !cancellationToken.IsCancellationRequested)
+        {
+            // While the circuit is open every void fails this way, and Polly logs the opening itself.
+            var level = ex is BrokenCircuitException ? LogLevel.Debug : LogLevel.Warning;
+            logger.Log(level, ex, "Void of payment {PaymentId} failed, outcome unknown", payment.Id);
+            return VoidOutcome.Unknown;
+        }
+    }
+
     private static AcquirerDecision CreateAcquirerDecision(Guid paymentId, BankAuthorizationResponse body)
     {
         return body.Status switch

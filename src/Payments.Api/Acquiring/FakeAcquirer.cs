@@ -22,4 +22,10 @@ public sealed class FakeAcquirer(IOptions<AcquirerOptions> options) : IAcquirer
     {
         return Task.FromResult<AcquirerDecision?>(null);
     }
+
+    // Keeps no decisions, so it cannot tell a declined payment from an approved one: every void succeeds.
+    public Task<VoidOutcome> VoidAsync(Payment payment, CancellationToken cancellationToken)
+    {
+        return Task.FromResult(VoidOutcome.Voided);
+    }
 }
