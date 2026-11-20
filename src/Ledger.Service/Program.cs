@@ -18,6 +18,7 @@ if (corsOrigins.Length > 0)
 
 var postgres = builder.Configuration.GetConnectionString("Ledger")
     ?? throw new InvalidOperationException("Connection string 'Ledger' is not configured.");
+
 var kafka = builder.Configuration.GetConnectionString("Kafka")
     ?? throw new InvalidOperationException("Connection string 'Kafka' is not configured.");
 

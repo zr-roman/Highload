@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Confluent.Kafka;
 using Contracts;
 using Microsoft.Extensions.Options;
@@ -7,6 +6,7 @@ using OpenTelemetry;
 using Payments.Api.Database;
 using Payments.Api.Telemetry;
 using Platform;
+using System.Diagnostics;
 
 namespace Payments.Api.Outbox;
 

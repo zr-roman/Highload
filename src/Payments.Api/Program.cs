@@ -25,6 +25,7 @@ if (corsOrigins.Length > 0)
 
 var postgres = builder.Configuration.GetConnectionString("Payments")
     ?? throw new InvalidOperationException("Connection string 'Payments' is not configured.");
+
 var kafka = builder.Configuration.GetConnectionString("Kafka")
     ?? throw new InvalidOperationException("Connection string 'Kafka' is not configured.");
 
