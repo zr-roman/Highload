@@ -31,6 +31,28 @@
                                                                       БД ledger
 ```
 
+## Статусы платежа
+
+Статус платежа — это и состояние саги ([`PaymentSaga`](src/Payments.Api/Payments/PaymentSaga.cs)): каждый шаг записывается раньше, чем начнётся следующий, поэтому упавший процесс оставляет платёж там, откуда восстановление его продолжит.
+
+```mermaid
+stateDiagram-v2
+    [*] --> created: POST /payments
+    created --> authorized: банк одобрил
+    created --> voided: банк уже отменил авторизацию
+    created --> declined: банк отклонил
+    authorized --> captured: антифрод разрешил или fail open
+    authorized --> voided: антифрод отказал, void в банке
+    captured --> [*]: outbox, Kafka, Ledger
+    voided --> [*]
+    declined --> [*]
+```
+
+- **`created` и `authorized` — платёж в работе.** Он лежит в очереди восстановления `pending_payments`, клиент получил 202 и узнаёт итог через `GET /payments/{id}`. В `created` платёж остаётся, если банк не ответил. В `authorized` — если не ответил антифрод, а платёж от 500 ₽ или его проверяет восстановление, или если банк не ответил на void. На стенде в Kubernetes платёж, который в работе дольше 5 минут, поднимает алерт `PaymentsStuckInCreated` или `PaymentsStuckInAuthorized`.
+- **Восстановление продолжает с записанного статуса.** Из `created` оно спрашивает у банка решение, а не авторизует заново; если решения нет (404), платёж становится `declined`. Из `authorized` оно идёт к антифроду, и тот на повторную проверку отвечает сохранённым решением. Без проверки (fail open) проводится только платёж меньше 500 ₽ (`Antifraud:FailOpenBelowAmount`) и только в запросе: в фоне клиент не ждёт.
+- **`captured`, `declined` и `voided` — итоговые.** В outbox и дальше в Ledger попадает только `captured`. У `declined` и `voided` деньги не двигались: холд в банке снят или не ставился.
+- **`created` → `voided`** — редкий случай: на авторизацию или на запрос решения банк ответил, что авторизацию этого платежа уже отменили.
+
 ## Запуск (Windows, PowerShell)
 
 Нужны Docker Desktop, .NET 10 SDK, Go 1.24, Python 3.12 с [uv](https://docs.astral.sh/uv/) и PostgreSQL на порту 5433. Для нагрузки — k6: `winget install k6 --source winget`.
@@ -199,14 +221,15 @@ dotnet test
 ## Как читать код
 
 1. [`src/Contracts`](src/Contracts) — событие `PaymentCaptured` и топик. Ключ сообщения — merchantId: все платежи продавца попадают в одну партицию. У крупного продавца к ключу добавлена соль из paymentId, и его платежи расходятся по всем партициям (`Topics.PaymentsCapturedKey`).
-2. [`Payments.Api/Payments/PaymentEndpoints.cs`](src/Payments.Api/Payments/PaymentEndpoints.cs) — три шага платежа и обработка повтора по ключу идемпотентности.
-3. [`Payments.Api/Payments/PaymentStore.cs`](src/Payments.Api/Payments/PaymentStore.cs) — весь SQL сервиса. Каждый метод — одна команда: одно обращение к базе и одна неявная транзакция.
-4. [`Payments.Api/Outbox/OutboxRelay.cs`](src/Payments.Api/Outbox/OutboxRelay.cs) — публикация в Kafka без открытой транзакции, лидер через advisory lock.
-5. [`Payments.Api/Recovery/PaymentRecovery.cs`](src/Payments.Api/Recovery/PaymentRecovery.cs) — восстановление зависших платежей: исход спрашивается у банка, решение записывает [`PaymentCompletion`](src/Payments.Api/Payments/PaymentCompletion.cs) — тот же код, что у эндпоинта.
-6. [`Ledger.Service/Consuming/PaymentsConsumer.cs`](src/Ledger.Service/Consuming/PaymentsConsumer.cs) — пачки по партициям, коммит смещений после записи, поведение при ребалансировке.
-7. [`Ledger.Service/Ledger/LedgerWriter.cs`](src/Ledger.Service/Ledger/LedgerWriter.cs) — одна SQL-команда на пачку: дедупликация, проводки, балансы.
-8. [`Ledger.Service/Ledger/LedgerQueries.cs`](src/Ledger.Service/Ledger/LedgerQueries.cs) — инварианты: деньги не появились и не исчезли.
-9. [`src/Platform`](src/Platform) — телеметрия, схема БД, создание топика.
+2. [`Payments.Api/Payments/PaymentEndpoints.cs`](src/Payments.Api/Payments/PaymentEndpoints.cs) — приём платежа: запись в `created`, сага, ответ 201 или 202; обработка повтора по ключу идемпотентности.
+3. [`Payments.Api/Payments/PaymentSaga.cs`](src/Payments.Api/Payments/PaymentSaga.cs) — сага платежа: банк, антифрод, проводка или отмена авторизации. Один код для запроса и для восстановления (раздел «Статусы платежа»).
+4. [`Payments.Api/Payments/PaymentStore.cs`](src/Payments.Api/Payments/PaymentStore.cs) — весь SQL сервиса. Каждый метод — одна команда: одно обращение к базе и одна неявная транзакция.
+5. [`Payments.Api/Outbox/OutboxRelay.cs`](src/Payments.Api/Outbox/OutboxRelay.cs) — публикация в Kafka без открытой транзакции, лидер через advisory lock.
+6. [`Payments.Api/Recovery/PaymentRecovery.cs`](src/Payments.Api/Recovery/PaymentRecovery.cs) — восстановление зависших платежей: продолжает сагу с записанного статуса (`PaymentSaga.ContinueAsync`) — тот же код, что у эндпоинта.
+7. [`Ledger.Service/Consuming/PaymentsConsumer.cs`](src/Ledger.Service/Consuming/PaymentsConsumer.cs) — пачки по партициям, коммит смещений после записи, поведение при ребалансировке.
+8. [`Ledger.Service/Ledger/LedgerWriter.cs`](src/Ledger.Service/Ledger/LedgerWriter.cs) — одна SQL-команда на пачку: дедупликация, проводки, балансы.
+9. [`Ledger.Service/Ledger/LedgerQueries.cs`](src/Ledger.Service/Ledger/LedgerQueries.cs) — инварианты: деньги не появились и не исчезли.
+10. [`src/Platform`](src/Platform) — телеметрия, схема БД, создание топика.
 
 ## Решения и откуда они взялись
 
