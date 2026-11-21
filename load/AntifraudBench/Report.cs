@@ -23,6 +23,7 @@ public sealed class Report(string folder, BenchOptions options, string k6Image, 
         text.AppendLine($"| Коммит | {commit} |");
         text.AppendLine($"| Антифрод | `{Stand.Image}`, Linux-контейнер в сети docker compose рядом с Redis; " +
                         $"`ANTIFRAUD_REDIS_TIMEOUT_MS` = {options.RedisTimeoutMs}; " +
+                        $"`ANTIFRAUD_MAX_IN_FLIGHT` = {(options.MaxInFlight is { } limit ? (limit == 0 ? "0, без лимита" : limit.ToString()) : "по умолчанию сервиса")}; " +
                         $"{(options.Cpus > 0 ? $"лимит процессора {Number(options.Cpus, "0.##")}" : "без лимита процессора")} |");
         text.AppendLine($"| Нагрузка | `{k6Image}` в контейнере в той же сети, [load/antifraud.js](../../antifraud.js), " +
                         $"10 000 продавцов поровну; {options.DurationSeconds} с на ступень, прогрев {options.WarmupSeconds} с после каждого запуска, " +
@@ -34,9 +35,9 @@ public sealed class Report(string folder, BenchOptions options, string k6Image, 
 
         text.AppendLine("## Медианы повторов");
         text.AppendLine();
-        text.AppendLine("| Процессов | Нагрузка, /с | Обработано, /с | p50, мс | p95, мс | p99, мс | Ошибок | Не отправлено, /с | " +
+        text.AppendLine("| Процессов | Нагрузка, /с | Обработано, /с | Решений, /с | p50, мс | p95, мс | p99, мс | Ошибок | Не отправлено, /с | " +
                         "CPU антифрода | CPU Redis | CPU k6 | Байт Redis на проверку | Критерий |");
-        text.AppendLine("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+        text.AppendLine("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
         foreach (var group in steps.GroupBy(step => (step.Workers, step.Rate)))
         {
             var repeats = group.ToList();
@@ -45,6 +46,7 @@ public sealed class Report(string folder, BenchOptions options, string k6Image, 
 
             text.AppendLine(
                 $"| {group.Key.Workers} | {group.Key.Rate} | {Number(Median(s => s.K6.RequestsPerSecond), "0")} | " +
+                $"{Number(Median(s => s.K6.DecisionsPerSecond), "0")} | " +
                 $"{Number(Median(s => s.K6.P50), "0.0")} | {Number(Median(s => s.K6.P95), "0.0")} | {Number(Median(s => s.K6.P99), "0.0")} | " +
                 $"{Percent(Median(s => s.K6.FailedShare))} | {Number(Median(s => s.K6.DroppedPerSecond), "0.0")} | " +
                 $"{Number(Median(s => s.AntifraudCpu.Median), "0")} % | {Number(Median(s => s.RedisCpu.Median), "0")} % | " +
@@ -55,15 +57,16 @@ public sealed class Report(string folder, BenchOptions options, string k6Image, 
 
         text.AppendLine("## Каждый повтор");
         text.AppendLine();
-        text.AppendLine("| Процессов | Нагрузка, /с | Повтор | Обработано, /с | p50, мс | p95, мс | p99, мс | Ошибок | Из них 503 | " +
+        text.AppendLine("| Процессов | Нагрузка, /с | Повтор | Обработано, /с | Решений, /с | p50, мс | p95, мс | p99, мс | Ошибок | 503: лимит / Redis | " +
                         "Не отправлено, /с | CPU антифрода, медиана / пик | CPU Redis | CPU k6 | Ключей в Redis | Память Redis, МБ | Пороги k6 |");
-        text.AppendLine("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+        text.AppendLine("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
         foreach (var step in steps)
         {
             text.AppendLine(
                 $"| {step.Workers} | {step.Rate} | {step.Repeat} | {Number(step.K6.RequestsPerSecond, "0")} | " +
+                $"{Number(step.K6.DecisionsPerSecond, "0")} | " +
                 $"{Number(step.K6.P50, "0.0")} | {Number(step.K6.P95, "0.0")} | {Number(step.K6.P99, "0.0")} | " +
-                $"{Percent(step.K6.FailedShare)} | {step.K6.Status503} | {Number(step.K6.DroppedPerSecond, "0.0")} | " +
+                $"{Percent(step.K6.FailedShare)} | {step.K6.Overloaded} / {step.K6.RedisTimeouts} | {Number(step.K6.DroppedPerSecond, "0.0")} | " +
                 $"{Number(step.AntifraudCpu.Median, "0")} / {Number(step.AntifraudCpu.Peak, "0")} % | " +
                 $"{Number(step.RedisCpu.Median, "0")} % | {Number(step.K6Cpu.Median, "0")} % | " +
                 $"{step.Redis.Keys} | {Number(step.Redis.UsedBytes / 1024.0 / 1024.0, "0.0")} | " +

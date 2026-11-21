@@ -10,6 +10,7 @@ from redis.asyncio import Redis
 from redis.asyncio.sentinel import Sentinel
 from redis.exceptions import RedisError
 
+from antifraud.admission import AdmissionLimit
 from antifraud.checker import check_payment
 from antifraud.models import CheckRequest, CheckResponse
 from antifraud.settings import Settings
@@ -50,6 +51,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="antifraud", lifespan=lifespan)
+app.add_middleware(AdmissionLimit)
 
 
 def get_settings(request: Request) -> Settings:

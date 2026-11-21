@@ -9,6 +9,7 @@ public sealed record StepResult(
 
     public string ConsoleLine =>
         $"  {Workers} proc, {Rate}/s, #{Repeat}: {K6.RequestsPerSecond:0}/s answered, p50 {K6.P50:0.0} ms, p99 {K6.P99:0.0} ms, " +
-        $"failed {K6.FailedShare:P1} (503: {K6.Status503}), dropped {K6.DroppedPerSecond:0.0}/s, " +
+        $"decided {K6.DecisionsPerSecond:0}/s, failed {K6.FailedShare:P1} (503 limit: {K6.Overloaded}, redis: {K6.RedisTimeouts}), " +
+        $"dropped {K6.DroppedPerSecond:0.0}/s, " +
         $"CPU antifraud {AntifraudCpu.Median:0}% redis {RedisCpu.Median:0}% k6 {K6Cpu.Median:0}%";
 }

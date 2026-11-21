@@ -29,7 +29,7 @@ public static class BenchRunner
             foreach (var workers in options.Workers)
             {
                 Console.WriteLine($"Antifraud with {workers} uvicorn process(es)");
-                await stand.StartAsync(workers, options.RedisTimeoutMs, options.Cpus, ct);
+                await stand.StartAsync(workers, options.RedisTimeoutMs, options.MaxInFlight, options.Cpus, ct);
                 await stand.WaitReadyAsync(workers, ct);
 
                 if (options.WarmupSeconds > 0)

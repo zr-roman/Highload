@@ -56,7 +56,7 @@ public sealed partial class Stand(string repository, string network)
     /// The service with the given number of uvicorn processes, its Redis on the compose network. One process is uvicorn
     /// alone; more are a supervisor and that many processes it spawns.
     /// </summary>
-    public async Task StartAsync(int workers, int redisTimeoutMs, double cpus, CancellationToken ct)
+    public async Task StartAsync(int workers, int redisTimeoutMs, int? maxInFlight, double cpus, CancellationToken ct)
     {
         await RemoveAsync();
 
@@ -66,6 +66,8 @@ public sealed partial class Stand(string repository, string network)
             "-e", $"ANTIFRAUD_REDIS_URL=redis://{RedisContainer}:6379/0",
             "-e", $"ANTIFRAUD_REDIS_TIMEOUT_MS={redisTimeoutMs}",
         ];
+        if (maxInFlight is { } limit)
+            arguments.AddRange(["-e", $"ANTIFRAUD_MAX_IN_FLIGHT={limit}"]);
         if (cpus > 0)
             arguments.AddRange(["--cpus", cpus.ToString("0.##")]);
         arguments.AddRange(

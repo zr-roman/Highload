@@ -32,6 +32,9 @@ const PRE_ALLOCATED_VUS = Math.min(MAX_VUS, Math.max(50, Math.ceil(RATE / 20)));
 http.setResponseCallback(http.expectedStatuses(200));
 
 const decisions = new Counter('decisions');
+// 503 by its reason: "overloaded" is the admission limit of the service, refused at once; "redis unavailable" is
+// a Redis call that took longer than ANTIFRAUD_REDIS_TIMEOUT_MS.
+const refusals = new Counter('refusals');
 
 export const options = {
   scenarios: {
@@ -55,6 +58,8 @@ export const options = {
     'decisions{decision:allow}': ['count>=0'],
     'decisions{decision:deny}': ['count>=0'],
     'http_reqs{status:503}': ['count>=0'],
+    'refusals{reason:overloaded}': ['count>=0'],
+    'refusals{reason:redis}': ['count>=0'],
   },
   summaryTrendStats: ['avg', 'med', 'p(95)', 'p(99)', 'max'],
 };
@@ -88,5 +93,7 @@ export default function () {
 
   if (check(response, { 'decision returned': (r) => r.status === 200 })) {
     decisions.add(1, { decision: response.json('decision') });
+  } else if (response.status === 503) {
+    refusals.add(1, { reason: response.json('error') === 'overloaded' ? 'overloaded' : 'redis' });
   }
 }

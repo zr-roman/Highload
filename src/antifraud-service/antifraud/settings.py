@@ -11,6 +11,8 @@ class Settings:
     velocity_window_seconds: int  # ...within this window
     decision_ttl_seconds: int  # how long a decision is kept for idempotent repeats
     redis_timeout_ms: int  # a Redis call slower than this counts as Redis being down
+    # Checks one worker process works on at once; one more gets 503 at once, without Redis (admission.py). 0: no limit.
+    max_in_flight: int = 8
     redis_sentinels: tuple[tuple[str, int], ...] = ()  # if set, Redis is found through these Sentinels, not redis_url
     redis_master: str = "mymaster"  # the name the Sentinels know the master by
 
@@ -24,6 +26,8 @@ class Settings:
             raise ValueError(f"ANTIFRAUD_DECISION_TTL_SECONDS must be 1 or more, got {self.decision_ttl_seconds}")
         if self.redis_timeout_ms < 1:
             raise ValueError(f"ANTIFRAUD_REDIS_TIMEOUT_MS must be 1 or more, got {self.redis_timeout_ms}")
+        if self.max_in_flight < 0:
+            raise ValueError(f"ANTIFRAUD_MAX_IN_FLIGHT must be 0 or more, got {self.max_in_flight}")
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -35,6 +39,7 @@ class Settings:
             velocity_window_seconds=int(os.environ.get("ANTIFRAUD_VELOCITY_WINDOW_SECONDS", "60")),
             decision_ttl_seconds=int(os.environ.get("ANTIFRAUD_DECISION_TTL_SECONDS", "86400")),
             redis_timeout_ms=int(os.environ.get("ANTIFRAUD_REDIS_TIMEOUT_MS", "20")),
+            max_in_flight=int(os.environ.get("ANTIFRAUD_MAX_IN_FLIGHT", "8")),
         )
 
 

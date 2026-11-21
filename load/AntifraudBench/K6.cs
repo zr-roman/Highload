@@ -117,6 +117,9 @@ public sealed record K6Result(
     double P99,
     long Failed,
     long Status503,
+    long Overloaded,
+    long RedisTimeouts,
+    double DecisionsPerSecond,
     long Denied,
     long Dropped,
     double DroppedPerSecond,
@@ -150,6 +153,11 @@ public sealed record K6Result(
             // http_req_failed is a rate: its "passes" are the requests for which it is true, that is the failed ones.
             Failed: (long)Get("http_req_failed", "passes"),
             Status503: (long)Get("http_reqs{status:503}", "count"),
+            Overloaded: (long)Get("refusals{reason:overloaded}", "count"),
+            RedisTimeouts: (long)Get("refusals{reason:redis}", "count"),
+            // Checks that got allow or deny: what the service is for. Over its capacity it can answer many requests
+            // and decide few (docs/load-testing.md, «Обвал за пределом мощности»).
+            DecisionsPerSecond: Get("decisions", "rate"),
             Denied: (long)Get("decisions{decision:deny}", "count"),
             Dropped: (long)Get("dropped_iterations", "count"),
             DroppedPerSecond: Get("dropped_iterations", "rate"),

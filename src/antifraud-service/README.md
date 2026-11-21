@@ -31,6 +31,7 @@ Python 3.12, FastAPI + uvicorn, Pydantic, `redis.asyncio`; тесты — pytest
 Ошибки — с телом `{"error": "..."}`, как у эмулятора банка:
 
 - 400 — неверный запрос, ошибка на стороне Payments.Api;
+- 503 с `{"error": "overloaded"}` — процесс уже работает над `ANTIFRAUD_MAX_IN_FLIGHT` проверками; эта отклонена сразу, без Redis. Для Payments.Api это тоже «исход неизвестен».
 - 503 — Redis недоступен или не ответил за `ANTIFRAUD_REDIS_TIMEOUT_MS`. Без Redis нет ни сохранённого решения, ни счётчика, поэтому ответу доверять нельзя. Для Payments.Api это «исход неизвестен».
 
 **`GET /healthz`** — 200 и `ok`.
@@ -52,6 +53,7 @@ Python 3.12, FastAPI + uvicorn, Pydantic, `redis.asyncio`; тесты — pytest
 | `ANTIFRAUD_VELOCITY_LIMIT` | 100 | не больше стольких платежей одного обычного продавца… |
 | `ANTIFRAUD_VELOCITY_WINDOW_SECONDS` | 60 | …за такое окно |
 | `ANTIFRAUD_DECISION_TTL_SECONDS` | 86400 | сколько хранится решение для повторов |
+| `ANTIFRAUD_MAX_IN_FLIGHT` | 8 | сколько проверок процесс берёт одновременно; следующая получает 503 сразу. 0 — без лимита. Без него перегруженный процесс берёт всё, проверки выходят за таймаут Redis, и решений становится почти ноль ([docs/load-testing.md](../../docs/load-testing.md), «Обвал за пределом мощности») |
 | `ANTIFRAUD_REDIS_TIMEOUT_MS` | 20 | Redis, не ответивший за это время, считается недоступным: ответ 503. Попытка Payments.Api — 50 мс |
 
 Неверное значение — сервис не стартует.

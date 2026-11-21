@@ -1,11 +1,14 @@
 import socket
 import time
 from collections.abc import Iterator
+from dataclasses import replace
 
 import pytest
 from fakeredis import FakeAsyncRedis, FakeServer
 from fastapi.testclient import TestClient
+from starlette.types import ASGIApp
 
+from antifraud.admission import AdmissionLimit
 from antifraud.main import app, get_redis
 
 REQUEST = {
@@ -86,6 +89,31 @@ def unreachable_redis_client() -> Iterator[TestClient]:
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+
+def find_admission(app: ASGIApp) -> AdmissionLimit:
+    """The admission middleware in the stack Starlette built at startup: ServerErrorMiddleware, then AdmissionLimit."""
+    node = app
+    while not isinstance(node, AdmissionLimit):
+        node = node.app
+    return node
+
+
+def test_check_over_the_in_flight_limit_answers_503_overloaded(client: TestClient) -> None:
+    # The whole app, with the middleware where main.py puts it: the refusal comes before the body and Redis.
+    client.app.state.settings = replace(client.app.state.settings, max_in_flight=1)
+    admission = find_admission(client.app.middleware_stack)
+    admission.in_flight = 1  # one check in flight already
+    try:
+        response = client.post("/v1/checks", json=REQUEST)
+    finally:
+        admission.in_flight = 0
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "overloaded"}
+
+    # With the place free again the same check goes through.
+    assert client.post("/v1/checks", json=REQUEST).status_code == 200
 
 
 def test_unreachable_redis_answers_503(unreachable_redis_client: TestClient) -> None:

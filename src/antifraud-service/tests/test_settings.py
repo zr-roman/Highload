@@ -10,6 +10,7 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         "ANTIFRAUD_VELOCITY_WINDOW_SECONDS",
         "ANTIFRAUD_DECISION_TTL_SECONDS",
         "ANTIFRAUD_REDIS_TIMEOUT_MS",
+        "ANTIFRAUD_MAX_IN_FLIGHT",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -18,6 +19,13 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.velocity_limit == 100
     assert settings.velocity_window_seconds == 60
     assert settings.redis_timeout_ms == 20
+    assert settings.max_in_flight == 8
+
+
+def test_zero_in_flight_limit_turns_it_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTIFRAUD_MAX_IN_FLIGHT", "0")
+
+    assert Settings.from_env().max_in_flight == 0
 
 
 def test_zero_limit_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -33,6 +41,7 @@ def test_zero_limit_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
         ("ANTIFRAUD_VELOCITY_WINDOW_SECONDS", "0"),
         ("ANTIFRAUD_DECISION_TTL_SECONDS", "0"),
         ("ANTIFRAUD_REDIS_TIMEOUT_MS", "0"),
+        ("ANTIFRAUD_MAX_IN_FLIGHT", "-1"),
     ],
 )
 def test_wrong_value_fails_the_start(monkeypatch: pytest.MonkeyPatch, name: str, value: str) -> None:

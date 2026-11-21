@@ -5,7 +5,7 @@ namespace AntifraudBench;
 /// <summary>The command line of the bench.</summary>
 public sealed record BenchOptions(
     IReadOnlyList<int> Workers, IReadOnlyList<int> Rates, int Repeats, int DurationSeconds, int WarmupSeconds,
-    int RedisTimeoutMs, double Cpus, string? K6Image, bool Build)
+    int RedisTimeoutMs, int? MaxInFlight, double Cpus, string? K6Image, bool Build)
 {
     public const string Usage = """
         Antifraud bench: runs the antifraud service in a Linux container next to Redis, with every number of uvicorn
@@ -16,6 +16,7 @@ public sealed record BenchOptions(
           dotnet run --project load\AntifraudBench -c Release -- --workers 1 --rates 200,400,600 --repeats 1
           dotnet run --project load\AntifraudBench -c Release -- --workers 4 --rates 1000 --repeats 3 --duration 60
           dotnet run --project load\AntifraudBench -c Release -- --workers 1,2 --cpus 2 --redis-timeout-ms 500
+          dotnet run --project load\AntifraudBench -c Release -- --workers 4 --rates 1000,1500 --max-in-flight 0
 
           --workers 1,2,...  uvicorn processes in the container, one series each (default: 1,2,4)
           --rates 300,...    checks a second, one step each (default: 300,600,1000,1500)
@@ -23,6 +24,8 @@ public sealed record BenchOptions(
           --duration S       seconds of load in a step (default: 30)
           --warmup S         seconds of unmeasured load after each start of the container, at the first rate (default: 15; 0: none)
           --redis-timeout-ms N  ANTIFRAUD_REDIS_TIMEOUT_MS of the service (default: 20, the value of the cluster)
+          --max-in-flight N  ANTIFRAUD_MAX_IN_FLIGHT, the checks a process takes at once; 0: no limit, as before it
+                             existed (default: the service's own default)
           --cpus C           a processor limit of the antifraud container, as a pod's limit (default: 0, none)
           --k6-image IMAGE   the k6 image (default: grafana/k6 of the version of the k6 installed on Windows)
           --no-build         use the image highload-antifraud:bench built before instead of building it again
@@ -37,6 +40,7 @@ public sealed record BenchOptions(
             DurationSeconds: 30,
             WarmupSeconds: 15,
             RedisTimeoutMs: 20,
+            MaxInFlight: null,
             Cpus: 0,
             K6Image: null,
             Build: true);
@@ -54,6 +58,7 @@ public sealed record BenchOptions(
                 "--duration" => options with { DurationSeconds = ParseNumber(name, Value(), min: 10) },
                 "--warmup" => options with { WarmupSeconds = ParseNumber(name, Value(), min: 0) },
                 "--redis-timeout-ms" => options with { RedisTimeoutMs = ParseNumber(name, Value(), min: 1) },
+                "--max-in-flight" => options with { MaxInFlight = ParseNumber(name, Value(), min: 0) },
                 "--cpus" => options with { Cpus = ParseCpus(Value()) },
                 "--k6-image" => options with { K6Image = Value() },
                 "--no-build" => options with { Build = false },
