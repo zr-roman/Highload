@@ -54,6 +54,66 @@ spec:
             summary: "The oldest payment in the outbox has waited {{ $value | humanizeDuration }}"
             description: Balances lag behind payments. Check Kafka and the outbox relay of Payments.Api.
 
+    - name: highload.saga
+      rules:
+        # A payment whose saga stopped short of a final status (src/Payments.Api/Payments/PaymentSaga.cs), and recovery
+        # cannot finish it either. The gauge is the age of the oldest payment of each status as the last pass of
+        # recovery found it: under load it saws between 0 and the Interval of recovery (10 s), and recovery takes a
+        # payment up after StaleAfter (30 s). 5 minutes is far above both: such a payment waits for something that is
+        # down. Only the leader of recovery reports, the other instances report 0, hence max; the last value of a dead
+        # leader stays for 5 minutes, as with OutboxBacklog.
+        #
+        # 'created': nobody knows whether the bank approved, so the buyer's money may be held. The client got 202 and
+        # waits for the outcome, and ClientErrorsHigh stays quiet: 202 is not an error.
+        - alert: PaymentsStuckInCreated
+          expr: max(payments_in_progress_oldest_age_seconds{status="created"}) > 300
+          for: 30s
+          labels:
+            severity: critical
+          annotations:
+            summary: "A payment has waited {{ $value | humanizeDuration }} for the decision of the bank"
+            description: >-
+              Recovery cannot get a decision from the bank: the bank is down (the log of recovery says
+              "Bank unavailable, recovery paused"), or recovery does not run.
+              kubectl -n highload get pods -l app.kubernetes.io/name=bank-emulator;
+              kubectl -n highload logs -l app.kubernetes.io/name=payments-api --prefix --tail=100
+
+        # 'authorized': the bank holds the buyer's money, and the payment is neither captured nor voided. The
+        # antifraud gives no decision (a large payment does not fail open, and recovery never does), or the bank does
+        # not answer the void.
+        - alert: PaymentsStuckInAuthorized
+          expr: max(payments_in_progress_oldest_age_seconds{status="authorized"}) > 300
+          for: 30s
+          labels:
+            severity: critical
+          annotations:
+            summary: "The bank has held the money of a payment for {{ $value | humanizeDuration }}"
+            description: >-
+              Neither captured nor voided. Usually the antifraud is down: the log of recovery says
+              "Antifraud unavailable, recovery paused".
+              "Bank unavailable" there: the bank does not answer the void.
+              kubectl -n highload get pods -l app.kubernetes.io/name=antifraud;
+              kubectl -n highload logs -l app.kubernetes.io/name=payments-api --prefix --tail=100
+
+        # The antifraud gives no decisions, and the request captures small payments unchecked
+        # (Antifraud:FailOpenBelowAmount). A share, not a single fail open: fail open is there for a check that misses
+        # its 150 ms now and then. With the antifraud down, about half of k6's payments fail open (10 to 1000 roubles,
+        # below 500 unchecked); the rest wait in 'authorized', and PaymentsStuckInAuthorized covers them. A warning:
+        # nobody waits, and each payment captured unchecked is below the threshold of fail open.
+        - alert: AntifraudFailingOpen
+          expr: |
+            sum(rate(payments_antifraud_fail_open_total[2m]))
+              / sum(rate(payments_antifraud_decisions_total{path="request"}[2m])) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $value | humanizePercentage }} of the payments checked in the request are captured unchecked"
+            description: >-
+              The antifraud does not answer in 150 ms, often because Redis does not (it answers 503 then).
+              kubectl -n highload get pods -l app.kubernetes.io/name=antifraud;
+              kubectl -n highload logs deploy/antifraud --tail=50
+
     - name: highload.backups
       rules:
         # WAL segments that do not reach the object store: the backups stop at the last archived segment, and the

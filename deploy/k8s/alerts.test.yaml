@@ -1,0 +1,141 @@
+# Unit tests of the alerting rules in alerts.yaml, run by promtool in CI (.github/workflows/manifests.yml, job
+# promtool) on made-up series: the thresholds, the windows and "for", and what the annotations say. What they cannot
+# catch: a metric the code no longer exports under the name an alert uses. The series here are named by hand, so a
+# renamed metric leaves the tests green and the alert silent; only the stand shows that.
+#
+# promtool compares the annotations whole: a changed summary or description is a change here too.
+# Not a resource of the stand: kustomization.yaml does not list it.
+rule_files:
+  - alerts.rules.yaml # the spec of the PrometheusRule in alerts.yaml, as the job extracts it
+# As on the stand: Prometheus evaluates the rules every 30 s, the services export every 15 s (the interval below).
+evaluation_interval: 30s
+
+tests:
+  # The bank holds the money of a payment from 0 on: the leader of recovery reports an age that grows with every
+  # export, the other instance reports 0. Above 300 s at 5:30 the alert is pending, and it fires 30 s later.
+  - interval: 15s
+    input_series:
+      - series: 'payments_in_progress_oldest_age_seconds{status="authorized", instance="leader"}'
+        values: "0+15x40"
+      - series: 'payments_in_progress_oldest_age_seconds{status="authorized", instance="other"}'
+        values: "0x40"
+      - series: 'payments_in_progress_oldest_age_seconds{status="created", instance="leader"}'
+        values: "0x40"
+    alert_rule_test:
+      - eval_time: 5m30s
+        alertname: PaymentsStuckInAuthorized
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: PaymentsStuckInAuthorized
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "The bank has held the money of a payment for 6m 0s"
+              description: >-
+                Neither captured nor voided. Usually the antifraud is down: the log of recovery says
+                "Antifraud unavailable, recovery paused".
+                "Bank unavailable" there: the bank does not answer the void.
+                kubectl -n highload get pods -l app.kubernetes.io/name=antifraud;
+                kubectl -n highload logs -l app.kubernetes.io/name=payments-api --prefix --tail=100
+      - eval_time: 6m
+        alertname: PaymentsStuckInCreated
+        exp_alerts: []
+
+  # The bank is down from 0 on: a payment waits in 'created'.
+  - interval: 15s
+    input_series:
+      - series: 'payments_in_progress_oldest_age_seconds{status="created", instance="leader"}'
+        values: "0+15x40"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: PaymentsStuckInCreated
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "A payment has waited 6m 0s for the decision of the bank"
+              description: >-
+                Recovery cannot get a decision from the bank: the bank is down (the log of recovery says
+                "Bank unavailable, recovery paused"), or recovery does not run.
+                kubectl -n highload get pods -l app.kubernetes.io/name=bank-emulator;
+                kubectl -n highload logs -l app.kubernetes.io/name=payments-api --prefix --tail=100
+
+  # Under load the age saws between 0 and the Interval of recovery (10 s). The worst of the saw, 10 s at every export,
+  # for 10 minutes: no alert.
+  - interval: 15s
+    input_series:
+      - series: 'payments_in_progress_oldest_age_seconds{status="created", instance="leader"}'
+        values: "10x40"
+      - series: 'payments_in_progress_oldest_age_seconds{status="authorized", instance="leader"}'
+        values: "10x40"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PaymentsStuckInCreated
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: PaymentsStuckInAuthorized
+        exp_alerts: []
+
+  # A healthy antifraud under load: 100 checks an export in the request, one of them without a decision and captured
+  # unchecked (1 %).
+  - interval: 15s
+    input_series:
+      - series: 'payments_antifraud_decisions_total{path="request", outcome="allow", instance="a"}'
+        values: "0+99x60"
+      - series: 'payments_antifraud_decisions_total{path="request", outcome="unknown", instance="a"}'
+        values: "0+1x60"
+      - series: 'payments_antifraud_fail_open_total{instance="a"}'
+        values: "0+1x60"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: AntifraudFailingOpen
+        exp_alerts: []
+
+  # No payments at all: the share is 0 / 0, no alert.
+  - interval: 15s
+    input_series:
+      - series: 'payments_antifraud_decisions_total{path="request", outcome="allow", instance="a"}'
+        values: "0x60"
+      - series: 'payments_antifraud_fail_open_total{instance="a"}'
+        values: "0x60"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: AntifraudFailingOpen
+        exp_alerts: []
+
+  # The antifraud is down from 2:00 to 10:00, on two instances: every check of the request without a decision, half
+  # of them captured unchecked. The alert is pending from about 2:30, fires 5 minutes later, and is gone once the
+  # 2-minute window holds no fail open.
+  - interval: 15s
+    input_series:
+      - series: 'payments_antifraud_decisions_total{path="request", outcome="allow", instance="a"}'
+        values: "0+50x8 400x31 450+50x19"
+      - series: 'payments_antifraud_decisions_total{path="request", outcome="unknown", instance="a"}'
+        values: "0x8 50+50x31 1600x19"
+      - series: 'payments_antifraud_fail_open_total{instance="a"}'
+        values: "0x8 25+25x31 800x19"
+      - series: 'payments_antifraud_decisions_total{path="request", outcome="allow", instance="b"}'
+        values: "0+50x8 400x31 450+50x19"
+      - series: 'payments_antifraud_decisions_total{path="request", outcome="unknown", instance="b"}'
+        values: "0x8 50+50x31 1600x19"
+      - series: 'payments_antifraud_fail_open_total{instance="b"}'
+        values: "0x8 25+25x31 800x19"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: AntifraudFailingOpen
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: AntifraudFailingOpen
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "50% of the payments checked in the request are captured unchecked"
+              description: >-
+                The antifraud does not answer in 150 ms, often because Redis does not (it answers 503 then).
+                kubectl -n highload get pods -l app.kubernetes.io/name=antifraud;
+                kubectl -n highload logs deploy/antifraud --tail=50
+      - eval_time: 13m
+        alertname: AntifraudFailingOpen
+        exp_alerts: []

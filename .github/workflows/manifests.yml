@@ -2,7 +2,8 @@
 # Argo CD Applications and the SealedSecrets, against the API schemas of Kubernetes and of the CRDs in use (CNPG,
 # Prometheus Operator, Traefik, Argo CD, Sealed Secrets). A misspelt field, a string where a number goes, a field this
 # Kubernetes version does not have: without this check such a mistake shows only as a failed sync in Argo CD, after the
-# push. A workflow of its own, not a job in backend-ci.yml: backend-ci.yml ignores deploy/**, and here deploy/** is all that matters.
+# push. The alerting rules go through promtool besides (job promtool): to kubeconform their PromQL is only strings.
+# A workflow of its own, not a job in backend-ci.yml: backend-ci.yml ignores deploy/**, and here deploy/** is all that matters.
 name: Manifests
 
 on:
@@ -26,6 +27,10 @@ env:
   KUSTOMIZE_SHA256: cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61
   KUBECONFORM_VERSION: "0.8.0"
   KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+  # promtool of the Prometheus the stand runs (kube-prometheus-stack 87.19.2, deploy/argocd/monitoring.yaml): the PromQL
+  # it accepts is the PromQL the stand accepts.
+  PROMETHEUS_VERSION: "3.13.1"
+  PROMETHEUS_SHA256: 962b812371aff838d152b6ff2d56fdb7a6396f5542f48ebf73421b9721f0d103
   # The Kubernetes of the cluster (k3s v1.35).
   KUBERNETES_VERSION: "1.35.0"
 
@@ -65,3 +70,27 @@ jobs:
           echo "::group::deploy/argocd, deploy/cluster and deploy/monitoring/secrets"
           check deploy/argocd deploy/cluster deploy/monitoring/secrets
           echo "::endgroup::"
+
+  # The alerting rules of deploy/k8s/alerts.yaml: promtool parses every expression and template of an annotation, then
+  # runs the unit tests of the rules (deploy/k8s/alerts.test.yaml) on made-up series.
+  promtool:
+    name: promtool
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install
+        run: |
+          mkdir -p "$HOME/bin" && cd "$HOME/bin"
+          curl -sSL -o prometheus.tar.gz \
+            "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz"
+          echo "${PROMETHEUS_SHA256}  prometheus.tar.gz" | sha256sum --check
+          tar xzf prometheus.tar.gz --strip-components=1 "prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      # promtool reads plain rule files, and the spec of a PrometheusRule is one; yq comes with the runner image. The
+      # tests name their rule file relative to themselves, so both go to one directory.
+      - name: Check and test
+        run: |
+          yq '.spec' deploy/k8s/alerts.yaml > "$RUNNER_TEMP/alerts.rules.yaml"
+          cp deploy/k8s/alerts.test.yaml "$RUNNER_TEMP/"
+          promtool check rules "$RUNNER_TEMP/alerts.rules.yaml"
+          promtool test rules "$RUNNER_TEMP/alerts.test.yaml"
