@@ -14,6 +14,7 @@ public sealed class PaymentRecovery(
     IServiceScopeFactory serviceScopeFactory, 
     IOptions<RecoveryOptions> options,
     TimeProvider timeProvider,
+    PaymentsMetrics metrics,
     ILogger<PaymentRecovery> logger,
     LeaderDataSource? leaderDataSource = null) : BackgroundService
 {
@@ -31,6 +32,7 @@ public sealed class PaymentRecovery(
             {
                 var batch = await FindStaleBatchAsync(stoppingToken);
                 var pass = await RecoverBatchAsync(batch, stoppingToken);
+                await ReportOldestInProgressAsync(stoppingToken);
 
                 if (pass.BankUnavailable || pass.AntifraudUnavailable)
                 {
@@ -58,6 +60,17 @@ public sealed class PaymentRecovery(
         // The poll runs every Interval and is usually empty: without this, every poll is a separate one-span trace.
         using (SuppressInstrumentationScope.Begin())
             return await store.FindStaleInProgressAsync(settings.StaleAfter, settings.BatchSize, stoppingToken);
+    }
+
+    // After the pass, so that the gauge shows what recovery left: a payment it has just finished no longer counts.
+    // Every Interval at least, also while the bank or the antifraud is down: that is when payments wait longest.
+    private async Task ReportOldestInProgressAsync(CancellationToken stoppingToken)
+    {
+        using (SuppressInstrumentationScope.Begin())
+        {
+            var (created, authorized) = await store.FindOldestInProgressAsync(stoppingToken);
+            metrics.InProgressOldest(created, authorized);
+        }
     }
 
     private async Task<RecoveryPass> RecoverBatchAsync(IReadOnlyList<Payment> batch, CancellationToken stoppingToken)

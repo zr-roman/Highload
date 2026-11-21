@@ -194,6 +194,25 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
         return res;
     }
 
+    /// <summary>
+    /// When the oldest payment in progress of each status was written, null if there is none: for the metric of how
+    /// long payments wait. One pass over pending_payments, which holds only the payments in progress.
+    /// </summary>
+    public async Task<(DateTimeOffset? Created, DateTimeOffset? Authorized)> FindOldestInProgressAsync(CancellationToken cancellationToken)
+    {
+        await using var command = dataSource.CreateCommand("""
+            SELECT min(q.created_at) FILTER (WHERE p.status = 'created'),
+                   min(q.created_at) FILTER (WHERE p.status = 'authorized')
+            FROM pending_payments q JOIN payments p ON p.id = q.id
+            """);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        await reader.ReadAsync(cancellationToken);
+
+        return (reader.IsDBNull(0) ? null : reader.GetFieldValue<DateTimeOffset>(0),
+                reader.IsDBNull(1) ? null : reader.GetFieldValue<DateTimeOffset>(1));
+    }
+
     private static async Task<Payment?> ReadSingleAsync(NpgsqlCommand command, CancellationToken cancellationToken)
     {
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);

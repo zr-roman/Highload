@@ -43,8 +43,8 @@ public sealed class PaymentSaga(
         if (decision.Outcome == AcquirerOutcome.Unknown)
             metrics.Unknown();
 
-        var result = await AfterBankAsync(payment, decision.Outcome, failOpen: true, cancellationToken);
-        return result.Payment;
+        var result = await AfterBankAsync(payment, decision.Outcome, SagaPath.Request, cancellationToken);
+        return Counted(result, SagaPath.Request).Payment;
     }
 
     /// <summary>
@@ -61,20 +61,29 @@ public sealed class PaymentSaga(
                 var decision = await acquirer.FindDecisionAsync(payment.Id, cancellationToken);
 
                 // 404: the authorization never reached the bank, and no money is held.
-                return decision is null
+                return Counted(decision is null
                     ? await DeclineAsync(payment, "the bank has no decision", cancellationToken)
-                    : await AfterBankAsync(payment, decision.Outcome, failOpen: false, cancellationToken);
+                    : await AfterBankAsync(payment, decision.Outcome, SagaPath.Recovery, cancellationToken), SagaPath.Recovery);
 
             case PaymentStatus.Authorized:
-                return await CheckAsync(payment, failOpen: false, cancellationToken);
+                return Counted(await CheckAsync(payment, SagaPath.Recovery, cancellationToken), SagaPath.Recovery);
 
             default:
                 throw new InvalidOperationException($"Payment {payment.Id} is {payment.Status}: the saga has nothing to continue");
         }
     }
 
+    // A saga that stopped short of a final status is counted once, where it ends, whatever step it stopped at.
+    private SagaResult Counted(SagaResult result, SagaPath path)
+    {
+        if (result.Step is SagaStep.WaitsForBank or SagaStep.WaitsForAntifraud)
+            metrics.LeftInProgress(result.Step, path);
+
+        return result;
+    }
+
     private async Task<SagaResult> AfterBankAsync(
-        Payment payment, AcquirerOutcome outcome, bool failOpen, CancellationToken cancellationToken)
+        Payment payment, AcquirerOutcome outcome, SagaPath path, CancellationToken cancellationToken)
     {
         switch (outcome)
         {
@@ -84,7 +93,7 @@ public sealed class PaymentSaga(
                 if (!await store.MarkAuthorizedAsync(payment.Id, cancellationToken))
                     return await MovedOnAsync(payment.Id, cancellationToken);
 
-                return await CheckAsync(payment with { Status = PaymentStatus.Authorized }, failOpen, cancellationToken);
+                return await CheckAsync(payment with { Status = PaymentStatus.Authorized }, path, cancellationToken);
 
             case AcquirerOutcome.Declined:
                 return await DeclineAsync(payment, "the bank declined it", cancellationToken);
@@ -95,16 +104,21 @@ public sealed class PaymentSaga(
 
             case AcquirerOutcome.Voided:
                 // Voided before (HttpAcquirer logs it): no money is held, and approving it again is impossible.
-                return await RecordVoidedAsync(payment, "the bank had voided the authorization", cancellationToken);
+                return await RecordVoidedAsync(payment, "the bank had voided the authorization", VoidReason.BankVoided, path,
+                    cancellationToken);
 
             default:
                 throw new InvalidOperationException($"Unexpected acquirer outcome {outcome} for payment {payment.Id}");
         }
     }
 
-    private async Task<SagaResult> CheckAsync(Payment authorized, bool failOpen, CancellationToken cancellationToken)
+    private async Task<SagaResult> CheckAsync(Payment authorized, SagaPath path, CancellationToken cancellationToken)
     {
         var check = await antifraud.CheckAsync(authorized, cancellationToken);
+        metrics.AntifraudDecision(check.Outcome, path);
+
+        // Only the request fails open: a client waits for it. Nobody waits for recovery.
+        var failOpen = path == SagaPath.Request;
         var threshold = antifraudOptions.Value.FailOpenBelowAmount;
 
         switch (check.Outcome)
@@ -115,14 +129,18 @@ public sealed class PaymentSaga(
             case AntifraudOutcome.Deny:
                 logger.LogInformation("Antifraud denied payment {PaymentId} ({Reasons}): voiding its authorization",
                     authorized.Id, string.Join(", ", check.Reasons ?? []));
-                return await VoidAsync(authorized, cancellationToken);
+                return await VoidAsync(authorized, path, cancellationToken);
 
             case AntifraudOutcome.Unknown when failOpen && authorized.Amount < threshold:
                 // Fail open: a small fraud costs less than a lost sale and a client kept waiting.
                 logger.LogInformation(
                     "Antifraud gave no decision on payment {PaymentId}: captured unchecked, the amount {Amount} is below {FailOpenBelowAmount}",
                     authorized.Id, authorized.Amount, threshold);
-                return await CaptureAsync(authorized, "captured unchecked, the antifraud gave no decision", cancellationToken);
+                var captured = await CaptureAsync(authorized, "captured unchecked, the antifraud gave no decision", cancellationToken);
+                if (captured.Step == SagaStep.Done)
+                    metrics.FailOpen();
+
+                return captured;
 
             case AntifraudOutcome.Unknown:
                 // A large payment, or any payment in recovery, waits for a real check in 'authorized'.
@@ -144,21 +162,22 @@ public sealed class PaymentSaga(
             : await MovedOnAsync(payment.Id, cancellationToken);
 
     // The compensation of the authorization: the bank releases the hold on the buyer's money.
-    private async Task<SagaResult> VoidAsync(Payment authorized, CancellationToken cancellationToken)
+    private async Task<SagaResult> VoidAsync(Payment authorized, SagaPath path, CancellationToken cancellationToken)
     {
         var outcome = await acquirer.VoidAsync(authorized, cancellationToken);
 
         switch (outcome)
         {
             case VoidOutcome.Voided:
-                return await RecordVoidedAsync(authorized, "the antifraud denied it", cancellationToken);
+                return await RecordVoidedAsync(authorized, "the antifraud denied it", VoidReason.AntifraudDeny, path, cancellationToken);
 
             case VoidOutcome.NotFound or VoidOutcome.Conflict:
                 // The bank holds no money for the payment either way (it lost the decision, or declined the payment),
                 // and for the client the payment is refused after the bank, as by a void. A repeat would answer the same.
                 logger.LogWarning("Void of payment {PaymentId}: the bank answered {VoidOutcome}, recorded as voided",
                     authorized.Id, outcome);
-                return await RecordVoidedAsync(authorized, $"the antifraud denied it, the void found {outcome}", cancellationToken);
+                return await RecordVoidedAsync(authorized, $"the antifraud denied it, the void found {outcome}",
+                    outcome == VoidOutcome.NotFound ? VoidReason.VoidNotFound : VoidReason.VoidConflict, path, cancellationToken);
 
             case VoidOutcome.Unknown:
                 // The void may or may not have happened. The payment stays in 'authorized': recovery gets the stored
@@ -171,10 +190,15 @@ public sealed class PaymentSaga(
         }
     }
 
-    private async Task<SagaResult> RecordVoidedAsync(Payment payment, string reason, CancellationToken cancellationToken) =>
-        await store.MarkVoidedAsync(payment.Id, cancellationToken)
-            ? new SagaResult(payment with { Status = PaymentStatus.Voided }, SagaStep.Done, reason)
-            : await MovedOnAsync(payment.Id, cancellationToken);
+    private async Task<SagaResult> RecordVoidedAsync(
+        Payment payment, string reason, VoidReason voidReason, SagaPath path, CancellationToken cancellationToken)
+    {
+        if (!await store.MarkVoidedAsync(payment.Id, cancellationToken))
+            return await MovedOnAsync(payment.Id, cancellationToken);
+
+        metrics.Voided(voidReason, path);
+        return new SagaResult(payment with { Status = PaymentStatus.Voided }, SagaStep.Done, reason);
+    }
 
     // A transition found the payment no longer in its source status: someone else moved it on, recovery and the
     // request working on one payment at once. What that one wrote is the answer.
@@ -186,6 +210,29 @@ public sealed class PaymentSaga(
 
         return new SagaResult(recorded, SagaStep.MovedOn, "moved on by another saga");
     }
+}
+
+/// <summary>Who runs the saga: the request, which may fail open, or recovery, which never does.</summary>
+public enum SagaPath
+{
+    Request,
+    Recovery,
+}
+
+/// <summary>Why a payment ended in 'voided': for the metric, which shows the void answers 404 and 409 apart.</summary>
+public enum VoidReason
+{
+    /// <summary>The compensation: the antifraud denied, and the bank voided the authorization.</summary>
+    AntifraudDeny,
+
+    /// <summary>The antifraud denied, and the bank had no decision to void (404): it lost it.</summary>
+    VoidNotFound,
+
+    /// <summary>The antifraud denied, and the bank had declined the payment (409): nothing to void.</summary>
+    VoidConflict,
+
+    /// <summary>The bank answered the authorization or the lookup with an authorization voided before.</summary>
+    BankVoided,
 }
 
 /// <summary>Where a saga stopped.</summary>

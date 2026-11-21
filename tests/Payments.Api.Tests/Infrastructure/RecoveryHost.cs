@@ -52,6 +52,11 @@ public sealed class RecoveryHost : IAsyncDisposable
         var meterFactory = services.GetRequiredService<IMeterFactory>();
         Captured = new MetricCollector<long>(meterFactory, PaymentsMetrics.MeterName, "payments.captured");
         Declined = new MetricCollector<long>(meterFactory, PaymentsMetrics.MeterName, "payments.declined");
+        Voided = new MetricCollector<long>(meterFactory, PaymentsMetrics.MeterName, "payments.voided");
+        AntifraudDecisions = new MetricCollector<long>(meterFactory, PaymentsMetrics.MeterName, "payments.antifraud.decisions");
+        FailOpen = new MetricCollector<long>(meterFactory, PaymentsMetrics.MeterName, "payments.antifraud.fail_open");
+        LeftInProgress = new MetricCollector<long>(meterFactory, PaymentsMetrics.MeterName, "payments.left_in_progress");
+        OldestInProgress = new MetricCollector<double>(meterFactory, PaymentsMetrics.MeterName, "payments.in_progress.oldest_age");
         Logs = services.GetFakeLogCollector();
         recovery = services.GetRequiredService<PaymentRecovery>();
     }
@@ -64,6 +69,21 @@ public sealed class RecoveryHost : IAsyncDisposable
 
     /// <summary>The <c>payments.declined</c> counter.</summary>
     public MetricCollector<long> Declined { get; }
+
+    /// <summary>The counters of the saga, as the request feeds them too, here with path = recovery.</summary>
+    public MetricCollector<long> Voided { get; }
+
+    public MetricCollector<long> AntifraudDecisions { get; }
+
+    public MetricCollector<long> FailOpen { get; }
+
+    public MetricCollector<long> LeftInProgress { get; }
+
+    /// <summary>
+    /// The gauge of the oldest payment in progress by status. A gauge is read when it is asked for: call
+    /// RecordObservableInstruments, then take the last measurement of each status.
+    /// </summary>
+    public MetricCollector<double> OldestInProgress { get; }
 
     /// <summary>
     /// Finished "payment recovery" spans, one per non-empty pass. The span ends after the whole pass,
@@ -158,6 +178,11 @@ public sealed class RecoveryHost : IAsyncDisposable
         listener.Dispose();
         Captured.Dispose();
         Declined.Dispose();
+        Voided.Dispose();
+        AntifraudDecisions.Dispose();
+        FailOpen.Dispose();
+        LeftInProgress.Dispose();
+        OldestInProgress.Dispose();
         await services.DisposeAsync();
         await dataSource.DisposeAsync();
 

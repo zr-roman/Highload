@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
 using Payments.Api.Acquiring;
@@ -249,6 +250,12 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
         Assert.Equal(0L, await db.CountOutboxAsync(Ct));
         Assert.Equal(0L, await db.CountPendingAsync(Ct));
         Assert.Equal(1, Tag(Assert.Single(host.Passes), "recovery.voided"));
+
+        // The same metrics as in the request, told apart by the path.
+        Assert.Equal(("deny", "recovery"), OutcomeAndPath(Assert.Single(host.AntifraudDecisions.GetMeasurementSnapshot())));
+        var voidedMeasurement = Assert.Single(host.Voided.GetMeasurementSnapshot());
+        Assert.Equal("antifraud_deny", voidedMeasurement.Tags["reason"]);
+        Assert.Equal("recovery", voidedMeasurement.Tags["path"]);
     }
 
     [Fact]
@@ -273,6 +280,10 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
         var pass = Assert.Single(host.Passes);
         Assert.Equal(ActivityStatusCode.Error, pass.Status);
         Assert.Equal(2, Tag(pass, "recovery.skipped"));
+        Assert.Empty(host.FailOpen.GetMeasurementSnapshot());
+        var left = Assert.Single(host.LeftInProgress.GetMeasurementSnapshot());
+        Assert.Equal("antifraud", left.Tags["waits_for"]);
+        Assert.Equal("recovery", left.Tags["path"]);
 
         // The next pass, after Interval, goes on from 'authorized': the antifraud only, not the bank again.
         await host.AdvanceUntilAsync(async () => await db.GetStatusAsync(second, Ct) == "captured");
@@ -281,6 +292,29 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
         Assert.Equal(1, bank.LookupsFor(first));
         Assert.Equal(2, antifraud.ChecksFor(first));
         Assert.Contains(host.Logs.GetSnapshot(), r => r.Level == LogLevel.Warning && r.Message.StartsWith("Antifraud unavailable", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Age_Of_The_Oldest_Authorized_Payment_Grows_Until_It_Is_Finished()
+    {
+        // The gauge counts the age by the clock of the service, here the fake one: it starts at the real time.
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var authorized = await db.InsertPaymentAsync(TimeSpan.FromMinutes(2), "authorized", Ct);
+        antifraud.AnswerInTurn(authorized, AntifraudOutcome.Unknown, AntifraudOutcome.Allow);
+
+        await using var host = await RecoveryHost.StartAsync(db, bank, clock, antifraud: antifraud, cancellationToken: Ct);
+        await host.WaitForPassesAsync(1);
+
+        // Recovery looks at its queue after the pass, so after its span has ended: wait for the gauge itself.
+        await Eventually.WaitUntilAsync(() => OldestAges(host)["authorized"] > 0);
+
+        // The antifraud is silent: the payment waits, two minutes old. No payment waits in 'created'.
+        var ages = OldestAges(host);
+        Assert.InRange(ages["authorized"], 119, 150);
+        Assert.Equal(0, ages["created"]);
+
+        // Captured on a later pass, and the pass after it reports no payment waiting.
+        await host.AdvanceUntilAsync(async () => await db.GetStatusAsync(authorized, Ct) == "captured" && OldestAges(host)["authorized"] == 0);
     }
 
     [Fact]
@@ -301,4 +335,16 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
     }
 
     private static int Tag(Activity span, string name) => (int)span.GetTagItem(name)!;
+
+    private static (object?, object?) OutcomeAndPath(CollectedMeasurement<long> measurement) =>
+        (measurement.Tags["outcome"], measurement.Tags["path"]);
+
+    // A gauge is read when it is asked for: the last measurement of each status is its value now.
+    private static Dictionary<string, double> OldestAges(RecoveryHost host)
+    {
+        host.OldestInProgress.RecordObservableInstruments();
+        return host.OldestInProgress.GetMeasurementSnapshot()
+            .GroupBy(m => (string)m.Tags["status"]!)
+            .ToDictionary(g => g.Key, g => g.Last().Value);
+    }
 }
