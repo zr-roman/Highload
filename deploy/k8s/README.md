@@ -27,13 +27,13 @@
 
 1. **Кластер** (один раз):
    ```powershell
-   k3d cluster create highload --agents 2 --api-port 127.0.0.1:6550 -p "8080:80@loadbalancer" `
+   k3d cluster create highload --agents 2 --api-port 127.0.0.1:6550 -p "127.0.0.1:8080:80@loadbalancer" `
      --k3s-arg "--kube-controller-manager-arg=node-monitor-grace-period=20s@server:0"
    kubectl -n kube-system scale deployment/coredns --replicas=2
    ```
    Три ноды, а не больше: на одном ноутбуке четвёртая нода — ещё один k3s на тех же ядрах, и переключение базы с ней было хуже, а не лучше ([опыт](../../docs/postgres-failover.md#четвёртая-нода-опыт)). Отказоустойчивость дают вторые копии сервисов на разных нодах, а не число нод.
 
-   Порт API задан явно и ниже 49152. Без `--api-port` k3d берёт случайный порт из динамического диапазона, а Windows (WinNAT, Hyper-V) после перезагрузки резервирует в этом диапазоне свои блоки: если порт кластера попал в такой блок, балансировщик k3d не стартует с ошибкой `bind: An attempt was made to access a socket in a way forbidden by its access permissions`, и `kubectl` не подключается. Занятые блоки: `netsh interface ipv4 show excludedportrange protocol=tcp`. Вторая реплика CoreDNS — см. [ниже](#coredns-в-двух-экземплярах).
+   Порт API задан явно и ниже 49152. Без `--api-port` k3d берёт случайный порт из динамического диапазона, а Windows (WinNAT, Hyper-V) после перезагрузки резервирует в этом диапазоне свои блоки: если порт кластера попал в такой блок, балансировщик k3d не стартует с ошибкой `bind: An attempt was made to access a socket in a way forbidden by its access permissions`, и `kubectl` не подключается. Занятые блоки: `netsh interface ipv4 show excludedportrange protocol=tcp`. Оба порта привязаны к `127.0.0.1`: без адреса Docker слушает на всех интерфейсах ноутбука, и стенд виден из локальной сети. Вторая реплика CoreDNS — см. [ниже](#coredns-в-двух-экземплярах).
 
    `node-monitor-grace-period=20s` вместо 50 с по умолчанию: остановленную ноду Kubernetes замечает за ~15 с, а не за ~50, и Traefik раньше перестаёт слать запросы в поды на ней ([опыт](../../docs/observability.md#время-обнаружения-отказа-50-с--20-с)). Цена: нода, которая молчит дольше 20 с, считается мёртвой, и поды с неё выселяются — так бывает и при перезапуске контейнера server-0. На уже созданном кластере:
    ```powershell
@@ -43,20 +43,10 @@
    Файл живёт в контейнере ноды: `k3d cluster delete` его стирает.
 
    После перезагрузки ноутбука или перезапуска Docker Desktop кластер сам не стартует: `k3d cluster start highload`.
-2. **Образы сервисов** — собрать и загрузить в ноды. Тег `:dev`, `imagePullPolicy: IfNotPresent`: кластер берёт образ из нод и не ходит за ним в реестр.
-   ```powershell
-   docker build -t payments-api:dev   -f src/Payments.Api/Dockerfile .
-   docker build -t ledger-service:dev -f src/Ledger.Service/Dockerfile .
-   docker build -t bank-emulator:dev  -f src/bank-emulator/Dockerfile .
-   docker build -t antifraud:dev      -f src/antifraud-service/Dockerfile .
-   docker build -t frontend:dev       -f frontend/Dockerfile .
-   k3d image import payments-api:dev ledger-service:dev bank-emulator:dev antifraud:dev frontend:dev -c highload
-   ```
-   Образы Kafka, Redis и дашборда ноды скачают сами. Если они уже есть локально после `docker compose`, их можно загрузить так же, без повторного скачивания:
-   ```powershell
-   k3d image import apache/kafka:4.3.2 redis:7.4-alpine mcr.microsoft.com/dotnet/aspire-dashboard:9.0 -c highload
-   ```
-3. **Пароли.** Пароль PostgreSQL в git не хранится вообще: его генерирует оператор CloudNativePG в кластере (Secret `pg-app`), сервисы читают его оттуда. Оператор — `deploy/argocd/cnpg.yaml`, ставит Argo CD; он нужен раньше, чем `kubectl apply -k`: без него типы `Cluster` и `Database` кластеру неизвестны. Пароль Grafana лежит в git зашифрованным: `deploy/monitoring/secrets/grafana-admin-sealed.yaml` — это SealedSecret. Открыть их может только контроллер Sealed Secrets в кластере (`deploy/argocd/sealed-secrets.yaml`, ставит Argo CD): у него закрытый ключ, а `kubeseal` на ноутбуке шифрует открытым. Контроллер нужен раньше, чем `kubectl apply -k`: без него тип `SealedSecret` кластеру неизвестен.
+2. **Образы сервисов** собирать не нужно. Их собирает CI и публикует в `ghcr.io/zr-roman/<сервис>:<коммит>`, а теги записывает в `kustomization.yaml` (блок `images:`). Кластер скачивает образы сам: они публичные. Образы Kafka (оператор Strimzi), Redis и дашборда ноды тоже скачивают сами.
+
+   Без CI или без интернета — `deploy/release.ps1`: собирает образ на ноутбуке под тем же именем, загружает его в ноды (`k3d image import`, `imagePullPolicy: IfNotPresent` — кластер не пойдёт за ним в реестр) и коммитит тег ([выкатка новой версии](#выкатка-новой-версии)).
+3. **Пароли.** Пароль PostgreSQL в git не хранится вообще: его генерирует оператор CloudNativePG в кластере (Secret `pg-app`), сервисы читают его оттуда. Оператор — `deploy/argocd/cnpg.yaml`, ставит Argo CD; он нужен раньше стенда (шаг 5): без него типы `Cluster` и `Database` кластеру неизвестны. Пароль Grafana лежит в git зашифрованным: `deploy/monitoring/secrets/grafana-admin-sealed.yaml` — это SealedSecret. Открыть их может только контроллер Sealed Secrets в кластере (`deploy/argocd/sealed-secrets.yaml`, ставит Argo CD): у него закрытый ключ, а `kubeseal` на ноутбуке шифрует открытым. Контроллер нужен раньше стенда (шаг 5): без него тип `SealedSecret` кластеру неизвестен.
 
    **kubeseal** (один раз):
    ```powershell
@@ -89,9 +79,9 @@
    kubectl -n highload create secret generic backup-store --from-literal=ACCESS_KEY_ID=$key --from-literal=ACCESS_SECRET_KEY=$secret --dry-run=client -o yaml |
        kubeseal -o yaml > deploy/k8s/backup-store-sealed.yaml
    ```
-   Kafka запускает оператор Strimzi (`deploy/argocd/strimzi.yaml`), его тоже ставит Argo CD, и он тоже нужен раньше, чем `kubectl apply -k`: без него типы `Kafka`, `KafkaNodePool` и `KafkaTopic` кластеру неизвестны.
+   Kafka запускает оператор Strimzi (`deploy/argocd/strimzi.yaml`), его тоже ставит Argo CD, и он тоже нужен раньше стенда: без него типы `Kafka`, `KafkaNodePool` и `KafkaTopic` кластеру неизвестны.
 
-   Резервные копии делает плагин Barman Cloud (`deploy/argocd/barman-cloud.yaml`), ему нужен cert-manager (`deploy/argocd/cert-manager.yaml`). Оба ставит Argo CD, и оба нужны раньше, чем `kubectl apply -k`: без плагина тип `ObjectStore` кластеру неизвестен. Порядок: `cert-manager.yaml`, дождаться Healthy, затем `barman-cloud.yaml`.
+   Резервные копии делает плагин Barman Cloud (`deploy/argocd/barman-cloud.yaml`), ему нужен cert-manager (`deploy/argocd/cert-manager.yaml`). Оба ставит Argo CD, и оба нужны раньше стенда: без плагина тип `ObjectStore` кластеру неизвестен. Порядок: `cert-manager.yaml`, дождаться Healthy, затем `barman-cloud.yaml`.
 
    **Ключ контроллера** — единственное, чего нет в git, и без него файлы в git не открыть. Сохранить вне репозитория (менеджер паролей):
    ```powershell
@@ -103,14 +93,36 @@
    ```powershell
    docker compose down
    ```
-5. **Развернуть:**
+5. **Развернуть через Argo CD.** Руками ставится только сам Argo CD, остальное он берёт из git. Порядок важен: ресурсы стенда — это `SealedSecret`, `Cluster` PostgreSQL, `Kafka`, `ObjectStore` копий, `ServiceMonitor` и `PrometheusRule`, и их типы появляются в кластере только вместе с операторами и мониторингом.
    ```powershell
+   # Argo CD; dex (вход через SSO) стенду не нужен
+   kubectl create namespace argocd
+   kubectl apply -n argocd --server-side -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+   kubectl -n argocd scale deployment/argocd-dex-server --replicas=0
+   kubectl -n argocd get pods -w                     # все 1/1
+
+   # namespace стенда — раньше операторов
+   kubectl apply -f deploy/k8s/namespace.yaml
+
+   # операторы и настройки Traefik
+   kubectl apply -f deploy/argocd/sealed-secrets.yaml -f deploy/argocd/cnpg.yaml -f deploy/argocd/strimzi.yaml -f deploy/argocd/cert-manager.yaml -f deploy/argocd/cluster.yaml
+   kubectl -n argocd get applications -w             # все Synced и Healthy
+
+   # плагин резервных копий (ему нужен готовый cert-manager) и мониторинг
+   kubectl apply -f deploy/argocd/barman-cloud.yaml -f deploy/argocd/monitoring.yaml
+   kubectl -n argocd get applications -w
+
+   # стенд
    kubectl -n kube-system wait --for=condition=complete job/helm-install-traefik-crd job/helm-install-traefik --timeout=180s
-   kubectl apply -k deploy/k8s
+   kubectl apply -f deploy/argocd/highload.yaml
    kubectl -n highload get pods -w
    ```
-   Первая команда нужна только на свежем кластере: k3s ставит Traefik и его типы ресурсов (`Middleware`, `ServersTransport` из `traefik.yaml`) через минуту после создания кластера, а без них `apply` падает с `no matches for kind "Middleware"`. Если она отвечает `not found` — задания ещё не созданы, повторить через несколько секунд.
-   Пока Kafka не готова, Payments.Api и Ledger.Service падают на создании топика и перезапускаются (`CrashLoopBackOff`) — это нормально, через минуту-две все поды `Running` и `1/1`.
+   Namespace `highload` создаётся раньше операторов, хотя он часть стенда: Strimzi следит только за ним (`watchNamespaces`) и кладёт туда свои RoleBinding. Без namespace синхронизация strimzi падает с `namespaces "highload" not found`; Argo CD повторяет её сам, с растущей паузой, и она проходит, когда namespace появится. Приложение стенда потом принимает namespace как свой: манифест тот же.
+
+   Ключ Sealed Secrets (шаг 3) возвращается до приложения `sealed-secrets`: тогда контроллер находит его при первом старте, и перезапуск не нужен.
+
+   Ожидание заданий Traefik нужно только на свежем кластере: k3s ставит Traefik и его типы ресурсов (`Middleware`, `ServersTransport` из `traefik.yaml`) через минуту после создания кластера, а без них синхронизация стенда падает с `no matches for kind "Middleware"`. Если команда отвечает `not found` — задания ещё не созданы, повторить через несколько секунд.
+   Пока Kafka не готова, Payments.Api и Ledger.Service падают на создании топика и перезапускаются (`CrashLoopBackOff`) — это нормально, через минуту-две все поды `Running` и `1/1`. Так же они падают, пока у PostgreSQL нет ни одной реплики: при синхронной репликации с `dataDurability: required` COMMIT ждёт реплику, первый экземпляр сервиса висит на коммите схемы с её advisory-блокировкой, а второй ждёт блокировку дольше `statement_timeout` и падает с `57014`. Когда `kubectl -n highload get cluster pg` покажет `Cluster in healthy state`, поды поднимутся сами; не ждать паузы перезапуска — `kubectl -n highload rollout restart deployment/payments-api`.
 
 ## Проверка
 
