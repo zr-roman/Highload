@@ -2,6 +2,7 @@ using Confluent.Kafka;
 using Microsoft.Extensions.Http.Resilience;
 using Npgsql;
 using Payments.Api.Acquiring;
+using Payments.Api.Antifraud;
 using Payments.Api.Database;
 using Payments.Api.Outbox;
 using Payments.Api.Payments;
@@ -88,6 +89,13 @@ if (acquirer.Mode == AcquirerMode.Http)
     builder.Services.AddHttpAcquirer(builder.Configuration.GetSection("Acquirer"));
 else
     builder.Services.AddSingleton<IAcquirer, FakeAcquirer>();
+
+// Registered, not called yet: the saga that checks a payment after the bank comes with stage 4, task 5.
+var antifraud = builder.Configuration.GetSection("Antifraud").Get<AntifraudOptions>() ?? new AntifraudOptions();
+if (antifraud.Mode == AntifraudMode.Http)
+    builder.Services.AddHttpAntifraud(builder.Configuration.GetSection("Antifraud"));
+else
+    builder.Services.AddSingleton<IAntifraud, FakeAntifraud>();
 
 builder.Services.AddHealthChecks()
     .AddCheck<PostgresHealthCheck>("postgres", tags: [HealthCheckEndpoints.ReadyTag], timeout: TimeSpan.FromSeconds(2));

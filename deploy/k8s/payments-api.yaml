@@ -97,6 +97,9 @@ spec:
               value: redis-0.redis:26379,redis-1.redis:26379,redis-2.redis:26379,serviceName=mymaster,connectTimeout=2000,syncTimeout=100,asyncTimeout=100
             - name: Acquirer__BaseAddress
               value: http://bank-emulator:5300/
+            # Port 8000 of the antifraud Service (antifraud.yaml); NetworkPolicy from-payments-api lets this pod in.
+            - name: Antifraud__BaseAddress
+              value: http://antifraud:8000/
             # Pause of the outbox relay after each published batch (Outbox/OutboxOptions.cs). 0: no pause.
             # For the catch-up experiment: "1000" with batches of 500 is about 250 messages a second,
             # still above the 200 a second that come in.
