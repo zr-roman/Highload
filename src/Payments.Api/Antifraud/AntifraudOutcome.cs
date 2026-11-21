@@ -10,8 +10,9 @@ public enum AntifraudOutcome
     Deny,
 
     /// <summary>
-    /// No decision: 5xx (503 is Redis down at antifraud), a timeout or an open circuit. The orchestrator (task 5)
-    /// decides by the amount: fail open below the threshold, otherwise the payment waits in 'authorized'.
+    /// No decision: 5xx (503 is Redis down at antifraud), a timeout or an open circuit. The saga (PaymentSaga) decides
+    /// by the amount in the request: fail open below the threshold, otherwise the payment waits in 'authorized'.
+    /// Recovery never fails open.
     /// </summary>
     Unknown,
 }

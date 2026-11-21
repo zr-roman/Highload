@@ -9,7 +9,7 @@ public enum VoidOutcome
     /// <summary>
     /// The bank has no decision for the payment (404). In the normal flow a payment to void was approved, so this
     /// means the bank lost it: the emulator keeps decisions in memory and forgets them on restart.
-    /// Nothing is held, so nothing is left to void; the orchestrator decides what to record (task 5).
+    /// Nothing is held, so nothing is left to void: the saga records 'voided' with a warning, as for 409.
     /// </summary>
     NotFound,
 

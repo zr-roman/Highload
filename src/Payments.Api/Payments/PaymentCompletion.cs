@@ -8,7 +8,7 @@ namespace Payments.Api.Payments;
 public sealed class PaymentCompletion(
     PaymentStore store, IOptions<FeeOptions> feeOptions, MerchantQuotas quotas, PaymentsMetrics metrics, ILogger<PaymentCompletion> logger)
 {
-    // «Провести»: после allow антифрода или fail open (сага), а пока и по одобрению банка (восстановление).
+    // «Провести»: после allow антифрода или fail open, только из 'authorized' (сага).
     public async Task<PaymentCaptured?> CaptureAsync(Payment payment, CancellationToken cancellationToken)
     {
         var fee = feeOptions.Value.Calculate(payment.Amount);

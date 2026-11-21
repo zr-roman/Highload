@@ -52,20 +52,32 @@ public sealed class PaymentStoreTests(PostgresFixture db) : IAsyncLifetime
         Assert.Equal(pending, await db.CountPendingAsync(Ct));
     }
 
-    [Theory]
-    [InlineData("authorized")]      // the saga, after the antifraud
-    [InlineData("created")]         // recovery, until it runs the saga as well
-    public async Task Captured_Payment_Gets_Its_Fee_And_One_Outbox_Row(string status)
+    [Fact]
+    public async Task Captured_Payment_Gets_Its_Fee_And_One_Outbox_Row()
     {
-        var id = await db.InsertPaymentAsync(Age, status, Ct);
-        var captured = new PaymentCaptured(id, 42, 150_000, 3_000, "RUB", DateTimeOffset.UtcNow);
+        var id = await db.InsertPaymentAsync(Age, "authorized", Ct);
 
-        Assert.True(await store.MarkCapturedAsync(captured, "42", Ct));
+        Assert.True(await store.MarkCapturedAsync(Captured(id), "42", Ct));
 
         Assert.Equal("captured", await db.GetStatusAsync(id, Ct));
         Assert.Equal(3_000L, await db.GetFeeAsync(id, Ct));
         Assert.Equal(1L, await db.CountOutboxAsync(Ct));
         Assert.Equal(0L, await db.CountPendingAsync(Ct));
+    }
+
+    [Theory]
+    [InlineData("created")]         // the bank approved, but the antifraud has not been asked
+    [InlineData("captured")]
+    [InlineData("declined")]
+    [InlineData("voided")]
+    public async Task Only_An_Authorized_Payment_Is_Captured(string status)
+    {
+        var id = await db.InsertPaymentAsync(Age, status, Ct);
+
+        Assert.False(await store.MarkCapturedAsync(Captured(id), "42", Ct));
+
+        Assert.Equal(status, await db.GetStatusAsync(id, Ct));
+        Assert.Equal(0L, await db.CountOutboxAsync(Ct));            // no event without the capture
     }
 
     [Theory]
@@ -108,4 +120,6 @@ public sealed class PaymentStoreTests(PostgresFixture db) : IAsyncLifetime
         Assert.Equal("voided", await db.GetStatusAsync(id, Ct));
         Assert.Equal(0L, await db.CountPendingAsync(Ct));
     }
+
+    private static PaymentCaptured Captured(Guid id) => new(id, 42, 150_000, 3_000, "RUB", DateTimeOffset.UtcNow);
 }

@@ -1,7 +1,6 @@
 using Microsoft.Extensions.Options;
 using Npgsql;
 using OpenTelemetry;
-using Payments.Api.Acquiring;
 using Payments.Api.Database;
 using Payments.Api.Payments;
 using Payments.Api.Telemetry;
@@ -12,7 +11,6 @@ namespace Payments.Api.Recovery;
 public sealed class PaymentRecovery(
     PaymentStore store, 
     NpgsqlDataSource dataSource, 
-    PaymentCompletion paymentCompletion, 
     IServiceScopeFactory serviceScopeFactory, 
     IOptions<RecoveryOptions> options,
     TimeProvider timeProvider,
@@ -34,9 +32,10 @@ public sealed class PaymentRecovery(
                 var batch = await FindStaleBatchAsync(stoppingToken);
                 var pass = await RecoverBatchAsync(batch, stoppingToken);
 
-                if (pass.BankUnavailable)
+                if (pass.BankUnavailable || pass.AntifraudUnavailable)
                 {
-                    logger.LogWarning("Bank unavailable, recovery paused for {Interval}", settings.Interval);
+                    logger.LogWarning("{Dependency} unavailable, recovery paused for {Interval}",
+                        pass.BankUnavailable ? "Bank" : "Antifraud", settings.Interval);
                     await Task.Delay(settings.Interval, timeProvider, stoppingToken);
                 }
                 else if (batch.Count < settings.BatchSize || !pass.MadeProgress)
@@ -69,37 +68,39 @@ public sealed class PaymentRecovery(
             return pass;
 
         var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = settings.MaxParallelism, CancellationToken = stoppingToken };
+        // The saga and the HTTP clients it holds live for one pass, as they would for one request.
         using var scope = serviceScopeFactory.CreateScope();
-        var acquirer = scope.ServiceProvider.GetRequiredService<IAcquirer>();
+        var saga = scope.ServiceProvider.GetRequiredService<PaymentSaga>();
 
-        // One trace per non-empty pass: bank lookups and status updates become its children.
+        // One trace per non-empty pass: the calls of the sagas and the status updates become its children.
         using Activity? activity = PaymentsTelemetry.ActivitySource.StartActivity("payment recovery");
         activity?.SetTag("recovery.batch.size", batch.Count);
 
         await Parallel.ForEachAsync(batch, parallelOptions, async (payment, ct)
-            => await RecoverAsync(payment, acquirer, pass, ct));
+            => await RecoverAsync(payment, saga, pass, ct));
 
         if (pass.BankUnavailable)
             activity?.SetStatus(ActivityStatusCode.Error, "bank unavailable");
+        else if (pass.AntifraudUnavailable)
+            activity?.SetStatus(ActivityStatusCode.Error, "antifraud unavailable");
 
         activity?.SetTag("recovery.captured", pass.Captured);
         activity?.SetTag("recovery.declined", pass.Declined);
+        activity?.SetTag("recovery.voided", pass.Voided);
         activity?.SetTag("recovery.skipped", pass.Skipped);
         activity?.SetTag("recovery.previously_resolved", pass.PreviouslyResolved);
 
-        logger.LogInformation("Всего платежей: проведено={Captured}, отклонено={Declined}, " +
+        logger.LogInformation("Всего платежей: проведено={Captured}, отклонено={Declined}, отменено={Voided}, " +
             "пропущено={Skipped}, обработаны ранее={PreviouslyResolved}.", 
-                pass.Captured, pass.Declined, pass.Skipped, pass.PreviouslyResolved);
+                pass.Captured, pass.Declined, pass.Voided, pass.Skipped, pass.PreviouslyResolved);
 
         return pass;
     }
 
-    private async Task RecoverAsync(Payment payment, IAcquirer acquirer, RecoveryPass pass, CancellationToken cancellationToken)
+    private async Task RecoverAsync(Payment payment, PaymentSaga saga, RecoveryPass pass, CancellationToken cancellationToken)
     {
-        // The search returns 'authorized' too, but resuming from it (antifraud, then capture or void) is stage 4,
-        // task 5. Until then nothing writes that status; a payment in it is left in the queue, not counted as progress,
-        // so a batch of them is not taken again at once.
-        if (payment.Status != PaymentStatus.Created || Volatile.Read(ref pass.BankUnavailable))
+        // The bank or the antifraud has not answered in this pass: the rest of the batch is not sent to them again.
+        if (Volatile.Read(ref pass.BankUnavailable) || Volatile.Read(ref pass.AntifraudUnavailable))
         {
             Interlocked.Increment(ref pass.Skipped);
             return;
@@ -107,37 +108,33 @@ public sealed class PaymentRecovery(
 
         try
         {
-            var decision = await acquirer.FindDecisionAsync(payment.Id, cancellationToken);
+            var result = await saga.ContinueAsync(payment, cancellationToken);
 
-            switch (decision?.Outcome)
+            switch (result.Step)
             {
-                case AcquirerOutcome.Approved:
-                    await CaptureAsync(payment, pass, cancellationToken);
+                case SagaStep.Done:
+                    pass.Count(result.Payment.Status);
+                    logger.LogInformation(RecoveredTemplate, payment.Id, result.Payment.Status, result.Reason);
                     break;
 
-                case null:
-                    await DeclineAsync(payment, pass, "the bank has no decision", cancellationToken);
+                case SagaStep.MovedOn:
+                    Interlocked.Increment(ref pass.PreviouslyResolved);
+                    logger.LogInformation("Payment {PaymentId} was previously resolved", payment.Id);
                     break;
 
-                case AcquirerOutcome.Declined:
-                    await DeclineAsync(payment, pass, "the bank declined it", cancellationToken);
-                    break;
-
-                case AcquirerOutcome.Unknown:
+                case SagaStep.WaitsForBank:
                     Volatile.Write(ref pass.BankUnavailable, true);
                     Interlocked.Increment(ref pass.Skipped);
-                    return;
+                    break;
 
-                case AcquirerOutcome.Voided:
-                    // The bank has voided the authorization: no money is held. Writing 'voided' is the saga's job
-                    // (stage 4, task 5); until then the payment stays in the queue. Only this payment is skipped:
-                    // the bank answered, so the rest of the batch goes on.
-                    logger.LogWarning("Payment {PaymentId} is voided at the bank; left in progress until the saga can record it", payment.Id);
+                case SagaStep.WaitsForAntifraud:
+                    // No fail open here: the payment waits in 'authorized' for a decision, its money held at the bank.
+                    Volatile.Write(ref pass.AntifraudUnavailable, true);
                     Interlocked.Increment(ref pass.Skipped);
-                    return;
+                    break;
 
                 default:
-                    throw new InvalidOperationException($"Unexpected acquirer outcome {decision.Outcome} for payment {payment.Id}");
+                    throw new InvalidOperationException($"Unexpected saga step {result.Step} for payment {payment.Id}");
             }
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
@@ -147,50 +144,29 @@ public sealed class PaymentRecovery(
         }
     }
 
-    private async Task CaptureAsync(Payment payment, RecoveryPass pass, CancellationToken cancellationToken)
-    {
-        if (await paymentCompletion.CaptureAsync(payment, cancellationToken) is not null)
-        {
-            Interlocked.Increment(ref pass.Captured);
-            logger.LogInformation(RecoveredTemplate, payment.Id, PaymentStatus.Captured, "the bank approved it");
-        }
-        else
-        {
-            MarkPreviouslyResolved(payment, pass);
-        }
-    }
-
-    private async Task DeclineAsync(Payment payment, RecoveryPass pass, string reason, CancellationToken cancellationToken)
-    {
-        if (await paymentCompletion.DeclineOnBankDenialAsync(payment.Id, cancellationToken))
-        {
-            Interlocked.Increment(ref pass.Declined);
-            logger.LogInformation(RecoveredTemplate, payment.Id, PaymentStatus.Declined, reason);
-        }
-        else
-        {
-            MarkPreviouslyResolved(payment, pass);
-        }
-    }
-
-    private void MarkPreviouslyResolved(Payment payment, RecoveryPass pass)
-    {
-        Interlocked.Increment(ref pass.PreviouslyResolved);
-        logger.LogInformation("Payment {PaymentId} was previously resolved", payment.Id);
-    }
-
     /// <summary>
     /// What happened during one recovery pass. 
     /// Written concurrently by the workers of Parallel.ForEachAsync.
     /// </summary>
     private sealed class RecoveryPass
     {
-        public int Captured, Declined, Skipped, PreviouslyResolved;
-        public bool BankUnavailable;
+        public int Captured, Declined, Voided, Skipped, PreviouslyResolved;
+        public bool BankUnavailable, AntifraudUnavailable;
 
         /// <summary>
-        /// At least one payment left 'created', so the next batch is not the same one.
+        /// At least one payment left the queue, so the next batch is not the same one.
         /// </summary>
-        public bool MadeProgress => Captured + Declined + PreviouslyResolved > 0;
+        public bool MadeProgress => Captured + Declined + Voided + PreviouslyResolved > 0;
+
+        public void Count(PaymentStatus final)
+        {
+            switch (final)
+            {
+                case PaymentStatus.Captured: Interlocked.Increment(ref Captured); break;
+                case PaymentStatus.Declined: Interlocked.Increment(ref Declined); break;
+                case PaymentStatus.Voided: Interlocked.Increment(ref Voided); break;
+                default: throw new InvalidOperationException($"{final} is not a final status");
+            }
+        }
     }
 }

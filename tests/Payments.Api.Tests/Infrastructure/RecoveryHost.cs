@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging.Testing;
 using Microsoft.Extensions.Time.Testing;
 using Npgsql;
 using Payments.Api.Acquiring;
+using Payments.Api.Antifraud;
 using Payments.Api.Payments;
 using Payments.Api.RateLimiting;
 using Payments.Api.Recovery;
@@ -15,7 +16,7 @@ using Payments.Api.Telemetry;
 namespace Payments.Api.Tests.Infrastructure;
 
 /// <summary>
-/// PaymentRecovery assembled the way Program.cs does it, with the bank, the clock and logging replaced.
+/// PaymentRecovery assembled the way Program.cs does it, with the bank, the antifraud, the clock and logging replaced.
 /// Every host has its own connection pool, like a separate process: disposing the host closes the pool,
 /// and the session holding the leader's advisory lock goes with it.
 /// </summary>
@@ -23,6 +24,12 @@ public sealed class RecoveryHost : IAsyncDisposable
 {
     public static readonly TimeSpan Interval = TimeSpan.FromSeconds(10);
     public static readonly TimeSpan StaleAfter = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Far above the 1 500 roubles of a test payment: the request path would let such a payment through unchecked,
+    /// so a test sees that recovery never does.
+    /// </summary>
+    public const long FailOpenBelowAmount = 10_000_000;
 
     private readonly NpgsqlDataSource dataSource;
     private readonly ServiceProvider services;
@@ -49,7 +56,7 @@ public sealed class RecoveryHost : IAsyncDisposable
         recovery = services.GetRequiredService<PaymentRecovery>();
     }
 
-    /// <summary>Everything recovery and PaymentCompletion logged.</summary>
+    /// <summary>Everything recovery, the saga and PaymentCompletion logged.</summary>
     public FakeLogCollector Logs { get; }
 
     /// <summary>The <c>payments.captured</c> counter: the same metric the endpoint feeds.</summary>
@@ -65,9 +72,10 @@ public sealed class RecoveryHost : IAsyncDisposable
     /// </summary>
     public IReadOnlyCollection<Activity> Passes => passes;
 
+    /// <param name="antifraud">By default one that allows every payment: for tests about the bank.</param>
     public static async Task<RecoveryHost> StartAsync(
         PostgresFixture db, FakeBank bank, FakeTimeProvider time, int batchSize = 100,
-        CancellationToken cancellationToken = default)
+        ScriptedAntifraud? antifraud = null, CancellationToken cancellationToken = default)
     {
         // A pool of its own: closing it releases the advisory lock at once. A connection returned to a shared
         // pool keeps the lock until Npgsql reuses it and sends DISCARD ALL, and the next test would wait for it.
@@ -79,14 +87,17 @@ public sealed class RecoveryHost : IAsyncDisposable
             .AddSingleton(dataSource)
             .AddSingleton<TimeProvider>(time)
             .AddSingleton<IAcquirer>(bank)
+            .AddSingleton<IAntifraud>(antifraud ?? new ScriptedAntifraud(otherwise: AntifraudOutcome.Allow))
             .AddSingleton<PaymentStore>()
             .AddSingleton<MerchantQuotas>()
             .AddSingleton<PaymentCompletion>()
             .AddSingleton<PaymentsMetrics>()
+            .AddTransient<PaymentSaga>()
             .AddSingleton<PaymentRecovery>();
 
         services.AddOptions<FeeOptions>();
         services.AddOptions<MerchantRateLimitOptions>();
+        services.Configure<AntifraudOptions>(options => options.FailOpenBelowAmount = FailOpenBelowAmount);
         services.Configure<RecoveryOptions>(options =>
         {
             options.Interval = Interval;      // fake time: a pause lasts until the test moves the clock

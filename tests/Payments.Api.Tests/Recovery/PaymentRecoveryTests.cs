@@ -2,11 +2,15 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
 using Payments.Api.Acquiring;
+using Payments.Api.Antifraud;
 using Payments.Api.Tests.Infrastructure;
 
 namespace Payments.Api.Tests.Recovery;
 
-/// <summary>What recovery does with each stuck payment: the bank's answers, races and failures, which payments it takes.</summary>
+/// <summary>
+/// What recovery does with each stuck payment: the answers of the bank and the antifraud, races and failures, which
+/// payments it takes. Recovery runs the same saga as the request, from where it stopped, and never fails open.
+/// </summary>
 [Collection("Postgres")]
 public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
 {
@@ -14,6 +18,7 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
     private static readonly TimeSpan Stale = TimeSpan.FromMinutes(1);
 
     private readonly FakeBank bank = new();
+    private readonly ScriptedAntifraud antifraud = new();
     private readonly FakeTimeProvider time = new();
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
@@ -23,16 +28,18 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
     public ValueTask DisposeAsync()
     {
         Assert.Empty(bank.Unscripted);
+        Assert.Empty(antifraud.Unscripted);
         return ValueTask.CompletedTask;
     }
 
     [Fact]
-    public async Task Approved_Payment_Is_Captured_With_Fee_And_One_Outbox_Event()
+    public async Task Approved_And_Allowed_Payment_Is_Captured_With_Fee_And_One_Outbox_Event()
     {
         var id = await db.InsertPaymentAsync(Stale, cancellationToken: Ct);
         bank.Answer(id, AcquirerOutcome.Approved);
+        antifraud.Answer(id, AntifraudOutcome.Allow);
 
-        await using var host = await RecoveryHost.StartAsync(db, bank, time, cancellationToken: Ct);
+        await using var host = await RecoveryHost.StartAsync(db, bank, time, antifraud: antifraud, cancellationToken: Ct);
         await host.WaitForPassesAsync(1);
 
         Assert.Equal("captured", await db.GetStatusAsync(id, Ct));
@@ -43,7 +50,7 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
 
         var record = Assert.Single(host.Logs.GetSnapshot(), r => r.GetStructuredStateValue("Reason") is not null);
         Assert.Equal("Captured", record.GetStructuredStateValue("Status"));
-        Assert.Equal("the bank approved it", record.GetStructuredStateValue("Reason"));
+        Assert.Equal("the antifraud allowed it", record.GetStructuredStateValue("Reason"));
     }
 
     [Theory]
@@ -54,7 +61,7 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
         var id = await db.InsertPaymentAsync(Stale, cancellationToken: Ct);
         bank.Answer(id, answer);
 
-        await using var host = await RecoveryHost.StartAsync(db, bank, time, cancellationToken: Ct);
+        await using var host = await RecoveryHost.StartAsync(db, bank, time, antifraud: antifraud, cancellationToken: Ct);
         await host.WaitForPassesAsync(1);
 
         Assert.Equal("declined", await db.GetStatusAsync(id, Ct));
@@ -66,32 +73,33 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
         var record = Assert.Single(host.Logs.GetSnapshot(), r => r.GetStructuredStateValue("Reason") is not null);
         Assert.Equal("Declined", record.GetStructuredStateValue("Status"));
         Assert.Equal(reason, record.GetStructuredStateValue("Reason"));
+        Assert.Equal(0, antifraud.ChecksFor(id));                  // nothing is held, nothing to check
     }
 
     [Fact]
-    public async Task Payment_Voided_At_The_Bank_Stays_In_Progress_And_The_Batch_Goes_On()
+    public async Task Payment_Voided_At_The_Bank_Is_Recorded_As_Voided_And_The_Batch_Goes_On()
     {
         var voided = await db.InsertPaymentAsync(Stale, cancellationToken: Ct);
         var approved = await db.InsertPaymentAsync(Stale, cancellationToken: Ct);
         bank.Answer(voided, AcquirerOutcome.Voided);
         bank.Answer(approved, AcquirerOutcome.Approved);
+        antifraud.Answer(approved, AntifraudOutcome.Allow);
 
-        await using var host = await RecoveryHost.StartAsync(db, bank, time, cancellationToken: Ct);
+        await using var host = await RecoveryHost.StartAsync(db, bank, time, antifraud: antifraud, cancellationToken: Ct);
         await host.WaitForPassesAsync(1);
 
-        // Until the saga can write 'voided' (stage 4, task 5) the payment is neither captured nor declined:
-        // declining would hide that the bank had approved it, and nothing is booked for it.
-        Assert.Equal("created", await db.GetStatusAsync(voided, Ct));
+        // No money is held: neither captured nor declined, which would hide that the bank had approved it.
+        Assert.Equal("voided", await db.GetStatusAsync(voided, Ct));
         Assert.Null(await db.GetFeeAsync(voided, Ct));
-        Assert.Equal(1L, await db.CountPendingAsync(Ct));           // still in the queue, for the saga to finish
+        Assert.Equal(0, antifraud.ChecksFor(voided));
 
         // The bank answered, so it is not taken for down: the rest of the batch is recovered in the same pass.
         Assert.Equal("captured", await db.GetStatusAsync(approved, Ct));
+        Assert.Equal(0L, await db.CountPendingAsync(Ct));
         var pass = Assert.Single(host.Passes);
         Assert.Equal(1, Tag(pass, "recovery.captured"));
-        Assert.Equal(1, Tag(pass, "recovery.skipped"));
-
-        Assert.Contains(host.Logs.GetSnapshot(), r => r.Level == LogLevel.Warning && r.Message.Contains(voided.ToString()));
+        Assert.Equal(1, Tag(pass, "recovery.voided"));
+        Assert.Equal(0, Tag(pass, "recovery.skipped"));
     }
 
     [Fact]
@@ -136,7 +144,7 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
         await host.WaitForPassesAsync(1);
 
         Assert.Equal("captured", await db.GetStatusAsync(id, Ct));
-        Assert.Equal(0L, await db.CountOutboxAsync(Ct));            // WHERE status = 'created' found nothing to update
+        Assert.Equal(0L, await db.CountOutboxAsync(Ct));            // WHERE status = 'created' found nothing to authorize
         Assert.Empty(host.Captured.GetMeasurementSnapshot());       // and the payment was not counted twice
         Assert.Equal(1, Tag(Assert.Single(host.Passes), "recovery.previously_resolved"));
     }
@@ -210,26 +218,69 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Authorized_Payment_Is_Taken_From_The_Queue_But_Left_For_The_Saga()
+    public async Task Authorized_Payment_Goes_On_From_The_Antifraud_Without_Asking_The_Bank()
     {
-        var authorized = await db.InsertPaymentAsync(TimeSpan.FromMinutes(2), "authorized", Ct);   // the oldest
-        var voided = await db.InsertPaymentAsync(Stale, "voided", Ct);
-        var stuck = await db.InsertPaymentAsync(Stale, cancellationToken: Ct);
-        bank.Answer(stuck, AcquirerOutcome.Approved);
+        var authorized = await db.InsertPaymentAsync(Stale, "authorized", Ct);
+        antifraud.Answer(authorized, AntifraudOutcome.Allow);
 
-        await using var host = await RecoveryHost.StartAsync(db, bank, time, cancellationToken: Ct);
+        await using var host = await RecoveryHost.StartAsync(db, bank, time, antifraud: antifraud, cancellationToken: Ct);
         await host.WaitForPassesAsync(1);
 
-        // In the batch, but the bank is not asked: resuming from 'authorized' is stage 4, task 5.
-        Assert.Equal(stuck, Assert.Single(bank.LookupOrder));
-        Assert.Equal("authorized", await db.GetStatusAsync(authorized, Ct));
-        Assert.Equal("voided", await db.GetStatusAsync(voided, Ct));
-        Assert.Equal(1L, await db.CountPendingAsync(Ct));       // the authorized one waits in the queue
+        // The approval is in the status already: the bank is not asked again.
+        Assert.Equal(0, bank.LookupsFor(authorized));
+        Assert.Equal(1, antifraud.ChecksFor(authorized));
+        Assert.Equal("captured", await db.GetStatusAsync(authorized, Ct));
+        Assert.Equal(1L, await db.CountOutboxAsync(Ct));
+        Assert.Equal(0L, await db.CountPendingAsync(Ct));
+    }
 
+    [Fact]
+    public async Task Authorized_Payment_Denied_By_The_Antifraud_Is_Voided_At_The_Bank()
+    {
+        var authorized = await db.InsertPaymentAsync(Stale, "authorized", Ct);
+        antifraud.Answer(authorized, AntifraudOutcome.Deny);
+        bank.AnswerVoid(authorized, VoidOutcome.Voided);
+
+        await using var host = await RecoveryHost.StartAsync(db, bank, time, antifraud: antifraud, cancellationToken: Ct);
+        await host.WaitForPassesAsync(1);
+
+        Assert.Equal(1, bank.VoidsFor(authorized));
+        Assert.Equal("voided", await db.GetStatusAsync(authorized, Ct));
+        Assert.Equal(0L, await db.CountOutboxAsync(Ct));
+        Assert.Equal(0L, await db.CountPendingAsync(Ct));
+        Assert.Equal(1, Tag(Assert.Single(host.Passes), "recovery.voided"));
+    }
+
+    [Fact]
+    public async Task Approved_Payment_Without_An_Antifraud_Decision_Waits_In_Authorized_And_Is_Never_Captured_Unchecked()
+    {
+        // Both well below RecoveryHost.FailOpenBelowAmount: the request path would let them through unchecked.
+        var first = await db.InsertPaymentAsync(TimeSpan.FromMinutes(2), cancellationToken: Ct);
+        var second = await db.InsertPaymentAsync(Stale, cancellationToken: Ct);
+        bank.Answer(first, AcquirerOutcome.Approved);
+        bank.Answer(second, AcquirerOutcome.Approved);
+        antifraud.AnswerInTurn(first, AntifraudOutcome.Unknown, AntifraudOutcome.Allow);   // down at first, then back
+        antifraud.Answer(second, AntifraudOutcome.Allow);
+
+        await using var host = await RecoveryHost.StartAsync(db, bank, time, antifraud: antifraud, cancellationToken: Ct);
+        await host.WaitForPassesAsync(1);
+
+        // The bank approved, so the payment is authorized, and it waits there for a decision: no fail open. The rest
+        // of the pass is skipped without asking the antifraud again.
+        Assert.Equal("authorized", await db.GetStatusAsync(first, Ct));
+        Assert.Equal(0L, await db.CountOutboxAsync(Ct));
+        Assert.Equal(0, bank.LookupsFor(second));
         var pass = Assert.Single(host.Passes);
-        Assert.Equal(2, Tag(pass, "recovery.batch.size"));
-        Assert.Equal(1, Tag(pass, "recovery.captured"));
-        Assert.Equal(1, Tag(pass, "recovery.skipped"));
+        Assert.Equal(ActivityStatusCode.Error, pass.Status);
+        Assert.Equal(2, Tag(pass, "recovery.skipped"));
+
+        // The next pass, after Interval, goes on from 'authorized': the antifraud only, not the bank again.
+        await host.AdvanceUntilAsync(async () => await db.GetStatusAsync(second, Ct) == "captured");
+
+        Assert.Equal("captured", await db.GetStatusAsync(first, Ct));
+        Assert.Equal(1, bank.LookupsFor(first));
+        Assert.Equal(2, antifraud.ChecksFor(first));
+        Assert.Contains(host.Logs.GetSnapshot(), r => r.Level == LogLevel.Warning && r.Message.StartsWith("Antifraud unavailable", StringComparison.Ordinal));
     }
 
     [Fact]
