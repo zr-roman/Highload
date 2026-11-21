@@ -29,6 +29,7 @@ public sealed partial class Stand(string repository, string network)
 
         var networks = await Shell.RunCheckedAsync("docker inspect of Redis", "docker",
             ["inspect", "-f", "{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}", RedisContainer], ct);
+
         var network = networks.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()
             ?? throw new BenchException($"{RedisContainer} is on no network");
 
@@ -38,14 +39,17 @@ public sealed partial class Stand(string repository, string network)
     public async Task BuildAsync(string logPath, CancellationToken ct)
     {
         Console.WriteLine($"Building {Image} (log: {logPath})");
+
         var result = await Shell.RunAsync("docker",
             ["build", "-t", Image, "-f", Path.Combine("src", "antifraud-service", "Dockerfile"), "."], ct, repository);
+
         await File.WriteAllTextAsync(logPath, result.Output + "\n" + result.Errors, ct);
+
         if (result.ExitCode != 0)
             throw new BenchException($"docker build failed (exit code {result.ExitCode}), see {logPath}");
     }
 
-    public async Task CheckImageAsync(CancellationToken ct)
+    public static async Task CheckImageAsync(CancellationToken ct)
     {
         var result = await Shell.RunAsync("docker", ["image", "inspect", "-f", "{{.Id}}", Image], ct);
         if (result.ExitCode != 0)
@@ -66,10 +70,13 @@ public sealed partial class Stand(string repository, string network)
             "-e", $"ANTIFRAUD_REDIS_URL=redis://{RedisContainer}:6379/0",
             "-e", $"ANTIFRAUD_REDIS_TIMEOUT_MS={redisTimeoutMs}",
         ];
+
         if (maxInFlight is { } limit)
             arguments.AddRange(["-e", $"ANTIFRAUD_MAX_IN_FLIGHT={limit}"]);
+
         if (cpus > 0)
             arguments.AddRange(["--cpus", cpus.ToString("0.##")]);
+
         arguments.AddRange(
         [
             Image,

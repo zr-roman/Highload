@@ -14,7 +14,7 @@ public static class BenchRunner
         if (options.Build)
             await stand.BuildAsync(Path.Combine(reports, "docker-build.log"), ct);
         else
-            await stand.CheckImageAsync(ct);
+            await Stand.CheckImageAsync(ct);
 
         var k6 = new K6(k6Image, repository, stand, reports);
         await k6.PullAsync(ct);
@@ -74,10 +74,8 @@ public static class BenchRunner
     private static string FindRepository()
     {
         for (var folder = new DirectoryInfo(Directory.GetCurrentDirectory()); folder is not null; folder = folder.Parent)
-        {
-            if (File.Exists(Path.Combine(folder.FullName, "payments-platform.slnx")))
-                return folder.FullName;
-        }
+            if (File.Exists(Path.Combine(folder.FullName, "payments-platform.slnx"))) return folder.FullName;
+
         throw new BenchException("Run the bench inside the repository: payments-platform.slnx is not found above the current folder");
     }
 
@@ -85,6 +83,7 @@ public static class BenchRunner
     {
         var head = await Shell.RunAsync("git", ["rev-parse", "--short", "HEAD"], ct, repository);
         var changes = await Shell.RunAsync("git", ["status", "--porcelain"], ct, repository);
+
         return head.ExitCode != 0
             ? "неизвестен"
             : $"`{head.Output}`{(changes.Output.Length > 0 ? " и незакоммиченные правки" : "")}";
