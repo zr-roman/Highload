@@ -11,5 +11,6 @@
     <Project Path="src/Platform/Platform.csproj" />
   </Folder>
   <Project Path="tests/EndToEnd.Tests/EndToEnd.Tests.csproj" />
+  <Project Path="tests/Ledger.Service.Tests/Ledger.Service.Tests.csproj" />
   <Project Path="tests/Payments.Api.Tests/Payments.Api.Tests.csproj" />
 </Solution>
