@@ -200,9 +200,10 @@ public sealed class MoneyAddsUpTests(PlatformFixture platform, ITestOutputHelper
             timeout: TimeSpan.FromSeconds(60));
 
         // 2. Nothing is lost on the way: the ledger has every captured payment, and no payment is left unfinished.
+        //    A voided payment, denied by the antifraud after the bank, has no event: the ledger never hears of it.
         var captured = await CapturedAsync();
         Assert.Equal(captured, await BookedAsync());
-        Assert.Equal(0, await ScalarAsync(platform.PaymentsDb, "SELECT count(*) FROM payments WHERE status = 'created'"));
+        Assert.Equal(0, await ScalarAsync(platform.PaymentsDb, "SELECT count(*) FROM payments WHERE status IN ('created', 'authorized')"));
         Assert.Equal(0, await ScalarAsync(platform.PaymentsDb, "SELECT count(*) FROM pending_payments"));
 
         // 3. Money adds up across the services: what Payments.Api captured is what the ledger booked, once.

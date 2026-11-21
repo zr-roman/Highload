@@ -157,7 +157,13 @@ public sealed class Stand(string repository, string reports, MatrixOptions optio
     private LoggedProcess StartPaymentsApi(bool limiter, int instance, string url)
     {
         // Set either way: a value left in the shell is not passed on (Processes.IsStandSetting).
-        var settings = new Dictionary<string, string>(ServiceSettings) { ["RateLimiting__Merchant__Enabled"] = limiter ? "true" : "false" };
+        var settings = new Dictionary<string, string>(ServiceSettings)
+        {
+            ["RateLimiting__Merchant__Enabled"] = limiter ? "true" : "false",
+            // The antifraud decides in the process: the matrix measures the way of a payment and stays comparable with
+            // the matrices before the saga. The antifraud service has a bench of its own (load/AntifraudBench).
+            ["Antifraud__Mode"] = "Fake",
+        };
 
         // --hot-quota: the override of RateLimiting:Merchant:Overrides, as appsettings.json would carry it.
         if (options.HotQuota > 0)

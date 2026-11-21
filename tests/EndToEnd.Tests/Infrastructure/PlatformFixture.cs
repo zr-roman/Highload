@@ -80,7 +80,8 @@ public sealed class PlatformFixture : IAsyncLifetime
             ["Acquirer:Mode"] = "Fake",
             ["Acquirer:LatencyMs"] = "20",                   // copies of a payment arrive while the first is still at the bank
             ["Acquirer:DeclineRatePercent"] = "10",          // both outcomes in the mix
-            ["Antifraud:Mode"] = "Fake",                     // no antifraud service here: the fake allows every payment
+            ["Antifraud:Mode"] = "Fake",                     // no antifraud service here: the fake decides in the process
+            ["Antifraud:DenyRatePercent"] = "5",             // and denies some, so the saga voids their authorization
             ["RateLimiting:Merchant:Enabled"] = "false",     // the test sends a merchant far more than its limit
             // Merchant 1, the hot one, is large: with a quota of its own, its payments are spread over the partitions.
             // The quota itself does not act: the limiter is off.

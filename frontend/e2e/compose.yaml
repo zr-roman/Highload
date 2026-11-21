@@ -66,6 +66,8 @@ services:
       Acquirer__BaseAddress: http://bank:5300/
       Acquirer__Resilience__AttemptTimeout__Timeout: "00:00:02"
       Acquirer__Resilience__TotalRequestTimeout__Timeout: "00:00:06"
+      # No antifraud service on this stand: the fake in the process allows every payment.
+      Antifraud__Mode: Fake
 
   ledger:
     build:

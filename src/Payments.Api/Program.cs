@@ -51,6 +51,7 @@ builder.Services.AddOptions<RecoveryOptions>()
 builder.Services.AddOptions<AntifraudOptions>()
     .Bind(builder.Configuration.GetSection("Antifraud"))
     .Validate(o => o.FailOpenBelowAmount >= 0, "Antifraud:FailOpenBelowAmount must be 0 (fail open off) or more")
+    .Validate(o => o.DenyRatePercent is >= 0 and <= 100, "Antifraud:DenyRatePercent must be from 0 to 100")
     .ValidateOnStart();
 
 // Validated by MerchantQuotas, not here: see its remarks.

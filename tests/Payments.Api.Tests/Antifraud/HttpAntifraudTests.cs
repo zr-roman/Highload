@@ -163,14 +163,6 @@ public sealed class HttpAntifraudTests : IDisposable
         Assert.Single(bank.Requests);
     }
 
-    [Fact]
-    public async Task Fake_Antifraud_Allows_Every_Payment()
-    {
-        var result = await new FakeAntifraud().CheckAsync(NewPayment(), Ct);
-
-        Assert.Equal(AntifraudOutcome.Allow, result.Outcome);
-    }
-
     private static Payment NewPayment(long merchantId = 42) =>
         new(Guid.NewGuid(), merchantId, "key", "hash", 150000, "RUB", Fee: null, PaymentStatus.Authorized,
             new DateTimeOffset(2026, 11, 21, 12, 0, 0, TimeSpan.FromHours(3)));
