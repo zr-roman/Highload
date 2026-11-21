@@ -10,8 +10,7 @@ namespace Payments.Api.Payments;
 /// </summary>
 public sealed class PaymentStore(NpgsqlDataSource dataSource)
 {
-    private const string SelectColumns =
-        "id, merchant_id, idempotency_key, request_hash, amount, currency, fee, status, created_at";
+    private const string SelectColumns = "id, merchant_id, idempotency_key, request_hash, amount, currency, fee, status, created_at";
 
     // The same columns of payments joined to pending_payments, which has an id and a created_at of its own.
     private static readonly string SelectPaymentColumns = string.Join(", ", SelectColumns.Split(", ").Select(column => $"p.{column}"));
@@ -33,12 +32,34 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
             INSERT INTO pending_payments (id, created_at)
             SELECT id, created_at FROM payment
             """);
+
         command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = payment.Id });
         command.Parameters.Add(new NpgsqlParameter<long> { TypedValue = payment.MerchantId });
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = payment.IdempotencyKey });
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = payment.RequestHash });
         command.Parameters.Add(new NpgsqlParameter<long> { TypedValue = payment.Amount });
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = payment.Currency });
+
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
+    /// <summary>
+    /// The bank approved: the money is held, the antifraud has not decided yet. Written on every approval, even when
+    /// the decision comes right after it: every transition then has exactly one source status, and the row always shows
+    /// where the saga stopped. 'authorized' is not final, so the payment stays in pending_payments: if the process
+    /// dies before the decision, recovery finds the payment there and goes on from the antifraud, without asking the
+    /// bank again.
+    /// </summary>
+    public async Task<bool> MarkAuthorizedAsync(Guid paymentId, CancellationToken cancellationToken)
+    {
+        await using var command = dataSource.CreateCommand("""
+            UPDATE payments
+            SET status = 'authorized', updated_at = now()
+            WHERE id = $1 AND status = 'created'
+            """);
+
+        command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = paymentId });
+
         return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 
@@ -65,6 +86,7 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
             INSERT INTO outbox (topic, message_key, payload)
             SELECT $3, $4, $5 FROM captured
             """);
+
         command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = captured.PaymentId });
         command.Parameters.Add(new NpgsqlParameter<long> { TypedValue = captured.Fee });
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = Topics.PaymentsCaptured });
@@ -73,6 +95,7 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
         {
             TypedValue = JsonSerializer.Serialize(captured, ContractsJson.Default.PaymentCaptured),
         });
+
         return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 
@@ -93,7 +116,37 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
             )
             SELECT count(*) FROM declined
             """);
+
         command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = paymentId });
+
+        return (long)(await command.ExecuteScalarAsync(cancellationToken))! == 1;
+    }
+
+    /// <summary>
+    /// The authorization is voided at the bank: the hold is gone, no money moves. A final status, so the payment leaves
+    /// pending_payments in the same statement, as on capture and decline. No outbox row: the ledger hears only of
+    /// captured payments, so a voided one never reached it, and there is nothing to undo there.
+    /// From 'authorized', where the saga voids after a deny of the antifraud, and from 'created': the bank may already
+    /// report the authorization of a payment still in 'created' as voided (AcquirerOutcome.Voided), and a voided
+    /// authorization holds no money, whatever the row says.
+    /// </summary>
+    public async Task<bool> MarkVoidedAsync(Guid paymentId, CancellationToken cancellationToken)
+    {
+        await using var command = dataSource.CreateCommand("""
+            WITH voided AS (
+                UPDATE payments
+                SET status = 'voided', updated_at = now()
+                WHERE id = $1 AND status IN ('created', 'authorized')
+                RETURNING id
+            ),
+            settled AS (
+                DELETE FROM pending_payments WHERE id IN (SELECT id FROM voided)
+            )
+            SELECT count(*) FROM voided
+            """);
+
+        command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = paymentId });
+
         return (long)(await command.ExecuteScalarAsync(cancellationToken))! == 1;
     }
 
@@ -143,6 +196,7 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
     private static async Task<Payment?> ReadSingleAsync(NpgsqlCommand command, CancellationToken cancellationToken)
     {
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
         if (!await reader.ReadAsync(cancellationToken))
             return null;
 
