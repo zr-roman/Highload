@@ -39,14 +39,13 @@ public static class DatabaseSchema
         await using (var transaction = await connection.BeginTransactionAsync(cancellationToken))
         {
             // A transaction-level lock: the commit releases it, and so does the rollback if the script fails.
-            await using (var takeLock = new NpgsqlCommand("SELECT pg_advisory_xact_lock($1)", connection, transaction))
-            {
-                takeLock.Parameters.Add(new NpgsqlParameter<long> { TypedValue = SchemaLockKey });
-                await takeLock.ExecuteNonQueryAsync(cancellationToken);
-            }
+            await using var takeLock = new NpgsqlCommand("SELECT pg_advisory_xact_lock($1)", connection, transaction);
+            
+            takeLock.Parameters.Add(new NpgsqlParameter<long> { TypedValue = SchemaLockKey });
+            await takeLock.ExecuteNonQueryAsync(cancellationToken);
 
-            await using (var command = new NpgsqlCommand(sql, connection, transaction))
-                await command.ExecuteNonQueryAsync(cancellationToken);
+            await using var command = new NpgsqlCommand(sql, connection, transaction);
+            await command.ExecuteNonQueryAsync(cancellationToken);
 
             await transaction.CommitAsync(cancellationToken);
         }
