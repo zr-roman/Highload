@@ -1,4 +1,5 @@
-﻿using Payments.Api.Payments;
+﻿using Contracts;
+using Payments.Api.Payments;
 using Payments.Api.Tests.Infrastructure;
 
 namespace Payments.Api.Tests.Payments;
@@ -49,6 +50,22 @@ public sealed class PaymentStoreTests(PostgresFixture db) : IAsyncLifetime
 
         Assert.Equal(status, await db.GetStatusAsync(id, Ct));
         Assert.Equal(pending, await db.CountPendingAsync(Ct));
+    }
+
+    [Theory]
+    [InlineData("authorized")]      // the saga, after the antifraud
+    [InlineData("created")]         // recovery, until it runs the saga as well
+    public async Task Captured_Payment_Gets_Its_Fee_And_One_Outbox_Row(string status)
+    {
+        var id = await db.InsertPaymentAsync(Age, status, Ct);
+        var captured = new PaymentCaptured(id, 42, 150_000, 3_000, "RUB", DateTimeOffset.UtcNow);
+
+        Assert.True(await store.MarkCapturedAsync(captured, "42", Ct));
+
+        Assert.Equal("captured", await db.GetStatusAsync(id, Ct));
+        Assert.Equal(3_000L, await db.GetFeeAsync(id, Ct));
+        Assert.Equal(1L, await db.CountOutboxAsync(Ct));
+        Assert.Equal(0L, await db.CountPendingAsync(Ct));
     }
 
     [Theory]

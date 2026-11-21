@@ -30,16 +30,27 @@ var postgres = builder.Configuration.GetConnectionString("Payments")
 var kafka = builder.Configuration.GetConnectionString("Kafka")
     ?? throw new InvalidOperationException("Connection string 'Kafka' is not configured.");
 
-var httpStandardResilienceOptions = builder.Configuration.GetSection("Acquirer:Resilience").Get<HttpStandardResilienceOptions>() 
-    ?? new HttpStandardResilienceOptions();
+var bankTimeout = (builder.Configuration.GetSection("Acquirer:Resilience").Get<HttpStandardResilienceOptions>()
+    ?? new HttpStandardResilienceOptions()).TotalRequestTimeout.Timeout;
+var antifraudTimeout = (builder.Configuration.GetSection("Antifraud:Resilience").Get<HttpStandardResilienceOptions>()
+    ?? new HttpStandardResilienceOptions()).TotalRequestTimeout.Timeout;
 
-var msg = $"StaleAfter must be more than twice Acquirer:Resilience:TotalRequestTimeout ({httpStandardResilienceOptions.TotalRequestTimeout.Timeout})";
+// The longest saga of a request: the authorization, the check and, after a deny, the void, each up to its pipeline's
+// total timeout. Recovery must not take a payment the request may still be working on.
+var sagaTimeout = bankTimeout + antifraudTimeout + bankTimeout;
+var msg = $"StaleAfter must be more than twice the longest saga of a request ({sagaTimeout}: " +
+    "Acquirer:Resilience:TotalRequestTimeout for the authorization and the void, Antifraud:Resilience:TotalRequestTimeout for the check)";
 
 builder.Services.AddOptions<RecoveryOptions>()
     .Bind(builder.Configuration.GetSection("Recovery"))
     .Validate(o => o.Interval > TimeSpan.Zero && o.BatchSize > 0 && o.MaxParallelism > 0,
         "Recovery: Interval, BatchSize and MaxParallelism must be positive")
-    .Validate(recoveryOptions => recoveryOptions.StaleAfter > 2 * httpStandardResilienceOptions.TotalRequestTimeout.Timeout, msg)
+    .Validate(recoveryOptions => recoveryOptions.StaleAfter > 2 * sagaTimeout, msg)
+    .ValidateOnStart();
+
+builder.Services.AddOptions<AntifraudOptions>()
+    .Bind(builder.Configuration.GetSection("Antifraud"))
+    .Validate(o => o.FailOpenBelowAmount >= 0, "Antifraud:FailOpenBelowAmount must be 0 (fail open off) or more")
     .ValidateOnStart();
 
 // Validated by MerchantQuotas, not here: see its remarks.
@@ -72,6 +83,8 @@ builder.Services.Configure<OutboxOptions>(builder.Configuration.GetSection("Outb
 
 builder.Services.AddSingleton<PaymentStore>();
 builder.Services.AddSingleton<PaymentCompletion>();
+// Transient, like the typed HTTP clients of the bank and the antifraud it takes (see PaymentSaga).
+builder.Services.AddTransient<PaymentSaga>();
 builder.Services.AddSingleton<PaymentsMetrics>();
 builder.Services.AddSingleton<IMerchantRateLimitStore, RedisTokenBucket>();
 builder.Services.AddSingleton<RedisCircuitBreaker>();
@@ -90,7 +103,6 @@ if (acquirer.Mode == AcquirerMode.Http)
 else
     builder.Services.AddSingleton<IAcquirer, FakeAcquirer>();
 
-// Registered, not called yet: the saga that checks a payment after the bank comes with stage 4, task 5.
 var antifraud = builder.Configuration.GetSection("Antifraud").Get<AntifraudOptions>() ?? new AntifraudOptions();
 if (antifraud.Mode == AntifraudMode.Http)
     builder.Services.AddHttpAntifraud(builder.Configuration.GetSection("Antifraud"));

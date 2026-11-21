@@ -46,7 +46,7 @@ public sealed class HttpAcquirer(HttpClient http, MerchantQuotas quotas, ILogger
             var decision = CreateAcquirerDecision(payment.Id, body);
             if (decision.Outcome == AcquirerOutcome.Voided)
             {
-                // Only a payment voided before can get this, and the request path does not void yet (stage 4, task 5).
+                // Only a payment voided before can get this: the saga voids an authorization it has already written.
                 logger.LogWarning("Bank answered the authorization of payment {PaymentId} with voided: it was voided before", payment.Id);
             }
 

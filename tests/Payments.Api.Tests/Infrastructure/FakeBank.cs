@@ -5,13 +5,16 @@ using Payments.Api.Payments;
 namespace Payments.Api.Tests.Infrastructure;
 
 /// <summary>
-/// The bank for recovery tests: every payment gets a scripted answer, every lookup is counted.
-/// A lookup for a payment the test gave no answer for lands in <see cref="Unscripted"/>,
-/// so the test fails loudly instead of recovery quietly skipping the payment.
+/// The bank for the tests of recovery and of the saga: every payment gets a scripted answer, every call is counted.
+/// A call for a payment the test gave no answer for lands in <see cref="Unscripted"/>,
+/// so the test fails loudly instead of the code quietly skipping the payment.
 /// </summary>
 public sealed class FakeBank : IAcquirer
 {
     private readonly ConcurrentDictionary<Guid, Func<CancellationToken, Task<AcquirerDecision?>>> answers = new();
+    private readonly ConcurrentDictionary<Guid, AcquirerOutcome> authorizations = new();
+    private readonly ConcurrentDictionary<Guid, VoidOutcome> voidAnswers = new();
+    private readonly ConcurrentDictionary<Guid, int> voidsByPayment = new();
     private readonly ConcurrentDictionary<Guid, int> lookupsByPayment = new();
     private readonly ConcurrentQueue<Guid> lookupOrder = new();
     private readonly ConcurrentQueue<Guid> unscripted = new();
@@ -27,6 +30,15 @@ public sealed class FakeBank : IAcquirer
     public Guid[] Unscripted => unscripted.ToArray();
 
     public int LookupsFor(Guid paymentId) => lookupsByPayment.TryGetValue(paymentId, out var count) ? count : 0;
+
+    /// <summary>Voids asked for this payment so far.</summary>
+    public int VoidsFor(Guid paymentId) => voidsByPayment.TryGetValue(paymentId, out var count) ? count : 0;
+
+    /// <summary>The answer to the authorization of the payment, the request path of the saga.</summary>
+    public void AnswerAuthorization(Guid paymentId, AcquirerOutcome outcome) => authorizations[paymentId] = outcome;
+
+    /// <summary>The answer to a void of the payment's authorization, the compensation of the saga.</summary>
+    public void AnswerVoid(Guid paymentId, VoidOutcome outcome) => voidAnswers[paymentId] = outcome;
 
     /// <summary>The bank's decision; null means it has none (404): the authorization never reached it.</summary>
     public void Answer(Guid paymentId, AcquirerOutcome? outcome) =>
@@ -73,12 +85,24 @@ public sealed class FakeBank : IAcquirer
         return await answer(cancellationToken);
     }
 
-    public Task<AcquirerDecision> AuthorizeAsync(Payment payment, CancellationToken cancellationToken) =>
-        throw new NotSupportedException("Recovery never authorizes payments");
+    public Task<AcquirerDecision> AuthorizeAsync(Payment payment, CancellationToken cancellationToken)
+    {
+        if (authorizations.TryGetValue(payment.Id, out var outcome))
+            return Task.FromResult(new AcquirerDecision(outcome));
 
-    // Recovery does not void yet: resuming the saga from 'authorized' is stage 4, task 5.
-    public Task<VoidOutcome> VoidAsync(Payment payment, CancellationToken cancellationToken) =>
-        throw new NotSupportedException("Recovery does not void payments yet");
+        unscripted.Enqueue(payment.Id);
+        throw new InvalidOperationException($"The test gave the bank no authorization for payment {payment.Id}");
+    }
+
+    public Task<VoidOutcome> VoidAsync(Payment payment, CancellationToken cancellationToken)
+    {
+        voidsByPayment.AddOrUpdate(payment.Id, 1, (_, count) => count + 1);
+        if (voidAnswers.TryGetValue(payment.Id, out var outcome))
+            return Task.FromResult(outcome);
+
+        unscripted.Enqueue(payment.Id);
+        throw new InvalidOperationException($"The test gave the bank no answer to a void of payment {payment.Id}");
+    }
 
     private static AcquirerDecision? Decision(AcquirerOutcome? outcome) =>
         outcome is { } value ? new AcquirerDecision(value) : null;

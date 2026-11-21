@@ -8,8 +8,8 @@ namespace Payments.Api.Payments;
 public sealed class PaymentCompletion(
     PaymentStore store, IOptions<FeeOptions> feeOptions, MerchantQuotas quotas, PaymentsMetrics metrics, ILogger<PaymentCompletion> logger)
 {
-    // «Провести по одобрению банка»
-    public async Task<PaymentCaptured?> CaptureOnBankApprovalAsync(Payment payment, CancellationToken cancellationToken)
+    // «Провести»: после allow антифрода или fail open (сага), а пока и по одобрению банка (восстановление).
+    public async Task<PaymentCaptured?> CaptureAsync(Payment payment, CancellationToken cancellationToken)
     {
         var fee = feeOptions.Value.Calculate(payment.Amount);
         var captured = new PaymentCaptured(payment.Id, payment.MerchantId, payment.Amount, fee, payment.Currency, DateTimeOffset.UtcNow);
@@ -24,7 +24,7 @@ public sealed class PaymentCompletion(
         }
         else
         {
-            logger.LogWarning("Payment {PaymentId} left 'created' before its capture was recorded", payment.Id);
+            logger.LogWarning("Payment {PaymentId} moved on before its capture was recorded", payment.Id);
             return null;
         }
     }

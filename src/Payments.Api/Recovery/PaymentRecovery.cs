@@ -149,7 +149,7 @@ public sealed class PaymentRecovery(
 
     private async Task CaptureAsync(Payment payment, RecoveryPass pass, CancellationToken cancellationToken)
     {
-        if (await paymentCompletion.CaptureOnBankApprovalAsync(payment, cancellationToken) is not null)
+        if (await paymentCompletion.CaptureAsync(payment, cancellationToken) is not null)
         {
             Interlocked.Increment(ref pass.Captured);
             logger.LogInformation(RecoveredTemplate, payment.Id, PaymentStatus.Captured, "the bank approved it");

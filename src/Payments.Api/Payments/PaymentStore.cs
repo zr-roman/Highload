@@ -65,10 +65,11 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
 
     /// <summary>
     /// The status change and the outbox row are written by one statement: they commit together,
-    /// and the outbox row appears only if the payment really moved out of 'created'. The same statement takes
+    /// and the outbox row appears only if the payment really moved to 'captured'. The same statement takes
     /// the payment out of pending_payments: captured is final. Of the statuses only 'authorized' is not final and
     /// keeps the payment in the queue, for recovery to finish the saga.
-    /// Only from 'created' for now; the capture of an authorized payment comes with the saga (stage 4, task 5).
+    /// From 'authorized', where the saga captures after the antifraud. From 'created' too, until recovery runs the
+    /// saga as well (stage 4, task 5): for now it captures straight after the bank's approval.
     /// The message key decides the partition, and so the Ledger consumer (Topics.PaymentsCapturedKey).
     /// </summary>
     public async Task<bool> MarkCapturedAsync(PaymentCaptured captured, string messageKey, CancellationToken cancellationToken)
@@ -77,7 +78,7 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
             WITH captured AS (
                 UPDATE payments
                 SET status = 'captured', fee = $2, updated_at = now()
-                WHERE id = $1 AND status = 'created'
+                WHERE id = $1 AND status IN ('created', 'authorized')
                 RETURNING id
             ),
             settled AS (

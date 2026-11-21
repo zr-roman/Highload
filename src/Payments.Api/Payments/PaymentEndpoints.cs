@@ -1,5 +1,4 @@
 using Microsoft.AspNetCore.Mvc;
-using Payments.Api.Acquiring;
 using Payments.Api.RateLimiting;
 using Payments.Api.Telemetry;
 
@@ -18,8 +17,7 @@ public static class PaymentEndpoints
         CreatePaymentRequest request,
         [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         PaymentStore store,
-        PaymentCompletion paymentCompletion,
-        IAcquirer acquirer,
+        PaymentSaga saga,
         PaymentsMetrics metrics,
         CancellationToken cancellationToken)
     {
@@ -44,48 +42,19 @@ public static class PaymentEndpoints
         if (!await store.TryInsertAsync(payment, cancellationToken))
             return await ReplayAsync(store, payment, metrics, cancellationToken);
 
-        // Step 2. The bank is called with no database transaction open (experiment 2: a waiting
-        // transaction holds back vacuum). From this point on the request's cancellation token is not used:
-        // if the client disconnects after the bank approved, the result must still be recorded.
+        // Step 2. The saga: the bank, the antifraud, then capture or void. No database transaction is open while they
+        // answer (experiment 2: a waiting transaction holds back vacuum). From this point on the request's
+        // cancellation token is not used: if the client disconnects after the bank approved, the result must still be
+        // recorded.
 
-        var decision = await acquirer.AuthorizeAsync(payment, CancellationToken.None);
+        var result = await saga.RunAsync(payment, CancellationToken.None);
 
-        // Step 3. Record the outcome. For a captured payment the event goes to the outbox in the same statement.
+        // Step 3. A final status is the answer. A payment still in progress, the bank or the antifraud silent, gets 202:
+        // recovery finishes it, and the client asks GET /payments/{id}.
 
-        switch (decision.Outcome)
-        {
-            case AcquirerOutcome.Approved:
-                var paymentCaptured = await paymentCompletion.CaptureOnBankApprovalAsync(payment, CancellationToken.None);
-                if (paymentCaptured is not null)
-                    return Results.Created($"/payments/{payment.Id}", PaymentResponse.From(payment with { Status = PaymentStatus.Captured, Fee = paymentCaptured.Fee }));
-
-                return await CreateResponseWithPaymentFromStoreAsync(store, payment.Id);
-
-            case AcquirerOutcome.Declined:
-                if (await paymentCompletion.DeclineOnBankDenialAsync(payment.Id, CancellationToken.None))
-                    return Results.Created($"/payments/{payment.Id}", PaymentResponse.From(payment with { Status = PaymentStatus.Declined }));
-
-                return await CreateResponseWithPaymentFromStoreAsync(store, payment.Id);
-
-            case AcquirerOutcome.Unknown:
-                metrics.Unknown();
-                return Results.Accepted($"/payments/{payment.Id}", PaymentResponse.From(payment));
-
-            case AcquirerOutcome.Voided:
-                // A voided authorization of a payment written just now: not a normal flow (HttpAcquirer logs it).
-                // Writing 'voided' comes with the saga (stage 4, task 5); until then the payment stays in 'created',
-                // and the client is told to ask later, as when the bank is silent. No money is held either way.
-                return Results.Accepted($"/payments/{payment.Id}", PaymentResponse.From(payment));
-
-            default:
-                throw new InvalidOperationException($"Unexpected acquirer outcome {decision.Outcome} for payment {payment.Id}");
-        }
-    }
-
-    private static async Task<IResult> CreateResponseWithPaymentFromStoreAsync(PaymentStore store, Guid paymentId) 
-    {
-        var paymentFromStore = await store.FindByIdAsync(paymentId, CancellationToken.None);
-        return Results.Created($"/payments/{paymentId}", PaymentResponse.From(paymentFromStore ?? throw new InvalidOperationException($"Не найден платеж в базе c paymentId={paymentId}.")));
+        return result.Status is PaymentStatus.Created or PaymentStatus.Authorized
+            ? Results.Accepted($"/payments/{result.Id}", PaymentResponse.From(result))
+            : Results.Created($"/payments/{result.Id}", PaymentResponse.From(result));
     }
 
     /// <summary>The same Idempotency-Key came again: answer with the existing payment instead of paying twice.</summary>
