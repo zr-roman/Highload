@@ -56,6 +56,8 @@ Python 3.12, FastAPI + uvicorn, Pydantic, `redis.asyncio`; тесты — pytest
 
 Неверное значение — сервис не стартует.
 
+На Windows таймаут Redis в 20 мс даёт ложные 503 даже без нагрузки: таймауты `asyncio` там огрубляются часами с шагом около 15,6 мс. Для локальных замеров ставьте `ANTIFRAUD_REDIS_TIMEOUT_MS=500` ([docs/load-testing.md](../../docs/load-testing.md), «Этап 4: антифрод, первый замер»).
+
 ## Запуск
 
 Один раз — uv (он же поставит Python 3.12):
