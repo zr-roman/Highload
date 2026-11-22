@@ -3,6 +3,7 @@
     <Project Path="load/AntifraudBench/AntifraudBench.csproj" />
     <Project Path="load/Failover/Failover.csproj" />
     <Project Path="load/Matrix/Matrix.csproj" />
+    <Project Path="load/SagaDrill/SagaDrill.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/Contracts/Contracts.csproj" />
