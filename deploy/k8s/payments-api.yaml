@@ -100,6 +100,19 @@ spec:
             # Port 8000 of the antifraud Service (antifraud.yaml); NetworkPolicy from-payments-api lets this pod in.
             - name: Antifraud__BaseAddress
               value: http://antifraud:8000/
+            # The antifraud's budget on this stand: 150 ms an attempt and 400 ms in all, not the 50 and 150 of
+            # appsettings.json. Those come from the antifraud's benchmark, with a processor to itself. Here the
+            # cluster at 50 payments a second keeps about four of the laptop's eight logical cores busy, and a check
+            # that answers in 5 ms idle took 16-18 ms at the median and 94-241 ms at p99, inside the antifraud's own
+            # pod. With 50 ms, 45 % of the attempts were cut off; each cut-off closed its HTTP/1.1 connection, the
+            # next attempt waited for a new one (20 ms at the median, 135 ms at p99) and missed its 50 ms more often
+            # still (the preflight of load/SagaDrill). One retry is kept: two attempts and the pause fit in 400 ms.
+            # The price: while the antifraud is down, a payment waits up to 400 ms for "unknown" until the circuit
+            # opens.
+            - name: Antifraud__Resilience__AttemptTimeout__Timeout
+              value: "00:00:00.150"
+            - name: Antifraud__Resilience__TotalRequestTimeout__Timeout
+              value: "00:00:00.400"
             # Pause of the outbox relay after each published batch (Outbox/OutboxOptions.cs). 0: no pause.
             # For the catch-up experiment: "1000" with batches of 500 is about 250 messages a second,
             # still above the 200 a second that come in.
