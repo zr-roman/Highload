@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace SagaDrill;
 
 /// <summary>A check of the drill: its name and the evidence, in the words of the report.</summary>
@@ -21,12 +23,12 @@ public sealed record PreflightResult(
 /// in Prometheus. That is the one thing the tests of the rules (deploy/k8s/alerts.test.yaml) cannot see: their series
 /// are named by hand, so a metric renamed in the code leaves them green and the alert silent.
 /// </summary>
-public static class Preflight
+public static partial class Preflight
 {
     public static async Task<PreflightResult> RunAsync(DrillOptions options, Prometheus prometheus, string reports, CancellationToken ct)
     {
         var (rules, rulesCheck) = await RulesAsync(prometheus, ct);
-        var checks = new List<Check> { await ArgoAsync(), await AntifraudAsync(), rulesCheck };
+        var checks = new List<Check> { await ArgoAsync(), await AntifraudAsync(), rulesCheck, await SmokeAsync(ct) };
 
         // A load on a stand that is not ready would only make the report longer.
         if (checks.Any(c => !c.Ok))
@@ -80,6 +82,31 @@ public static class Preflight
             return new Check(name, false, "за последнюю минуту прогрева не было ни одной проверки");
         return new Check(name, share < 0.05, $"{share * 100:0.0} % за последнюю минуту прогрева".Replace('.', ','));
     }
+
+    /// <summary>The smoke test of the stand, the one release.ps1 runs after a rollout.</summary>
+    public const string SmokeScript = "deploy/smoke.ps1";
+
+    // One payment through the whole path in a few seconds, before the 150 s of warm-up: a stand that cannot capture a
+    // payment at all fails here, with the step that broke, not as a share of checks without a decision after the load.
+    private static async Task<Check> SmokeAsync(CancellationToken ct)
+    {
+        const string name = "стенд проводит платёж целиком: банк, антифрод, журнал";
+        var shell = OperatingSystem.IsWindows() ? "powershell" : "pwsh";
+        var result = await Shell.RunAsync(shell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", SmokeScript],
+            TimeSpan.FromSeconds(60), ct);
+        var text = Colors().Replace(result.Ok ? result.Output : $"{result.Errors}\n{result.Output}", "");
+        var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        // The failure is the message the script threw, "Smoke: ...": PowerShell frames it with lines of its own.
+        var said = result.Ok
+            ? lines.LastOrDefault()
+            : lines.Where(l => l.Contains("Smoke:")).Select(l => l[l.IndexOf("Smoke:", StringComparison.Ordinal)..]).LastOrDefault()
+              ?? lines.LastOrDefault();
+        return new Check(name, result.Ok, $"`{SmokeScript}`: {said ?? $"exit code {result.ExitCode}"}");
+    }
+
+    // PowerShell 7 colours its errors even into a pipe.
+    [GeneratedRegex(@"\x1b\[[0-9;]*m")]
+    private static partial Regex Colors();
 
     // The drill stops the antifraud by hand, so it must find Argo CD as it leaves it: synced, healthy, and putting
     // back what is changed by hand. A selfHeal found off is most likely a drill that did not finish.

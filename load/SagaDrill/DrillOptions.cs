@@ -26,9 +26,10 @@ public sealed record DrillOptions(
     public const string Usage = """
         The saga on the k3d stand when the antifraud fails (stage 4), in phases. Writes
         load/reports/saga-drill-<time>/report.md.
-          preflight  the stand is ready for the drill, Prometheus has loaded the rules of highload.saga, and under a
-                     warm-up load the antifraud answers and every query of the saga row of the dashboard and of the
-                     saga's alerts finds its metrics
+          preflight  the stand is ready for the drill, one payment goes through the whole path (deploy/smoke.ps1),
+                     Prometheus has loaded the rules of highload.saga, and under a warm-up load the antifraud
+                     answers and every query of the saga row of the dashboard and of the saga's alerts finds its
+                     metrics
           deny       the antifraud says no, the saga voids: every deny ends in a void, no payment is left in
                      progress, the Ledger gets the captured payments alone
           outage     the antifraud goes away under load (kubectl scale --replicas=0, with the auto-sync of Argo CD off

@@ -13,7 +13,7 @@ public static class Runner
 {
     public static async Task RunAsync(DrillOptions options, CancellationToken ct)
     {
-        string[] files = ["load/payments.js", Dashboard.File, Alerts.File, .. OutagePhase.Files];
+        string[] files = ["load/payments.js", Dashboard.File, Alerts.File, Preflight.SmokeScript, .. OutagePhase.Files];
         foreach (var file in files)
             if (!File.Exists(file))
                 throw new DrillException($"Run it from the root of the repository: {file} is not here");
