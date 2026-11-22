@@ -7,7 +7,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic.alias_generators import to_camel
 from redis.asyncio import Redis
+from redis.asyncio.retry import Retry
 from redis.asyncio.sentinel import Sentinel
+from redis.backoff import NoBackoff
 from redis.exceptions import RedisError
 
 from antifraud.admission import AdmissionLimit
@@ -21,7 +23,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # One settings object and one Redis connection pool per worker process, created at startup.
     settings = Settings.from_env()
     app.state.settings = settings
+    app.state.redis = connect_redis(settings)
+    yield
+    await app.state.redis.aclose()
 
+
+# Never a retry: a Redis that does not answer in time is down for this check, and its 503 must come at once. Since
+# redis-py 6 a client without a policy of its own retries a failed connection 10 times, with pauses of up to a second:
+# a check whose Sentinels were slow answered after 29 s and held one of the places of admission.py all that time
+# (tests/test_redis_client.py). Redis itself does not retry today either; the policy is set on it all the same, so
+# that a new default of the library cannot bring retries back.
+NO_RETRY = Retry(NoBackoff(), 0)
+
+
+def connect_redis(settings: Settings) -> Redis:
     # Short timeouts: a Redis that does not answer in time is treated as down, and the check answers 503 at once.
     # Waiting longer is useless: the attempt of Payments.Api lasts 50 ms, and after it the answer is not needed.
     timeout_seconds = settings.redis_timeout_ms / 1000
@@ -31,23 +46,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # the master is better than none.
         sentinel = Sentinel(
             settings.redis_sentinels,
-            sentinel_kwargs={"socket_timeout": 0.5, "socket_connect_timeout": 0.5},
+            sentinel_kwargs={"socket_timeout": 0.5, "socket_connect_timeout": 0.5, "retry": NO_RETRY},
         )
-        app.state.redis = sentinel.master_for(
+        return sentinel.master_for(
             settings.redis_master,
             decode_responses=True,
             socket_timeout=timeout_seconds,
             socket_connect_timeout=timeout_seconds,
+            retry=NO_RETRY,
         )
-    else:
-        app.state.redis = Redis.from_url(
-            settings.redis_url,
-            decode_responses=True,
-            socket_timeout=timeout_seconds,
-            socket_connect_timeout=timeout_seconds,
-        )
-    yield
-    await app.state.redis.aclose()
+    return Redis.from_url(
+        settings.redis_url,
+        decode_responses=True,
+        socket_timeout=timeout_seconds,
+        socket_connect_timeout=timeout_seconds,
+        retry=NO_RETRY,
+    )
 
 
 app = FastAPI(title="antifraud", lifespan=lifespan)
