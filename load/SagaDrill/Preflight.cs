@@ -65,7 +65,7 @@ public static class Preflight
     // The drill shows what the saga does when the antifraud fails, so before it the antifraud must answer. The
     // threshold is the 5 % of AntifraudFailingOpen, here of all the checks without a decision, of which fail open is
     // about half: a stand above it is near that alert before the drill has stopped anything. The first preflights
-    // of 22.11.2026 found 45-92 % without a decision, and every other check passed.
+    // of 22.11.2026 found 30-92 % without a decision, and every other check passed (docs/load-testing.md).
     private static async Task<Check> AntifraudAnswersAsync(Prometheus prometheus, CancellationToken ct)
     {
         const string name = "антифрод отвечает: без решения меньше 5 % проверок в запросе";
