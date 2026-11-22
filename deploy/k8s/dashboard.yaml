@@ -43,8 +43,10 @@ spec:
         # Since 13.6 the dashboard keeps its telemetry in SQLite, not in memory. Run standalone, it is in persistence
         # mode None: a temporary database in the temp directory, here, deleted when the dashboard stops. 64Mi, enough
         # for the runtime's own files, had the pod evicted every few hours, and the telemetry went with it
-        # (docs/observability.md, «Чему научил мониторинг»). 1Gi until the size of the database under load is
-        # measured; then Dashboard__TelemetryLimits__* keep it well inside.
+        # (docs/observability.md, «Чему научил мониторинг»). Measured on 22.11.2026: idle, the database grew about
+        # 3 MB an hour (44 416 to 45 984 KB in 30 minutes); under load, about 1.8 KB a payment (SagaDrill, 16 500
+        # payments in 330 s, +30 MB). What bounds it are the limits of the telemetry (env below); 1Gi is the margin
+        # over them.
         - name: tmp
           emptyDir:
             sizeLimit: 1Gi
@@ -54,6 +56,13 @@ spec:
           env:
             - name: DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS
               value: "true"
+            # Metric points kept per dimension (one series of an instrument): 2880 at one every 15 s, the export
+            # interval of the services (OTEL_METRIC_EXPORT_INTERVAL), is 12 hours, the retention time of Prometheus
+            # (deploy/monitoring/values.yaml). The default of 50000 is 8.7 days. The history of metrics is Grafana's;
+            # here they are looked at next to the traces. Logs and traces keep their defaults, 100000 each: a payment
+            # is at least one trace, so that is about 100000 payments, some 180 MB at the rate above.
+            - name: Dashboard__TelemetryLimits__MaxMetricsCount
+              value: "2880"
           ports:
             - name: ui
               containerPort: 18888
