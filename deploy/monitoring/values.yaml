@@ -63,6 +63,13 @@ kubeProxy:
   enabled: false
 kubeEtcd:
   enabled: false
+# The API server is up, but through it the one process of k3s exposes the metrics of its whole control plane: on
+# 22.11.2026 about half of the 152 000 series of Prometheus (apiserver_*, etcd_request_*, scheduler_*, workqueue_*).
+# The stand's dashboards and alerts use none of them. With them the WAL and the head of Prometheus, which count towards
+# retentionSize, left no room for blocks: each block was deleted as soon as it was made (size retentions 10, blocks 0
+# bytes), and Prometheus kept 1 to 3 hours instead of 12h. The price: no dashboard of the API server from the chart.
+kubeApiServer:
+  enabled: false
 
 prometheus:
   prometheusSpec:
