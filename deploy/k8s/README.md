@@ -199,7 +199,7 @@ Grafana наружу не опубликована:
 kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80     # http://localhost:3000, admin и пароль из Secret
 ```
 
-Алерты — `deploy/k8s/alerts.yaml` (PrometheusRule): недоступный под Payments.Api, 5xx клиентам, застрявший outbox, нода NotReady, CrashLoopBackOff. Alertmanager без получателей: сработавшие алерты видны в его интерфейсе и в Grafana (Alerting → Alert rules, источник Alertmanager).
+Алерты — `deploy/k8s/alerts.yaml` (PrometheusRule): недоступный под Payments.Api, 5xx клиентам, застрявший outbox, резервные копии PostgreSQL, зависшие платежи и fail open антифрода, нода NotReady, CrashLoopBackOff. Alertmanager отправляет сработавшие алерты в Telegram (`deploy/monitoring/values.yaml`); они же видны в его интерфейсе и в Grafana (Alerting → Alert rules, источник Alertmanager).
 ```powershell
 kubectl -n monitoring port-forward svc/monitoring-alertmanager 9093:9093    # http://localhost:9093
 kubectl -n monitoring port-forward svc/monitoring-prometheus 9090:9090      # http://localhost:9090/alerts — правила и их состояние
