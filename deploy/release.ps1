@@ -1,6 +1,6 @@
 # Release of services to the k3d stand through git: build the image tagged with the commit, load it into the nodes,
 # write the tag into deploy/k8s/kustomization.yaml, commit and push, then wait until Argo CD has applied the commit
-# and the pods have rolled.
+# and the pods have rolled, and one payment goes through the whole path (deploy/smoke.ps1).
 # The usual way is CI: Backend CI or Frontend CI builds the image in GitHub Actions, pushes it to ghcr.io and commits
 # the tag. This script is the way without CI or without the internet: the image gets the same name as from
 # CI, but it is built here and loaded into the nodes; imagePullPolicy IfNotPresent keeps the cluster from pulling it.
@@ -107,4 +107,7 @@ foreach ($service in $Services) {
     # A new pod that does not get ready fails the rollout here, not five minutes later in someone's browser.
     Invoke-Checked "rollout of $service" { kubectl -n highload rollout status deployment/$service --timeout=180s }
 }
+# 7. One payment through the whole path, as a client sees it (deploy/smoke.ps1): Ready pods mean only that the
+# health check answers, and a broken variable or NetworkPolicy shows here, not under the next load.
+& (Join-Path $PSScriptRoot "smoke.ps1")
 Write-Host "Released: $($Services -join ', ') $tag"
