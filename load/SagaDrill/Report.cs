@@ -111,7 +111,34 @@ public static class Report
             $"банк отклонил — {N(large.Declined)}, в работе — {N(large.InProgress)}, проведены до возвращения — {N(large.CapturedBeforeBack)} |\n");
         text.Append($"| Дольше всех ждал в `authorized` | {(outage.LongestWait is var (seconds, at) ? $"{N(seconds)} с, в {OutagePhase.At(at)}" : "—")} |\n");
         text.Append($"| Все платежи завершены | {(outage.Settled is { } s ? $"через {s.TotalSeconds:0} с после нагрузки" : $"нет, и через {options.SettleSeconds} с")} |\n\n");
+        Drain(text, outage);
     }
+
+    private static void Drain(StringBuilder text, OutageResult outage)
+    {
+        text.Append("### Как восстановление разобрало очередь\n\n");
+        if (outage.Drain is not { } drain)
+        {
+            text.Append("Prometheus не дал рядов восстановления за время после возвращения антифрода.\n\n");
+            return;
+        }
+
+        var ready = outage.Times.Ready is { } r ? OutagePhase.At(r - outage.Times.Stop) : "—";
+        text.Append($"Проверок восстановления без решения: пока антифрод лежал — {Approx(drain.UnknownWhileDown)}, после возвращения — " +
+            $"{Approx(drain.UnknownAfter)} (`increase`, оценка). Реплики антифрода готовы в {ready}; ни одного платежа в `authorized` старше " +
+            $"минуты — {(drain.Drained is { } d ? OutagePhase.At(d) : "не было до конца фазы")}. Восстановление останавливает проход " +
+            "и ждёт 10 с, если хоть одна его проверка осталась без решения: если тормозят эти паузы, решения идут пачками с провалами " +
+            "по 10 с, а рядом — проверки без решения.\n\n");
+        text.Append("| Время | Решений восстановления в секунду | Без решения в секунду | Старейший в `authorized`, с | Антифрод p50 / p99, мс |\n");
+        text.Append("|---|---|---|---|---|\n");
+        foreach (var (at, decisions, unknown, oldest, p50, p99) in drain.Points)
+            text.Append($"| {OutagePhase.At(at)} | {Value(decisions)} | {Value(unknown)} | {Whole(oldest)} | {Whole(p50)} / {Whole(p99)} |\n");
+        text.Append('\n');
+    }
+
+    private static string Approx(double? value) => value is { } v ? $"около {N(v)}" : "нет данных";
+
+    private static string Whole(double value) => double.IsNaN(value) ? "—" : N(value);
 
     private static string At(double? seconds) => seconds is { } value ? OutagePhase.At(value) : "—";
 

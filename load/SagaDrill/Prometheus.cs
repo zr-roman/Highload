@@ -178,12 +178,36 @@ public sealed class Prometheus : IDisposable
     }
 
     // The data of a query: an instant query, or a range selector, which comes back as a matrix of raw samples.
-    private async Task<(JsonElement? Data, string? Error)> QueryDataAsync(string parameters, CancellationToken ct)
+    /// <summary>
+    /// One expression of a single series on a grid of <paramref name="step"/> seconds from <paramref name="from"/> to
+    /// <paramref name="to"/>, seconds since 1970: (time, value) for the moments it had a value. Several series are
+    /// summed per moment; an expression is expected to aggregate them itself.
+    /// </summary>
+    public async Task<(IReadOnlyList<(double Time, double Value)> Points, string? Error)> RangeAsync(
+        string expression, double from, double to, double step, CancellationToken ct)
+    {
+        string Time(double seconds) => seconds.ToString("0.###", CultureInfo.InvariantCulture);
+        var (data, error) = await QueryDataAsync(
+            $"query={Uri.EscapeDataString(expression)}&start={Time(from)}&end={Time(to)}&step={Time(step)}", ct, "query_range");
+        if (data is not { } result)
+            return ([], error);
+
+        var points = new SortedDictionary<double, double>();
+        foreach (var item in result.GetProperty("result").EnumerateArray())
+            foreach (var point in item.GetProperty("values").EnumerateArray())
+            {
+                var time = point[0].GetDouble();
+                points[time] = points.GetValueOrDefault(time) + Value(point[1]);
+            }
+        return (points.Select(p => (p.Key, p.Value)).ToList(), null);
+    }
+
+    private async Task<(JsonElement? Data, string? Error)> QueryDataAsync(string parameters, CancellationToken ct, string endpoint = "query")
     {
         string text;
         try
         {
-            using var response = await http.GetAsync("api/v1/query?" + parameters, ct);
+            using var response = await http.GetAsync($"api/v1/{endpoint}?" + parameters, ct);
             text = await response.Content.ReadAsStringAsync(ct);
         }
         catch (Exception e) when (e is HttpRequestException || (e is TaskCanceledException && !ct.IsCancellationRequested))

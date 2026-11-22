@@ -17,12 +17,25 @@ public sealed record AlertSeen(string Name, double? Pending, double? Firing, dou
 /// <param name="CapturedBeforeBack">Captured before the antifraud was back: past it, without its decision.</param>
 public sealed record LargePayments(long Made, long CapturedBeforeBack, long Captured, long Voided, long Declined, long InProgress);
 
+/// <summary>
+/// How recovery took up the payments that waited, once the antifraud was back. Recovery stops a pass and pauses for
+/// 10 s when one check of it gets no decision (PaymentRecovery): if that is what slows it, its decisions come in
+/// bursts with gaps of 10 s, and checks without a decision come with them; if its own pace does, they come evenly.
+/// </summary>
+/// <param name="Points">Every 15 s from the return to the end of the phase: seconds from the stop, decisions a second,
+/// checks without a decision a second, the oldest payment in 'authorized' in seconds, the antifraud's p50 and p99 in ms.</param>
+/// <param name="UnknownWhileDown">Checks of recovery without a decision while the antifraud was away; after it, below.</param>
+/// <param name="Drained">When no payment in 'authorized' was older than a minute, in seconds from the stop; null if never.</param>
+public sealed record RecoveryDrain(
+    IReadOnlyList<(double At, double Decisions, double Unknown, double Oldest, double P50, double P99)> Points,
+    double? UnknownWhileDown, double? UnknownAfter, double? Drained);
+
 /// <summary>What the phase found: the load, when the alerts went off, the payments it made, the counters, the checks.</summary>
 /// <param name="LongestWait">The longest wait in 'authorized' Prometheus saw, and when, in seconds from the stop.</param>
 public sealed record OutageResult(
     K6Result K6, OutageTimes Times, long FailOpenBelow, double Interval, IReadOnlyList<AlertSeen> Alerts,
     (double Seconds, double At)? LongestWait, IReadOnlyDictionary<string, long> Statuses, SagaCounts Counts,
-    LargePayments Large, TimeSpan? Settled, IReadOnlyList<Check> Checks) : IPhaseResult;
+    LargePayments Large, TimeSpan? Settled, IReadOnlyList<Check> Checks, RecoveryDrain? Drain = null) : IPhaseResult;
 
 /// <summary>
 /// The phase «антифрод лежит»: under load the antifraud goes away, and comes back. A payment the bank approved and
@@ -100,6 +113,7 @@ public static partial class OutagePhase
 
         var alerts = await AlertsAsync(prometheus, times, end, group.Interval, firing, ct);
         var longest = await LongestWaitAsync(prometheus, times, end, ct);
+        var drain = await DrainAsync(prometheus, times, end, ct);
         var statuses = await Phase.StatusesAsync(times.LoadStart, times.LoadEnd);
         var large = await LargeAsync(times, failOpenBelow);
 
@@ -117,7 +131,7 @@ public static partial class OutagePhase
         checks.Add(await Phase.InvariantsAsync());
         checks.Add(StandBack(times, antifraud.Desired, argo, argoError, limit));
 
-        return new OutageResult(k6, times, failOpenBelow, group.Interval, alerts, longest, statuses, counts, large, settled, checks);
+        return new OutageResult(k6, times, failOpenBelow, group.Interval, alerts, longest, statuses, counts, large, settled, checks, drain);
     }
 
     // The load runs from end to end, the antifraud stopped and started under it. On the normal path the stand is put
@@ -264,6 +278,50 @@ public static partial class OutagePhase
             return new AlertSeen(name, First(name, "pending"), First(name, "firing"),
                 last is { } t && !stillFiring ? t + interval - times.Stop : null, stillFiring);
         }).ToList();
+    }
+
+    // Read right after the phase: Prometheus keeps its history for hours at best. Nothing here is a check, the report
+    // shows it; null if Prometheus has none of it.
+    private static async Task<RecoveryDrain?> DrainAsync(Prometheus prometheus, OutageTimes times, double end, CancellationToken ct)
+    {
+        const double step = 15;
+        const string decisions = "payments_antifraud_decisions_total{path=\"recovery\"";
+        const string attempts = "http_client_request_duration_seconds_bucket{job=\"payments-api\", server_address=\"antifraud\"}";
+        string[] queries =
+        [
+            $"sum(rate({decisions}, outcome=~\"allow|deny\"}}[45s]))",
+            $"sum(rate({decisions}, outcome=\"unknown\"}}[45s]))",
+            "max(payments_in_progress_oldest_age_seconds{status=\"authorized\"})",
+            $"1000 * histogram_quantile(0.5, sum by (le) (rate({attempts}[45s])))",
+            $"1000 * histogram_quantile(0.99, sum by (le) (rate({attempts}[45s])))",
+        ];
+        var series = new List<Dictionary<double, double>>();
+        foreach (var query in queries)
+        {
+            var (points, error) = await prometheus.RangeAsync(query, times.Back, end, step, ct);
+            if (error is not null)
+                return null;
+            series.Add(points.ToDictionary(p => p.Time, p => p.Value));
+        }
+        if (series[0].Count == 0)
+            return null;
+
+        double At(int i, double time) => series[i].TryGetValue(time, out var value) ? value : double.NaN;
+        var rows = series[0].Keys.Order()
+            .Select(time => (time - times.Stop, At(0, time), At(1, time), At(2, time), At(3, time), At(4, time)))
+            .ToList();
+        var ready = times.Ready ?? times.Back;
+        var drained = rows.FirstOrDefault(r => r.Item1 >= ready - times.Stop && r.Item4 < 60);
+
+        async Task<double?> UnknownAsync(double from, double to)
+        {
+            var result = await prometheus.QueryAsync(
+                $"sum(increase({decisions}, outcome=\"unknown\"}}[{Math.Max(1, (int)Math.Round(to - from))}s] @ {to.ToString("0.###", CultureInfo.InvariantCulture)}))", ct);
+            return result.Series is [{ Value: var value }] && !double.IsNaN(value) ? value : null;
+        }
+
+        return new RecoveryDrain(rows, await UnknownAsync(times.Stop, times.Back), await UnknownAsync(times.Back, end),
+            drained == default ? null : drained.Item1);
     }
 
     // The gauge only the leader of recovery reports; the other pods report 0.
