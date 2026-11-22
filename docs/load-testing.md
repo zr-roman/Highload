@@ -1128,7 +1128,7 @@ dotnet run --project load\AntifraudBench -c Release -- --workers 1,4 --rates 600
 ## Как воспроизвести
 
 ```powershell
-dotnet run --project load\SagaDrill -c Release
+dotnet run --project load\SagaDrill -c Release -- --only preflight
 # «До»: на коммите ae542b8, где в deploy/k8s/payments-api.yaml ещё нет Antifraud__Resilience__*
 ```
 
