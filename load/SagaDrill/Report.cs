@@ -110,6 +110,8 @@ public static class Report
             $"{N(large.Made)}: проведены после его возвращения — {N(large.Captured - large.CapturedBeforeBack)}, отменены — {N(large.Voided)}, " +
             $"банк отклонил — {N(large.Declined)}, в работе — {N(large.InProgress)}, проведены до возвращения — {N(large.CapturedBeforeBack)} |\n");
         text.Append($"| Дольше всех ждал в `authorized` | {(outage.LongestWait is var (seconds, at) ? $"{N(seconds)} с, в {OutagePhase.At(at)}" : "—")} |\n");
+        text.Append($"| Самый старый платёж, созданный до остановки и переждавший аварию | " +
+            $"{(outage.Carried is { } carried ? $"создан в {OutagePhase.At(carried)}" : "такого не было")} |\n");
         text.Append($"| Все платежи завершены | {(outage.Settled is { } s ? $"через {s.TotalSeconds:0} с после нагрузки" : $"нет, и через {options.SettleSeconds} с")} |\n\n");
         Drain(text, outage);
     }
@@ -127,8 +129,8 @@ public static class Report
         text.Append($"Проверок восстановления без решения: пока антифрод лежал — {Approx(drain.UnknownWhileDown)}, после возвращения — " +
             $"{Approx(drain.UnknownAfter)} (`increase`, оценка). Реплики антифрода готовы в {ready}; ни одного платежа в `authorized` старше " +
             $"минуты — {(drain.Drained is { } d ? OutagePhase.At(d) : "не было до конца фазы")}. Восстановление останавливает проход " +
-            "и ждёт 10 с, если хоть одна его проверка осталась без решения: если тормозят эти паузы, решения идут пачками с провалами " +
-            "по 10 с, а рядом — проверки без решения.\n\n");
+            "и ждёт 10 с, пока разомкнут circuit breaker антифрода; проверка без решения в остальное время задерживает только свой " +
+            "платёж. Если тормозят паузы, решения идут пачками с провалами по 10 с; если свой темп восстановления — ровно.\n\n");
         text.Append("| Время | Решений восстановления в секунду | Без решения в секунду | Старейший в `authorized`, с | Антифрод p50 / p99, мс |\n");
         text.Append("|---|---|---|---|---|\n");
         foreach (var (at, decisions, unknown, oldest, p50, p99) in drain.Points)

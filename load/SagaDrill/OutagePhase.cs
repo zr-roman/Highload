@@ -19,8 +19,9 @@ public sealed record LargePayments(long Made, long CapturedBeforeBack, long Capt
 
 /// <summary>
 /// How recovery took up the payments that waited, once the antifraud was back. Recovery stops a pass and pauses for
-/// 10 s when one check of it gets no decision (PaymentRecovery): if that is what slows it, its decisions come in
-/// bursts with gaps of 10 s, and checks without a decision come with them; if its own pace does, they come evenly.
+/// 10 s while the circuit to the antifraud is open; a check without a decision otherwise holds back its own payment
+/// alone (PaymentRecovery). If pauses slow it, its decisions come in bursts with gaps of 10 s; if its own pace does,
+/// they come evenly.
 /// </summary>
 /// <param name="Points">Every 15 s from the return to the end of the phase: seconds from the stop, decisions a second,
 /// checks without a decision a second, the oldest payment in 'authorized' in seconds, the antifraud's p50 and p99 in ms.</param>
@@ -32,10 +33,14 @@ public sealed record RecoveryDrain(
 
 /// <summary>What the phase found: the load, when the alerts went off, the payments it made, the counters, the checks.</summary>
 /// <param name="LongestWait">The longest wait in 'authorized' Prometheus saw, and when, in seconds from the stop.</param>
+/// <param name="Carried">
+/// The oldest payment made before the stop that waited out the outage, in seconds from the stop (below 0); null if
+/// none. See <see cref="OutagePhase.CarriedAsync"/>.
+/// </param>
 public sealed record OutageResult(
     K6Result K6, OutageTimes Times, long FailOpenBelow, double Interval, IReadOnlyList<AlertSeen> Alerts,
     (double Seconds, double At)? LongestWait, IReadOnlyDictionary<string, long> Statuses, SagaCounts Counts,
-    LargePayments Large, TimeSpan? Settled, IReadOnlyList<Check> Checks, RecoveryDrain? Drain = null) : IPhaseResult;
+    LargePayments Large, TimeSpan? Settled, IReadOnlyList<Check> Checks, RecoveryDrain? Drain = null, double? Carried = null) : IPhaseResult;
 
 /// <summary>
 /// The phase «антифрод лежит»: under load the antifraud goes away, and comes back. A payment the bank approved and
@@ -71,6 +76,7 @@ public static partial class OutagePhase
     {
         var limit = TimeSpan.FromSeconds(options.SettleSeconds);
         var failOpenBelow = FailOpenBelow();
+        var reach = RecoveryReach();
         if (failOpenBelow == 0)
             throw new DrillException("Antifraud:FailOpenBelowAmount is 0 on the stand: fail open is off, and the outage phase " +
                 "checks what the saga does with it");
@@ -116,12 +122,13 @@ public static partial class OutagePhase
         var drain = await DrainAsync(prometheus, times, end, ct);
         var statuses = await Phase.StatusesAsync(times.LoadStart, times.LoadEnd);
         var large = await LargeAsync(times, failOpenBelow);
+        var carried = await CarriedAsync(times);
 
         var checks = new List<Check>();
         var rules = group.Rules.ToDictionary(r => r.Name);
         AlertSeen Seen(string name) => alerts.Single(a => a.Name == name);
-        checks.Add(Fired(Seen(StuckInAuthorized), rules.GetValueOrDefault(StuckInAuthorized), times, measuresAge: true));
-        checks.Add(Fired(Seen(FailingOpen), rules.GetValueOrDefault(FailingOpen), times, measuresAge: false));
+        checks.Add(Fired(Seen(StuckInAuthorized), rules.GetValueOrDefault(StuckInAuthorized), times, (carried, reach)));
+        checks.Add(Fired(Seen(FailingOpen), rules.GetValueOrDefault(FailingOpen), times, age: null));
         checks.Add(Silent(Seen(StuckInCreated), rules.ContainsKey(StuckInCreated)));
         checks.Add(Resolved(alerts, times, firing, firingError, limit));
         checks.Add(FailedOpenSmall(counts, large, failOpenBelow));
@@ -131,7 +138,8 @@ public static partial class OutagePhase
         checks.Add(await Phase.InvariantsAsync());
         checks.Add(StandBack(times, antifraud.Desired, argo, argoError, limit));
 
-        return new OutageResult(k6, times, failOpenBelow, group.Interval, alerts, longest, statuses, counts, large, settled, checks, drain);
+        return new OutageResult(k6, times, failOpenBelow, group.Interval, alerts, longest, statuses, counts, large, settled, checks, drain,
+            carried);
     }
 
     // The load runs from end to end, the antifraud stopped and started under it. On the normal path the stand is put
@@ -350,27 +358,56 @@ public static partial class OutagePhase
         return new LargePayments(n[0], n[1], n[2], n[3], n[4], n[5]);
     }
 
-    // It cannot fire sooner than its condition can hold for its for: an age above its threshold first needs that
-    // many seconds of the antifraud away. Sooner, it fired for something else, and the drill measured that.
-    private static Check Fired(AlertSeen alert, LoadedRule? rule, OutageTimes times, bool measuresAge)
+    /// <summary>
+    /// The oldest payment made before the stop that was still in progress when the antifraud had been gone for
+    /// <see cref="ShutDown"/>: it waited out the outage, and the age of PaymentsStuckInAuthorized counts from it. In
+    /// seconds from the stop; null if there was none. One check of the request without a decision leaves a large
+    /// payment in 'authorized', and recovery takes it up only after StaleAfter: made shortly before the stop, it finds
+    /// the antifraud gone.
+    /// </summary>
+    public static async Task<double?> CarriedAsync(OutageTimes times)
+    {
+        var rows = await Postgres.QueryAsync("payments",
+            $"select extract(epoch from min(created_at)) from payments where {Phase.Window(times.LoadStart, times.Stop)} " +
+            $"and status in ('captured', 'voided') and updated_at > {Postgres.Time(times.Stop + ShutDown.TotalSeconds)}");
+        if (rows is null)
+            throw new DrillException("Cannot find the payments made before the stop of the antifraud in PostgreSQL");
+        // None: min() is null, and psql prints an empty line, which QueryAsync leaves out.
+        return rows is [[var value, ..], ..] && value.Length > 0 ? double.Parse(value, CultureInfo.InvariantCulture) - times.Stop : null;
+    }
+
+    // It cannot fire sooner than its condition can hold for its for. An age above its threshold needs that many seconds
+    // of the antifraud away, or of a payment made before the stop that waited it out (Carried): one made up to the
+    // reach of recovery before it may, since recovery takes a payment up only after StaleAfter, in a pass every
+    // Interval. Older, recovery had the antifraud up to check it: it waited for something else, and the drill
+    // measured that. Without age, an alert of a rate needs its for alone.
+    private static Check Fired(AlertSeen alert, LoadedRule? rule, OutageTimes times, (double? Carried, double Reach)? age)
     {
         var name = $"{alert.Name} сработал, пока антифрод лежал";
         if (rule is null)
             return new Check(name, false, $"такого алерта в группе `{Alerts.Group}` в Prometheus нет");
 
-        var threshold = measuresAge && Alerts.Split(rule.Query) is var (_, text) && double.TryParse(
+        var threshold = age is not null && Alerts.Split(rule.Query) is var (_, text) && double.TryParse(
             text.Split(' ')[^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var number) ? number : 0;
-        var earliest = threshold + rule.Duration;
+        var carried = Math.Min(0, age?.Carried ?? 0);
+        var earliest = threshold + rule.Duration + carried;
         var away = times.Back - times.Stop;
-        var why = measuresAge ? $"порог {S(threshold)} и for {S(rule.Duration)}" : $"for {S(rule.Duration)}";
+        var why = age is null ? $"for {S(rule.Duration)}"
+            : carried < 0 ? $"порог {S(threshold)} и for {S(rule.Duration)} от самого старого платежа, переждавшего аварию: создан за {S(-carried)} до остановки"
+            : $"порог {S(threshold)} и for {S(rule.Duration)}";
         if (alert.Firing is not { } firing)
             return new Check(name, false, $"не сработал за {S(away)}, пока антифрод лежал" +
                 (alert.Pending is { } pending ? $"; pending с {At(pending)}" : ": и pending не был"));
 
+        var detail = $"firing через {S(firing)} после остановки, антифрод вернули через {S(away)}";
+        if (age is { Reach: var reach } && carried < -reach - Slack)
+            return new Check(name, false, detail + $"; платёж, созданный за {S(-carried)} до остановки, ждал до конца аварии: " +
+                $"восстановление берёт платёж через {S(reach)} и могло проверить его, пока антифрод отвечал — он стоял не из-за аварии");
+
         var early = firing < earliest - Slack;
-        return new Check(name, !early && firing <= away, $"firing через {S(firing)} после остановки, антифрод вернули через {S(away)}" +
+        return new Check(name, !early && firing <= away, detail +
             (early
-                ? $"; от остановки раньше {S(earliest)} сработать не мог ({why}): что-то стояло и до неё"
+                ? $"; раньше {S(earliest)} сработать не мог ({why}): что-то стояло и до остановки"
                 : $"; раньше {S(earliest)} не мог: {why}"));
     }
 
@@ -423,6 +460,18 @@ public static partial class OutagePhase
         using var json = JsonDocument.Parse(File.ReadAllText(Files[0]),
             new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
         return json.RootElement.GetProperty("Antifraud").GetProperty("FailOpenBelowAmount").GetInt64();
+    }
+
+    // How long before the stop a payment may be made and still wait out the outage: recovery takes it up once it is
+    // StaleAfter old, in a pass every Interval (src/Payments.Api/Recovery/RecoveryOptions.cs). From the settings: the
+    // manifest sets neither.
+    private static double RecoveryReach()
+    {
+        using var json = JsonDocument.Parse(File.ReadAllText(Files[0]),
+            new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+        var recovery = json.RootElement.GetProperty("Recovery");
+        TimeSpan Setting(string name) => TimeSpan.Parse(recovery.GetProperty(name).GetString()!, CultureInfo.InvariantCulture);
+        return (Setting("StaleAfter") + Setting("Interval")).TotalSeconds;
     }
 
     public static string Roubles(long kopecks) => $"{(kopecks / 100m).ToString("0.##", CultureInfo.InvariantCulture)} ₽";
