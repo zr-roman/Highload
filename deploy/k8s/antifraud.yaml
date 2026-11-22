@@ -57,6 +57,15 @@ spec:
             # Redis, is for docker-compose.yml and the local run.
             - name: ANTIFRAUD_REDIS_SENTINELS
               value: redis-0.redis:26379,redis-1.redis:26379,redis-2.redis:26379
+            # 40 ms a call of Redis on this stand, not the 20 of settings.py, for the reason of the budget of
+            # Payments.Api (payments-api.yaml): 20 is sized for an attempt of 50 ms, and here an attempt has 150. A
+            # check makes up to three calls, 3 x 40 = 120 ms, still inside it. With 20 ms (22.11.2026, the warm-ups
+            # of load/SagaDrill) the antifraud answered 503 to 22 and 38 % of the requests in the first minute of the
+            # load; in the second run to 59 % even at 5 requests a second, too few to fill its 8 places
+            # (admission.py): Redis did not answer in time. Those 503s, with the attempts that ran out, opened the
+            # circuit breaker of Payments.Api: in the last minute of that warm-up 97 % of the checks got no decision.
+            - name: ANTIFRAUD_REDIS_TIMEOUT_MS
+              value: "40"
           ports:
             - name: http
               containerPort: 8000
