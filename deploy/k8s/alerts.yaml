@@ -1,6 +1,6 @@
 # Alerting rules of the stand. The Prometheus Operator turns this PrometheusRule into Prometheus rules; Prometheus
 # picks it up from any namespace (ruleSelectorNilUsesHelmValues in deploy/monitoring/values.yaml) and sends what fires
-# to Alertmanager. Nobody is paged on a laptop: Alertmanager keeps the alerts for its UI and for Grafana.
+# to Alertmanager, which sends it on to one Telegram chat (the same values.yaml) and keeps it for its UI and Grafana.
 #
 # Each alert answers "is someone affected, or about to be", not "is something unusual": an alert nobody acts on
 # teaches people to ignore the rest. Prometheus evaluates the rules every 30 s, so an alert fires up to 30 s after
