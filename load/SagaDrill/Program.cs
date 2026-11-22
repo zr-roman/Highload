@@ -1,10 +1,11 @@
 using System.Globalization;
 using SagaDrill;
 
-// The saga on the k3d stand when the antifraud says no or goes away (stage 4), in one command. For now the
+// The saga on the k3d stand when the antifraud says no or goes away (stage 4), in one command, in phases. The
 // preflight: the stand is ready for the drill, Prometheus has loaded the rules of highload.saga, and under a warm-up
 // load the antifraud answers and every query of the saga row of the dashboard and of the saga's alerts finds its
-// metrics. The promtool tests cannot check that: their series are named by hand. Writes
+// metrics; the promtool tests cannot check that, their series are named by hand. The deny phase: every deny of the
+// antifraud ends in a void, and the Ledger gets the captured payments alone. Writes
 // load/reports/saga-drill-<time>/report.md.
 // From the repository root, with the cluster up and no other load:
 //   dotnet run --project load\SagaDrill -c Release
