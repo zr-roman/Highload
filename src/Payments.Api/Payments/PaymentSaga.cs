@@ -144,7 +144,9 @@ public sealed class PaymentSaga(
 
             case AntifraudOutcome.Unknown:
                 // A large payment, or any payment in recovery, waits for a real check in 'authorized'.
-                return new SagaResult(authorized, SagaStep.WaitsForAntifraud, "no decision from the antifraud");
+                return check.CircuitOpen
+                    ? new SagaResult(authorized, SagaStep.WaitsForAntifraud, "the circuit to the antifraud is open") { AntifraudDown = true }
+                    : new SagaResult(authorized, SagaStep.WaitsForAntifraud, "no decision from the antifraud");
 
             default:
                 throw new InvalidOperationException($"Unexpected antifraud outcome {check.Outcome} for payment {authorized.Id}");
@@ -252,4 +254,11 @@ public enum SagaStep
 }
 
 /// <summary>The payment as the saga left it, where it stopped, and why, in words for the log.</summary>
-public sealed record SagaResult(Payment Payment, SagaStep Step, string Reason);
+public sealed record SagaResult(Payment Payment, SagaStep Step, string Reason)
+{
+    /// <summary>
+    /// With <see cref="SagaStep.WaitsForAntifraud"/>: the circuit to the antifraud is open, so it is down, not short of
+    /// a decision on this one payment (<see cref="AntifraudDecision.CircuitOpen"/>).
+    /// </summary>
+    public bool AntifraudDown { get; init; }
+}

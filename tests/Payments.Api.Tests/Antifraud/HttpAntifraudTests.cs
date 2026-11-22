@@ -102,6 +102,7 @@ public sealed class HttpAntifraudTests : IDisposable
         var result = await host.Antifraud.CheckAsync(NewPayment(), Ct);
 
         Assert.Equal(AntifraudOutcome.Unknown, result.Outcome);
+        Assert.False(result.CircuitOpen);                   // one failed check: recovery goes on with the rest
         Assert.Null(result.Score);
         Assert.Equal(host.Attempts, antifraud.Requests.Count);
     }
@@ -152,9 +153,12 @@ public sealed class HttpAntifraudTests : IDisposable
         for (var i = 0; i < calls; i++)
             Assert.Equal(AntifraudOutcome.Unknown, (await host.Antifraud.CheckAsync(NewPayment(), Ct)).Outcome);
 
-        // Open circuit: antifraud answers again, but the check fails fast with Unknown and does not reach it.
+        // Open circuit: antifraud answers again, but the check fails fast with Unknown and does not reach it. The
+        // decision says so: recovery pauses on it.
         antifraud.Decide("allow");
-        Assert.Equal(AntifraudOutcome.Unknown, (await host.Antifraud.CheckAsync(NewPayment(), Ct)).Outcome);
+        var rejected = await host.Antifraud.CheckAsync(NewPayment(), Ct);
+        Assert.Equal(AntifraudOutcome.Unknown, rejected.Outcome);
+        Assert.True(rejected.CircuitOpen);
         Assert.Equal(host.CircuitMinimumThroughput, antifraud.Requests.Count);
 
         // The bank is behind a pipeline of its own: its circuit saw none of those failures.

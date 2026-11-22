@@ -24,10 +24,14 @@ public sealed class ScriptedAntifraud(AntifraudOutcome? otherwise = null) : IAnt
     public void Answer(Guid paymentId, AntifraudOutcome outcome) => Script(paymentId, () => Task.FromResult(Decision(outcome)));
 
     /// <summary>One answer per check, the last one for every check after them: down at first, then back.</summary>
-    public void AnswerInTurn(Guid paymentId, params AntifraudOutcome[] outcomes)
+    public void AnswerInTurn(Guid paymentId, params AntifraudOutcome[] outcomes) =>
+        AnswerInTurn(paymentId, outcomes.Select(Decision).ToArray());
+
+    /// <summary>The same with whole decisions: <see cref="AntifraudDecision.Unavailable"/>, the circuit open.</summary>
+    public void AnswerInTurn(Guid paymentId, params AntifraudDecision[] decisions)
     {
         var turn = -1;
-        Script(paymentId, () => Task.FromResult(Decision(outcomes[Math.Min(Interlocked.Increment(ref turn), outcomes.Length - 1)])));
+        Script(paymentId, () => Task.FromResult(decisions[Math.Min(Interlocked.Increment(ref turn), decisions.Length - 1)]));
     }
 
     /// <summary>Any other behaviour: a check during which someone else moves the payment on.</summary>
@@ -47,7 +51,8 @@ public sealed class ScriptedAntifraud(AntifraudOutcome? otherwise = null) : IAnt
         throw new InvalidOperationException($"The test gave the antifraud no answer for payment {payment.Id}");
     }
 
-    private static AntifraudDecision Decision(AntifraudOutcome outcome) => outcome == AntifraudOutcome.Unknown
+    /// <summary>The decision the antifraud gives with this outcome; Unknown is one check without a decision.</summary>
+    public static AntifraudDecision Decision(AntifraudOutcome outcome) => outcome == AntifraudOutcome.Unknown
         ? AntifraudDecision.Unknown
         : new AntifraudDecision(outcome, Score: 0, Reasons: outcome == AntifraudOutcome.Deny ? ["velocity"] : []);
 }

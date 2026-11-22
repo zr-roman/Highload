@@ -266,30 +266,58 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
         var second = await db.InsertPaymentAsync(Stale, cancellationToken: Ct);
         bank.Answer(first, AcquirerOutcome.Approved);
         bank.Answer(second, AcquirerOutcome.Approved);
-        antifraud.AnswerInTurn(first, AntifraudOutcome.Unknown, AntifraudOutcome.Allow);   // down at first, then back
+        antifraud.AnswerInTurn(first, AntifraudOutcome.Unknown, AntifraudOutcome.Allow);   // no decision at first, then one
         antifraud.Answer(second, AntifraudOutcome.Allow);
 
         await using var host = await RecoveryHost.StartAsync(db, bank, time, antifraud: antifraud, cancellationToken: Ct);
         await host.WaitForPassesAsync(1);
 
-        // The bank approved, so the payment is authorized, and it waits there for a decision: no fail open. The rest
-        // of the pass is skipped without asking the antifraud again.
+        // The bank approved, so the payment is authorized, and it waits there for a decision: no fail open. One check
+        // without a decision holds back that payment alone: the pass goes on with the next one.
         Assert.Equal("authorized", await db.GetStatusAsync(first, Ct));
-        Assert.Equal(0L, await db.CountOutboxAsync(Ct));
-        Assert.Equal(0, bank.LookupsFor(second));
+        Assert.Equal("captured", await db.GetStatusAsync(second, Ct));
+        Assert.Equal(1L, await db.CountOutboxAsync(Ct));            // the event of the second one only
         var pass = Assert.Single(host.Passes);
-        Assert.Equal(ActivityStatusCode.Error, pass.Status);
-        Assert.Equal(2, Tag(pass, "recovery.skipped"));
+        Assert.NotEqual(ActivityStatusCode.Error, pass.Status);
+        Assert.Equal(1, Tag(pass, "recovery.skipped"));
+        Assert.Equal(1, Tag(pass, "recovery.captured"));
         Assert.Empty(host.FailOpen.GetMeasurementSnapshot());
         var left = Assert.Single(host.LeftInProgress.GetMeasurementSnapshot());
         Assert.Equal("antifraud", left.Tags["waits_for"]);
         Assert.Equal("recovery", left.Tags["path"]);
 
         // The next pass, after Interval, goes on from 'authorized': the antifraud only, not the bank again.
+        await host.AdvanceUntilAsync(async () => await db.GetStatusAsync(first, Ct) == "captured");
+
+        Assert.Equal(1, bank.LookupsFor(first));
+        Assert.Equal(2, antifraud.ChecksFor(first));
+        Assert.Equal(1, antifraud.ChecksFor(second));
+        Assert.DoesNotContain(host.Logs.GetSnapshot(), r => r.Message.StartsWith("Antifraud unavailable", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Open_Circuit_Of_The_Antifraud_Stops_The_Pass_And_Recovery_Retries_After_Interval()
+    {
+        var first = await db.InsertPaymentAsync(TimeSpan.FromMinutes(2), "authorized", Ct);
+        var second = await db.InsertPaymentAsync(Stale, "authorized", Ct);
+        antifraud.AnswerInTurn(first, AntifraudDecision.Unavailable, ScriptedAntifraud.Decision(AntifraudOutcome.Allow));  // down, then back
+        antifraud.Answer(second, AntifraudOutcome.Allow);
+
+        await using var host = await RecoveryHost.StartAsync(db, bank, time, antifraud: antifraud, cancellationToken: Ct);
+        await host.WaitForPassesAsync(1);
+
+        // The circuit is open, so the antifraud is down: the rest of the pass is skipped without asking it again.
+        Assert.Equal(0, antifraud.ChecksFor(second));
+        Assert.Equal("authorized", await db.GetStatusAsync(first, Ct));
+        Assert.Equal("authorized", await db.GetStatusAsync(second, Ct));
+
+        var pass = Assert.Single(host.Passes);
+        Assert.Equal(ActivityStatusCode.Error, pass.Status);
+        Assert.Equal(2, Tag(pass, "recovery.skipped"));
+
         await host.AdvanceUntilAsync(async () => await db.GetStatusAsync(second, Ct) == "captured");
 
         Assert.Equal("captured", await db.GetStatusAsync(first, Ct));
-        Assert.Equal(1, bank.LookupsFor(first));
         Assert.Equal(2, antifraud.ChecksFor(first));
         Assert.Contains(host.Logs.GetSnapshot(), r => r.Level == LogLevel.Warning && r.Message.StartsWith("Antifraud unavailable", StringComparison.Ordinal));
     }

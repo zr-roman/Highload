@@ -112,7 +112,8 @@ public sealed class PaymentRecovery(
 
     private async Task RecoverAsync(Payment payment, PaymentSaga saga, RecoveryPass pass, CancellationToken cancellationToken)
     {
-        // The bank or the antifraud has not answered in this pass: the rest of the batch is not sent to them again.
+        // The bank has not answered in this pass, or the circuit to the antifraud is open: the rest of the batch is not
+        // sent to them.
         if (Volatile.Read(ref pass.BankUnavailable) || Volatile.Read(ref pass.AntifraudUnavailable))
         {
             Interlocked.Increment(ref pass.Skipped);
@@ -142,7 +143,12 @@ public sealed class PaymentRecovery(
 
                 case SagaStep.WaitsForAntifraud:
                     // No fail open here: the payment waits in 'authorized' for a decision, its money held at the bank.
-                    Volatile.Write(ref pass.AntifraudUnavailable, true);
+                    // A check without a decision (a timeout, a 503) holds back this payment alone: under load some
+                    // checks fail while the rest get decisions, and a pause for each of them stalled the queue (stage 4
+                    // drill, docs/load-testing.md). The antifraud is down when its circuit is open: the breaker of
+                    // HttpAntifraud opens on half of the checks failing.
+                    if (result.AntifraudDown)
+                        Volatile.Write(ref pass.AntifraudUnavailable, true);
                     Interlocked.Increment(ref pass.Skipped);
                     break;
 

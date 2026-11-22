@@ -54,9 +54,10 @@ public sealed class HttpAntifraud(HttpClient http, MerchantQuotas quotas, ILogge
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or ExecutionRejectedException && !cancellationToken.IsCancellationRequested)
         {
             // While the circuit is open every check fails this way, and Polly logs the opening itself.
-            var level = ex is BrokenCircuitException ? LogLevel.Debug : LogLevel.Warning;
-            logger.Log(level, ex, "Antifraud check of payment {PaymentId} failed, outcome unknown", payment.Id);
-            return AntifraudDecision.Unknown;
+            var circuitOpen = ex is BrokenCircuitException;
+            logger.Log(circuitOpen ? LogLevel.Debug : LogLevel.Warning, ex,
+                "Antifraud check of payment {PaymentId} failed, outcome unknown", payment.Id);
+            return circuitOpen ? AntifraudDecision.Unavailable : AntifraudDecision.Unknown;
         }
     }
 

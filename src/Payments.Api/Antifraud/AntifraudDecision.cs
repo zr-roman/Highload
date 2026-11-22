@@ -10,5 +10,18 @@ public sealed record AntifraudDecision(
     IReadOnlyList<string>? Reasons = null,
     string? ModelVersion = null)
 {
+    /// <summary>No decision on this one check: a 5xx or a timeout. The next check may well get one.</summary>
     public static readonly AntifraudDecision Unknown = new(AntifraudOutcome.Unknown);
+
+    /// <summary>
+    /// No decision because the circuit breaker of the client is open: enough checks have failed lately for the
+    /// antifraud to be taken as down, and the check did not reach it.
+    /// </summary>
+    public static readonly AntifraudDecision Unavailable = new(AntifraudOutcome.Unknown) { CircuitOpen = true };
+
+    /// <summary>
+    /// Set with <see cref="AntifraudOutcome.Unknown"/> alone, when the breaker is open. Recovery pauses then: the checks
+    /// of the rest of its pass would fail the same way (PaymentRecovery).
+    /// </summary>
+    public bool CircuitOpen { get; private init; }
 }
