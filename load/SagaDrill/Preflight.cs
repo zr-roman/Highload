@@ -111,8 +111,7 @@ public static class Preflight
     {
         const string name = $"Prometheus загрузил правила {Alerts.Group} из git";
         var expected = Alerts.NamesInGit(Alerts.File);
-        var loaded = await prometheus.AlertRulesAsync(Alerts.Group, ct);
-        if (loaded is null)
+        if (await prometheus.AlertRulesAsync(Alerts.Group, ct) is not { Rules: var loaded })
             return ([], new Check(name, false, $"группы `{Alerts.Group}` в Prometheus нет: Argo CD ещё не применил `{Alerts.File}`?"));
 
         var names = loaded.Select(r => r.Name).ToList();

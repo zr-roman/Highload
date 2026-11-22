@@ -12,6 +12,7 @@ public sealed class Counters
         ("decisions", "sum by (instance, outcome, path) (payments_antifraud_decisions_total)"),
         ("voided", "sum by (instance, reason, path) (payments_voided_total)"),
         ("fail_open", "sum by (instance) (payments_antifraud_fail_open_total)"),
+        ("left", "sum by (instance, waits_for, path) (payments_left_in_progress_total)"),
     ];
 
     private readonly Dictionary<string, Dictionary<string, double>> values;
@@ -45,4 +46,35 @@ public sealed class Counters
             .Sum(series => before.values[metric].TryGetValue(series.Key, out var was) && was <= series.Value
                 ? series.Value - was
                 : series.Value);
+}
+
+/// <summary>What the counters of the saga grew by during a phase, in both paths unless the name says otherwise.</summary>
+/// <param name="ChecksInRequest">Every check of the request path, with a decision or without.</param>
+/// <param name="WaitedInRequest">Sagas of the request left in 'authorized' for want of a decision of the antifraud.</param>
+/// <param name="WaitedInRecovery">The same in recovery: a payment counts once for each pass that found the antifraud silent.</param>
+public sealed record SagaCounts(
+    double Allow, double Deny, double Unknown, double ChecksInRequest, double UnknownInRequest, double FailOpen,
+    double VoidedOnDeny, double VoidNotFound, double VoidConflict, double BankVoided,
+    double WaitedInRequest, double WaitedInRecovery)
+{
+    /// <summary>Every void that answers a deny: the bank voided, or had nothing to void (404, 409).</summary>
+    public double VoidsOfDenies => VoidedOnDeny + VoidNotFound + VoidConflict;
+
+    public double Voided => VoidsOfDenies + BankVoided;
+
+    public double UnknownInRecovery => Unknown - UnknownInRequest;
+
+    public static SagaCounts Between(Counters before, Counters after) => new(
+        Allow: after.Since(before, "decisions", ("outcome", "allow")),
+        Deny: after.Since(before, "decisions", ("outcome", "deny")),
+        Unknown: after.Since(before, "decisions", ("outcome", "unknown")),
+        ChecksInRequest: after.Since(before, "decisions", ("path", "request")),
+        UnknownInRequest: after.Since(before, "decisions", ("path", "request"), ("outcome", "unknown")),
+        FailOpen: after.Since(before, "fail_open"),
+        VoidedOnDeny: after.Since(before, "voided", ("reason", "antifraud_deny")),
+        VoidNotFound: after.Since(before, "voided", ("reason", "void_not_found")),
+        VoidConflict: after.Since(before, "voided", ("reason", "void_conflict")),
+        BankVoided: after.Since(before, "voided", ("reason", "bank_voided")),
+        WaitedInRequest: after.Since(before, "left", ("waits_for", "antifraud"), ("path", "request")),
+        WaitedInRecovery: after.Since(before, "left", ("waits_for", "antifraud"), ("path", "recovery")));
 }

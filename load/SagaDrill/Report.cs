@@ -10,28 +10,34 @@ public static class Report
     private static readonly NumberFormatInfo Numbers = new() { NumberDecimalSeparator = ",", NumberGroupSeparator = " " };
 
     public static string Markdown(
-        DrillOptions options, string route, PreflightResult preflight, DenyResult? deny, Check? denyStopped,
+        DrillOptions options, string route, PreflightResult preflight, IReadOnlyList<PhaseRun> phases,
         string? commit, bool dirty, DateTimeOffset started)
     {
         var text = new StringBuilder();
-        text.Append(options.PreflightOnly ? "# Учения саги: предпроверка\n\n" : "# Учения саги\n\n");
+        text.Append(options.Only == Part.Preflight ? "# Учения саги: предпроверка\n\n" : "# Учения саги\n\n");
         text.Append($"{started:dd.MM.yyyy HH:mm}. ");
         text.Append(commit is null ? "Коммит неизвестен. " : $"Коммит `{commit}`{(dirty ? " и незакоммиченные изменения" : "")}. ");
         text.Append($"Prometheus — {route}.\n\n");
 
         text.Append("## Проверки\n\n");
         Checks(text, "Предпроверка", preflight.Checks);
-        if (deny is not null)
-            Checks(text, "Фаза «отказы»", deny.Checks);
-        else if (denyStopped is not null)
-            Checks(text, "Фаза «отказы»", [denyStopped]);
-        else if (!options.PreflightOnly)
-            text.Append("Фазы не запускались: предпроверка не прошла.\n\n");
+        foreach (var phase in phases)
+        {
+            if (phase.NotRun is { } why)
+                text.Append($"{phase.Title} не запускалась: {why}.\n\n");
+            else
+                Checks(text, phase.Title, phase.Checks);
+        }
 
         text.Append("## Предпроверка\n\n");
         Preflight(text, options, preflight);
-        if (deny is not null)
-            Deny(text, options, deny);
+        foreach (var phase in phases)
+        {
+            if (phase.Result is DenyResult deny)
+                Deny(text, options, deny);
+            else if (phase.Result is OutageResult outage)
+                Outage(text, options, outage);
+        }
         return text.ToString();
     }
 
@@ -61,6 +67,53 @@ public static class Report
         text.Append($"| Отменённые по продавцам | {(deny.VoidedByMerchant.Count == 0 ? "—" : string.Join(", ", deny.VoidedByMerchant.Select(m => $"{m.Merchant} — {N(m.Voided)}")))} |\n");
         text.Append($"| Все платежи завершены | {(deny.Settled is { } s ? $"через {s.TotalSeconds:0} с после нагрузки" : $"нет, и через {options.SettleSeconds} с")} |\n\n");
     }
+
+    private static void Outage(StringBuilder text, DrillOptions options, OutageResult outage)
+    {
+        var c = outage.Counts;
+        var times = outage.Times;
+        double From(double moment) => moment - times.Stop;
+
+        text.Append("## Фаза «антифрод лежит»\n\n");
+        text.Append($"{options.Rate} платежей в секунду, обычная смесь k6, {options.BeforeSeconds + options.DownSeconds + options.AfterSeconds} с. " +
+            $"Через {options.BeforeSeconds} с антифрод остановлен — `kubectl scale deployment/antifraud --replicas=0`, авто-синхронизация " +
+            $"Argo CD на это время выключена, — через {options.DownSeconds} с возвращён. Платёж меньше {OutagePhase.Roubles(outage.FailOpenBelow)} " +
+            "без решения антифрода проводится без проверки (fail open, только в запросе), остальные ждут его в `authorized`, и " +
+            "восстановление проверяет их снова, когда антифрод вернулся. Время — от остановки, по часам кластера; Prometheus " +
+            $"вычисляет правила раз в {Value(outage.Interval)} с. Метрики — разница счётчиков до и после фазы.\n\n");
+        text.Append($"k6: запросов {N(outage.K6.Requests)}, ошибок {N(outage.K6.Failed)}, пропущенных итераций {N(outage.K6.Dropped)}, " +
+            $"медиана {Ms(outage.K6.Median)}, p99 {Ms(outage.K6.P99)}.\n\n");
+
+        text.Append("| Событие | Время |\n|---|---|\n");
+        text.Append($"| Нагрузка началась | {OutagePhase.At(From(times.LoadStart))} |\n");
+        text.Append("| Антифрод остановлен | 0 с |\n");
+        text.Append($"| Антифрод возвращён | {OutagePhase.At(From(times.Back))} |\n");
+        text.Append($"| Реплики антифрода готовы | {(times.Ready is { } ready ? OutagePhase.At(From(ready)) : "не дождались")} |\n");
+        text.Append($"| Нагрузка закончилась | {OutagePhase.At(From(times.LoadEnd))} |\n\n");
+
+        text.Append("Алерты — по сэмплам `ALERTS`: первое вычисление в pending, первое в firing; погас — на вычислении после последнего в firing.\n\n");
+        text.Append("| Алерт | Pending | Firing | Погас |\n|---|---|---|---|\n");
+        foreach (var alert in outage.Alerts)
+            text.Append($"| `{alert.Name}` | {At(alert.Pending)} | {At(alert.Firing)} | {(alert.FiringAtEnd ? "горит" : At(alert.Resolved))} |\n");
+        text.Append('\n');
+
+        var large = outage.Large;
+        text.Append("| | |\n|---|---|\n");
+        text.Append($"| Платежи фазы в базе | {string.Join(", ", outage.Statuses.OrderByDescending(s => s.Value).Select(s => $"`{s.Key}` — {N(s.Value)}"))} |\n");
+        text.Append($"| Решения антифрода | разрешил {N(c.Allow)}, отказал {N(c.Deny)}; нет решения: в запросе {N(c.UnknownInRequest)}, " +
+            $"в восстановлении {N(c.UnknownInRecovery)} |\n");
+        text.Append($"| Без проверки (fail open) | {N(c.FailOpen)} |\n");
+        text.Append($"| Ждали антифрод в `authorized` | {N(c.WaitedInRequest)} платежей; восстановление застало антифрод молчащим {N(c.WaitedInRecovery)} раз |\n");
+        text.Append($"| Отмены | после отказа: void {N(c.VoidedOnDeny)}, void ответил 404 — {N(c.VoidNotFound)}, 409 — {N(c.VoidConflict)}; " +
+            $"банк уже отменил — {N(c.BankVoided)} |\n");
+        text.Append($"| Платежи от {OutagePhase.Roubles(outage.FailOpenBelow)}, созданные пока антифрод лежал (с +{OutagePhase.ShutDown.TotalSeconds:0} с: до того его поды ещё завершались) | " +
+            $"{N(large.Made)}: проведены после его возвращения — {N(large.Captured - large.CapturedBeforeBack)}, отменены — {N(large.Voided)}, " +
+            $"банк отклонил — {N(large.Declined)}, в работе — {N(large.InProgress)}, проведены до возвращения — {N(large.CapturedBeforeBack)} |\n");
+        text.Append($"| Дольше всех ждал в `authorized` | {(outage.LongestWait is var (seconds, at) ? $"{N(seconds)} с, в {OutagePhase.At(at)}" : "—")} |\n");
+        text.Append($"| Все платежи завершены | {(outage.Settled is { } s ? $"через {s.TotalSeconds:0} с после нагрузки" : $"нет, и через {options.SettleSeconds} с")} |\n\n");
+    }
+
+    private static string At(double? seconds) => seconds is { } value ? OutagePhase.At(value) : "—";
 
     private static void Preflight(StringBuilder text, DrillOptions options, PreflightResult preflight)
     {

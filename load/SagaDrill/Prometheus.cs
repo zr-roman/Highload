@@ -11,8 +11,19 @@ public sealed record Series(IReadOnlyDictionary<string, string> Labels, double V
 /// <summary>What an instant query returned: the series, or why there are none to look at.</summary>
 public sealed record QueryResult(IReadOnlyList<Series> Series, string? Error);
 
+/// <summary>One series of a range selector: its labels and its raw samples, each at the time Prometheus stamped it.</summary>
+public sealed record Samples(IReadOnlyDictionary<string, string> Labels, IReadOnlyList<(double Time, double Value)> Points);
+
+/// <summary>What a range selector returned: the series, or why there are none to look at.</summary>
+public sealed record SamplesResult(IReadOnlyList<Samples> Series, string? Error);
+
 /// <summary>An alerting rule as Prometheus has loaded it, with its query in Prometheus' own formatting.</summary>
-public sealed record LoadedRule(string Name, string Query, string Health, string? LastError);
+/// <param name="Duration">Its for, in seconds: how long the condition must hold before the alert fires.</param>
+public sealed record LoadedRule(string Name, string Query, double Duration, string Health, string? LastError);
+
+/// <summary>A group of rules as Prometheus has loaded it.</summary>
+/// <param name="Interval">How often Prometheus evaluates the rules of the group, in seconds.</param>
+public sealed record LoadedGroup(double Interval, IReadOnlyList<LoadedRule> Rules);
 
 /// <summary>
 /// The Prometheus of the stand over its HTTP API, through a port-forward for the length of the run. The local port
@@ -67,38 +78,42 @@ public sealed class Prometheus : IDisposable
 
     public async Task<QueryResult> QueryAsync(string expression, CancellationToken ct)
     {
-        string text;
-        try
-        {
-            using var response = await http.GetAsync("api/v1/query?query=" + Uri.EscapeDataString(expression), ct);
-            text = await response.Content.ReadAsStringAsync(ct);
-        }
-        catch (Exception e) when (e is HttpRequestException || (e is TaskCanceledException && !ct.IsCancellationRequested))
-        {
-            return new QueryResult([], $"no answer from Prometheus: {e.Message}");
-        }
+        var (data, error) = await QueryDataAsync("query=" + Uri.EscapeDataString(expression), ct);
+        if (data is not { } result)
+            return new QueryResult([], error);
 
-        // A bad expression is a 400 with the same envelope: {"status": "error", "error": "..."}.
-        using var json = JsonDocument.Parse(text);
-        var root = json.RootElement;
-        if (root.GetProperty("status").GetString() != "success")
-            return new QueryResult([], root.TryGetProperty("error", out var error) ? error.GetString() : text);
-
-        var data = root.GetProperty("data");
-        if (data.GetProperty("resultType").GetString() == "scalar")
-            return new QueryResult([new Series(new Dictionary<string, string>(), Value(data.GetProperty("result")[1]))], null);
+        if (result.GetProperty("resultType").GetString() == "scalar")
+            return new QueryResult([new Series(new Dictionary<string, string>(), Value(result.GetProperty("result")[1]))], null);
 
         var series = new List<Series>();
-        foreach (var item in data.GetProperty("result").EnumerateArray())
-        {
-            var labels = item.GetProperty("metric").EnumerateObject().ToDictionary(l => l.Name, l => l.Value.GetString() ?? "");
-            series.Add(new Series(labels, Value(item.GetProperty("value")[1])));
-        }
+        foreach (var item in result.GetProperty("result").EnumerateArray())
+            series.Add(new Series(Labels(item), Value(item.GetProperty("value")[1])));
         return new QueryResult(series, null);
     }
 
+    /// <summary>
+    /// The raw samples of a selector from <paramref name="from"/> to <paramref name="to"/>, in seconds since 1970: what
+    /// a rule wrote, each sample at the time of its evaluation, where a range query would give values on a grid of
+    /// its own. The window is left-open, as every range selector: a sample at <paramref name="from"/> is not in it.
+    /// </summary>
+    public async Task<SamplesResult> SamplesAsync(string selector, double from, double to, CancellationToken ct)
+    {
+        var window = Math.Max(1, (int)Math.Ceiling(to - from));
+        var (data, error) = await QueryDataAsync(
+            $"query={Uri.EscapeDataString($"{selector}[{window}s]")}&time={to.ToString("0.###", CultureInfo.InvariantCulture)}", ct);
+        if (data is not { } result)
+            return new SamplesResult([], error);
+
+        var series = new List<Samples>();
+        foreach (var item in result.GetProperty("result").EnumerateArray())
+            series.Add(new Samples(Labels(item), item.GetProperty("values").EnumerateArray()
+                .Select(point => (point[0].GetDouble(), Value(point[1])))
+                .ToList()));
+        return new SamplesResult(series, null);
+    }
+
     /// <summary>The alerting rules of a group as Prometheus has loaded them; null if it has no such group.</summary>
-    public async Task<IReadOnlyList<LoadedRule>?> AlertRulesAsync(string group, CancellationToken ct)
+    public async Task<LoadedGroup?> AlertRulesAsync(string group, CancellationToken ct)
     {
         string text;
         try
@@ -115,13 +130,14 @@ public sealed class Prometheus : IDisposable
         {
             if (loaded.GetProperty("name").GetString() != group)
                 continue;
-            return loaded.GetProperty("rules").EnumerateArray()
+            return new LoadedGroup(loaded.GetProperty("interval").GetDouble(), loaded.GetProperty("rules").EnumerateArray()
                 .Select(r => new LoadedRule(
                     r.GetProperty("name").GetString()!,
                     r.GetProperty("query").GetString()!,
+                    r.TryGetProperty("duration", out var duration) ? duration.GetDouble() : 0,
                     r.GetProperty("health").GetString()!,
                     r.TryGetProperty("lastError", out var lastError) && lastError.GetString() is { Length: > 0 } message ? message : null))
-                .ToList();
+                .ToList());
         }
         return null;
     }
@@ -160,6 +176,31 @@ public sealed class Prometheus : IDisposable
         }
         throw new DrillException($"Prometheus at {Address} is not ready after {limit.TotalSeconds:0} s: {why}");
     }
+
+    // The data of a query: an instant query, or a range selector, which comes back as a matrix of raw samples.
+    private async Task<(JsonElement? Data, string? Error)> QueryDataAsync(string parameters, CancellationToken ct)
+    {
+        string text;
+        try
+        {
+            using var response = await http.GetAsync("api/v1/query?" + parameters, ct);
+            text = await response.Content.ReadAsStringAsync(ct);
+        }
+        catch (Exception e) when (e is HttpRequestException || (e is TaskCanceledException && !ct.IsCancellationRequested))
+        {
+            return (null, $"no answer from Prometheus: {e.Message}");
+        }
+
+        // A bad expression is a 400 with the same envelope: {"status": "error", "error": "..."}.
+        using var json = JsonDocument.Parse(text);
+        var root = json.RootElement;
+        if (root.GetProperty("status").GetString() != "success")
+            return (null, root.TryGetProperty("error", out var error) ? error.GetString() : text);
+        return (root.GetProperty("data").Clone(), null);
+    }
+
+    private static Dictionary<string, string> Labels(JsonElement series) =>
+        series.GetProperty("metric").EnumerateObject().ToDictionary(l => l.Name, l => l.Value.GetString() ?? "");
 
     // "NaN" parses as is; Prometheus writes infinities as "+Inf" and "-Inf", which .NET does not read.
     private static double Value(JsonElement value) => value.GetString() switch

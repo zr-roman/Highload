@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace SagaDrill;
 
 /// <summary>
@@ -23,12 +25,17 @@ public static class Postgres
     }
 
     /// <summary>
-    /// The time of the database, not of the laptop: the payments get theirs in the pods, on the clock of the same
-    /// WSL machine, and the clock of WSL can drift from Windows.
+    /// The time of the database in seconds since 1970, not of the laptop: the payments get theirs in the pods, and
+    /// Prometheus stamps its samples, on the clock of the same WSL machine, and the clock of WSL can drift from Windows.
     /// </summary>
-    public static async Task<string> NowAsync() =>
-        (await QueryAsync("payments", "select now()"))?.FirstOrDefault()?[0]
-        ?? throw new DrillException("Cannot read the time of PostgreSQL: is the cluster pg up?");
+    public static async Task<double> ClockAsync() =>
+        (await QueryAsync("payments", "select extract(epoch from now())"))?.FirstOrDefault()?[0] is { } text
+        && double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)
+            ? seconds
+            : throw new DrillException("Cannot read the time of PostgreSQL: is the cluster pg up?");
+
+    /// <summary>A time of <see cref="ClockAsync"/> in SQL: to_timestamp(1795308369.123456).</summary>
+    public static string Time(double seconds) => $"to_timestamp({seconds.ToString("0.######", CultureInfo.InvariantCulture)})";
 
     /// <summary>A number from the first column of the first row; null if the query failed.</summary>
     public static async Task<long?> NumberAsync(string database, string sql) =>

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace SagaDrill;
 
@@ -45,6 +46,35 @@ public static class Stand
         // A Deployment with no ready replica has no readyReplicas at all.
         var ready = root.GetProperty("status").TryGetProperty("readyReplicas", out var count) ? count.GetInt32() : 0;
         return (new Replicas(root.GetProperty("spec").GetProperty("replicas").GetInt32(), ready), "");
+    }
+
+    /// <summary>
+    /// spec.syncPolicy.automated of the application in compact JSON, to put back as it was by
+    /// <see cref="SetAutoSyncAsync"/>; null if auto-sync is off.
+    /// </summary>
+    public static async Task<string?> AutoSyncAsync()
+    {
+        var result = await Shell.Kubectl(ProbeTimeout, "-n", "argocd", "get", "application", Application, "-o", "json");
+        if (!result.Ok)
+            throw new DrillException($"Cannot read the Argo CD application {Application}: {result.Errors}");
+        return JsonNode.Parse(result.Output)?["spec"]?["syncPolicy"]?["automated"]?.ToJsonString();
+    }
+
+    /// <summary>Auto-sync of the application off (null), or back on as <see cref="AutoSyncAsync"/> read it.</summary>
+    public static async Task SetAutoSyncAsync(string? automated)
+    {
+        var patch = """{"spec":{"syncPolicy":{"automated":""" + (automated ?? "null") + "}}}";
+        var result = await Shell.Kubectl(ProbeTimeout, "-n", "argocd", "patch", "application", Application, "--type", "merge", "-p", patch);
+        if (!result.Ok)
+            throw new DrillException($"Cannot {(automated is null ? "switch off" : "switch back on")} the auto-sync of the Argo CD " +
+                $"application {Application}: {result.Errors}");
+    }
+
+    public static async Task ScaleAsync(string deployment, int replicas)
+    {
+        var result = await Shell.Kubectl(ProbeTimeout, "-n", Namespace, "scale", $"deployment/{deployment}", $"--replicas={replicas}");
+        if (!result.Ok)
+            throw new DrillException($"kubectl scale deployment/{deployment} --replicas={replicas} failed: {result.Errors}");
     }
 
     private static string Text(JsonElement status, string section, string field) =>

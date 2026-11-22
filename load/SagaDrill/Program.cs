@@ -5,8 +5,9 @@ using SagaDrill;
 // preflight: the stand is ready for the drill, Prometheus has loaded the rules of highload.saga, and under a warm-up
 // load the antifraud answers and every query of the saga row of the dashboard and of the saga's alerts finds its
 // metrics; the promtool tests cannot check that, their series are named by hand. The deny phase: every deny of the
-// antifraud ends in a void, and the Ledger gets the captured payments alone. Writes
-// load/reports/saga-drill-<time>/report.md.
+// antifraud ends in a void, and the Ledger gets the captured payments alone. The outage phase: the antifraud goes
+// away under load and comes back; small payments are captured unchecked, the others wait for it, and the alerts of
+// the saga fire while it is away and resolve after. Writes load/reports/saga-drill-<time>/report.md.
 // From the repository root, with the cluster up and no other load:
 //   dotnet run --project load\SagaDrill -c Release
 // Options: DrillOptions.Usage.
@@ -20,11 +21,14 @@ if (args is ["-h"] or ["--help"])
 CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
-// The first Ctrl+C stops the run at the next await; a second one ends the process at once.
+// The first Ctrl+C stops the run at the next await; a second one ends the process at once. The outage phase puts
+// the stand back before it stops, which takes a few seconds: the second one would leave it as it is.
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
 {
     e.Cancel = !cts.IsCancellationRequested;
+    if (e.Cancel)
+        Console.Error.WriteLine("Stopping. What the drill changed on the stand is put back first; Ctrl+C again ends it at once, as it is.");
     cts.Cancel();
 };
 

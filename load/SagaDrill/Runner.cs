@@ -1,10 +1,20 @@
 namespace SagaDrill;
 
+/// <summary>A phase as the run left it: what it found, or why it stopped, or why it was not run.</summary>
+/// <param name="Stopped">The phase could not go on (k6 failed, the stand never settled): a failed check, not a report lost.</param>
+public sealed record PhaseRun(string Title, IPhaseResult? Result, Check? Stopped, string? NotRun)
+{
+    public IReadOnlyList<Check> Checks => Result?.Checks ?? (Stopped is null ? [] : [Stopped]);
+
+    public bool Ok => NotRun is null && Checks.Count > 0 && Checks.All(c => c.Ok);
+}
+
 public static class Runner
 {
     public static async Task RunAsync(DrillOptions options, CancellationToken ct)
     {
-        foreach (var file in new[] { "load/payments.js", Dashboard.File, Alerts.File })
+        string[] files = ["load/payments.js", Dashboard.File, Alerts.File, .. OutagePhase.Files];
+        foreach (var file in files)
             if (!File.Exists(file))
                 throw new DrillException($"Run it from the root of the repository: {file} is not here");
 
@@ -18,26 +28,37 @@ public static class Runner
         using var prometheus = await Prometheus.OpenAsync(options.PrometheusUrl, reports, ct);
         var preflight = await Preflight.RunAsync(options, prometheus, reports, ct);
 
-        // A phase on a stand that failed its preflight would measure the stand, not the saga. A phase that cannot go
-        // on (k6 failed, the stand never settled) is a failed check in the report, not a report lost.
-        DenyResult? deny = null;
-        Check? denyStopped = null;
-        if (!options.PreflightOnly && preflight.Checks.All(c => c.Ok))
+        // A phase on a stand that failed its preflight, or the phase before, would measure the stand, not the saga.
+        var phases = new List<PhaseRun>();
+        var phase = new (Part Part, string Title, Func<Task<IPhaseResult>> Run)[]
         {
+            (Part.Deny, "Фаза «отказы»", async () => await DenyPhase.RunAsync(options, prometheus, reports, ct)),
+            (Part.Outage, "Фаза «антифрод лежит»", async () => await OutagePhase.RunAsync(options, prometheus, reports, ct)),
+        };
+        string? notRun = preflight.Checks.All(c => c.Ok) ? null : "предпроверка не прошла";
+        foreach (var (part, title, run) in phase.Where(p => options.Runs(p.Part)))
+        {
+            if (notRun is not null)
+            {
+                phases.Add(new PhaseRun(title, null, null, notRun));
+                continue;
+            }
             try
             {
-                deny = await DenyPhase.RunAsync(options, prometheus, reports, ct);
+                phases.Add(new PhaseRun(title, await run(), null, null));
             }
             catch (DrillException e)
             {
-                denyStopped = new Check("фаза «отказы» дошла до конца", false, e.Message);
+                phases.Add(new PhaseRun(title, null, new Check($"{title.ToLowerInvariant()} дошла до конца", false, e.Message), null));
             }
+            if (!phases[^1].Ok)
+                notRun = $"{title.ToLowerInvariant()} не прошла";
         }
-        else if (!options.PreflightOnly)
-            Console.WriteLine("The preflight failed: the phases are not run");
+        if (phases.Any(p => p.NotRun is not null))
+            Console.WriteLine($"Not run: {string.Join(", ", phases.Where(p => p.NotRun is not null).Select(p => p.Title))}");
 
         var path = Path.Combine(reports, "report.md");
-        File.WriteAllText(path, Report.Markdown(options, prometheus.Route, preflight, deny, denyStopped,
+        File.WriteAllText(path, Report.Markdown(options, prometheus.Route, preflight, phases,
             commit.Ok ? commit.Output : null, dirty.Ok && dirty.Output.Length > 0, started));
 
         Console.WriteLine();
@@ -46,7 +67,7 @@ public static class Runner
             Console.WriteLine($"no series  {query.What}: {query.Expression}");
             Console.WriteLine($"           {query.Result.Error ?? query.Found}");
         }
-        var checks = preflight.Checks.Concat(deny?.Checks ?? (denyStopped is null ? [] : [denyStopped])).ToList();
+        var checks = preflight.Checks.Concat(phases.SelectMany(p => p.Checks)).ToList();
         foreach (var check in checks)
             Console.WriteLine($"{(check.Ok ? "ok  " : "FAIL")}  {check.Name}: {check.Detail}");
         Console.WriteLine($"Report: {path}");
