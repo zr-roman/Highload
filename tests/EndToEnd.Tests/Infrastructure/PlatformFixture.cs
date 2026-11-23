@@ -1,4 +1,5 @@
-﻿using Confluent.Kafka;
+﻿using System.Text.Json;
+using Confluent.Kafka;
 using Confluent.Kafka.Admin;
 using Contracts;
 using Ledger.Service.Ledger;
@@ -34,6 +35,7 @@ public sealed class PlatformFixture : IAsyncLifetime
     private ServiceFactory<LedgerQueries> ledgerService = null!;
     private Dictionary<string, string?> ledgerSettings = null!;
     private IAdminClient kafkaAdmin = null!;
+    private string kafkaAddress = null!;
 
     /// <summary>HTTP client of Payments.Api.</summary>
     public HttpClient Payments { get; private set; } = null!;
@@ -70,7 +72,7 @@ public sealed class PlatformFixture : IAsyncLifetime
         LedgerDb = NpgsqlDataSource.Create(ConnectionString("ledger"));
 
         // host:port, as in appsettings.json; GetBootstrapAddress() returns it as a PLAINTEXT:// URI.
-        var kafkaAddress = new Uri(kafka.GetBootstrapAddress()).Authority;
+        kafkaAddress = new Uri(kafka.GetBootstrapAddress()).Authority;
 
         paymentsApi = new ServiceFactory<PaymentsMetrics>(new Dictionary<string, string?>
         {
@@ -151,6 +153,52 @@ public sealed class PlatformFixture : IAsyncLifetime
         // A partition with no commit yet has a negative offset (Offset.Unset): the ledger will read it from the start.
         return ends.ResultInfos.Sum(end =>
             end.TopicPartitionOffsetError.Offset.Value - Math.Max(0, committed[end.TopicPartitionOffsetError.TopicPartition]));
+    }
+
+    /// <summary>
+    /// Every PaymentFinalized in Kafka: payments.finalized read from the start of each partition to its end as it is now.
+    /// Assigned partitions, not a subscription: nothing is committed, and the next call reads them all again.
+    /// </summary>
+    public async Task<IReadOnlyList<PaymentFinalized>> FinalizedEventsAsync()
+    {
+        var partitions = Enumerable.Range(0, Topics.PaymentsFinalizedPartitions)
+            .Select(partition => new TopicPartition(Topics.PaymentsFinalized, partition));
+        var ends = await kafkaAdmin.ListOffsetsAsync(
+            partitions.Select(p => new TopicPartitionOffsetSpec { TopicPartition = p, OffsetSpec = OffsetSpec.Latest() }));
+
+        // The end of each partition that has messages: reading stops at it, later events are not this call's.
+        var left = ends.ResultInfos
+            .Select(end => end.TopicPartitionOffsetError)
+            .Where(end => end.Offset.Value > 0)
+            .ToDictionary(end => end.TopicPartition, end => end.Offset.Value);
+
+        var events = new List<PaymentFinalized>();
+        if (left.Count == 0)
+            return events;
+
+        using var consumer = new ConsumerBuilder<string, string>(new ConsumerConfig
+        {
+            BootstrapServers = kafkaAddress,
+            GroupId = "end-to-end-reader",      // required by the client; with Assign it joins no group
+            EnableAutoCommit = false,
+        }).Build();
+        consumer.Assign(left.Keys.Select(p => new TopicPartitionOffset(p, Offset.Beginning)));
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+        while (left.Count > 0)
+        {
+            Assert.True(DateTime.UtcNow < deadline, $"{Topics.PaymentsFinalized} is not read to its end in 30 s: {left.Count} partitions left");
+
+            var result = consumer.Consume(TimeSpan.FromSeconds(1));
+            if (result is null)
+                continue;
+
+            events.Add(JsonSerializer.Deserialize(result.Message.Value, ContractsJson.Default.PaymentFinalized)!);
+            if (result.Offset.Value + 1 >= left[result.TopicPartition])
+                left.Remove(result.TopicPartition);
+        }
+
+        return events;
     }
 
     public async ValueTask DisposeAsync()

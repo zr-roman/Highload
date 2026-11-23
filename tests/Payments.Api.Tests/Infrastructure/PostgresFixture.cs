@@ -1,4 +1,5 @@
-﻿using Npgsql;
+﻿using Contracts;
+using Npgsql;
 using Platform;
 using System.Data.Common;
 using Testcontainers.PostgreSql;
@@ -102,6 +103,41 @@ public sealed class PostgresFixture : IAsyncLifetime
     {
         await using var command = DataSource.CreateCommand("SELECT count(*) FROM outbox");
         return (long)(await command.ExecuteScalarAsync(cancellationToken))!;
+    }
+
+    /// <summary>The outbox rows of one topic: a captured payment has one in each of two topics.</summary>
+    public async Task<long> CountOutboxAsync(string topic, CancellationToken cancellationToken = default) =>
+        (await OutboxAsync(topic, cancellationToken)).Count;
+
+    /// <summary>The key and the payload of each outbox row of one topic, in the order they were written.</summary>
+    public async Task<IReadOnlyList<(string Key, string Payload)>> OutboxAsync(string topic, CancellationToken cancellationToken = default)
+    {
+        await using var command = DataSource.CreateCommand("SELECT message_key, payload FROM outbox WHERE topic = $1 ORDER BY id");
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = topic });
+
+        List<(string, string)> rows = [];
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            rows.Add((reader.GetString(0), reader.GetString(1)));
+
+        return rows;
+    }
+
+    /// <summary>
+    /// The PaymentFinalized the payment's row stands for: what its event in the outbox has to say, to the microsecond.
+    /// </summary>
+    public async Task<PaymentFinalized> FinalizedFromRowAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        await using var command = DataSource.CreateCommand(
+            "SELECT merchant_id, amount, fee, currency, status, created_at, updated_at FROM payments WHERE id = $1");
+        command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = id });
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        Assert.True(await reader.ReadAsync(cancellationToken));
+
+        return new PaymentFinalized(
+            id, reader.GetInt64(0), reader.GetInt64(1), reader.IsDBNull(2) ? null : reader.GetInt64(2), reader.GetString(3),
+            reader.GetString(4), reader.GetFieldValue<DateTimeOffset>(5), reader.GetFieldValue<DateTimeOffset>(6));
     }
 }
 

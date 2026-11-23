@@ -159,7 +159,7 @@ public sealed class PaymentSaga(
             : await MovedOnAsync(authorized.Id, cancellationToken);
 
     private async Task<SagaResult> DeclineAsync(Payment payment, string reason, CancellationToken cancellationToken) =>
-        await completion.DeclineOnBankDenialAsync(payment.Id, cancellationToken)
+        await completion.DeclineOnBankDenialAsync(payment, cancellationToken)
             ? new SagaResult(payment with { Status = PaymentStatus.Declined }, SagaStep.Done, reason)
             : await MovedOnAsync(payment.Id, cancellationToken);
 
@@ -195,7 +195,7 @@ public sealed class PaymentSaga(
     private async Task<SagaResult> RecordVoidedAsync(
         Payment payment, string reason, VoidReason voidReason, SagaPath path, CancellationToken cancellationToken)
     {
-        if (!await store.MarkVoidedAsync(payment.Id, cancellationToken))
+        if (!await completion.RecordVoidedAsync(payment, cancellationToken))
             return await MovedOnAsync(payment.Id, cancellationToken);
 
         metrics.Voided(voidReason, path);

@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics.Metrics;
+using Contracts;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Logging;
@@ -14,7 +15,8 @@ namespace Payments.Api.Tests.Payments;
 
 /// <summary>
 /// The saga of the request path on a real Postgres, with the bank and the antifraud scripted: every answer they can
-/// give leads to its own status, and only a captured payment gets an event for the ledger. Every outcome is also counted
+/// give leads to its own status, every final status gets its PaymentFinalized, and only a captured payment gets an
+/// event for the ledger as well. Every outcome is also counted
 /// in the metrics of the saga, with path = request.
 /// </summary>
 [Collection("Postgres")]
@@ -51,7 +53,7 @@ public sealed class PaymentSagaTests(PostgresFixture db) : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Allowed_Payment_Is_Captured_With_Fee_And_One_Outbox_Event()
+    public async Task Allowed_Payment_Is_Captured_With_Fee_And_One_Event_For_The_Ledger()
     {
         var payment = await NewPaymentAsync();
         bank.AnswerAuthorization(payment.Id, AcquirerOutcome.Approved);
@@ -62,7 +64,8 @@ public sealed class PaymentSagaTests(PostgresFixture db) : IAsyncLifetime
         Assert.Equal(PaymentStatus.Captured, result.Status);
         Assert.Equal(3000L, result.Fee);                            // 2 % of 150000, what the response shows
         Assert.Equal("captured", await db.GetStatusAsync(payment.Id, Ct));
-        Assert.Equal(1L, await db.CountOutboxAsync(Ct));            // the event the ledger books
+        Assert.Equal(1L, await db.CountOutboxAsync(Topics.PaymentsCaptured, Ct));    // the event the ledger books
+        Assert.Equal(1L, await db.CountOutboxAsync(Topics.PaymentsFinalized, Ct));   // and the one of the history
         Assert.Equal(0L, await db.CountPendingAsync(Ct));
         Assert.Equal(0, bank.VoidsFor(payment.Id));
 
@@ -72,7 +75,7 @@ public sealed class PaymentSagaTests(PostgresFixture db) : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Denied_Payment_Is_Voided_At_The_Bank_Without_An_Outbox_Event()
+    public async Task Denied_Payment_Is_Voided_At_The_Bank_Without_An_Event_For_The_Ledger()
     {
         var payment = await NewPaymentAsync();
         bank.AnswerAuthorization(payment.Id, AcquirerOutcome.Approved);
@@ -84,7 +87,8 @@ public sealed class PaymentSagaTests(PostgresFixture db) : IAsyncLifetime
         Assert.Equal(PaymentStatus.Voided, result.Status);
         Assert.Equal(1, bank.VoidsFor(payment.Id));                 // the compensation: the hold is released
         Assert.Equal("voided", await db.GetStatusAsync(payment.Id, Ct));
-        Assert.Equal(0L, await db.CountOutboxAsync(Ct));            // no money moved: nothing for the ledger
+        Assert.Equal(0L, await db.CountOutboxAsync(Topics.PaymentsCaptured, Ct));    // no money moved: nothing for the ledger
+        Assert.Equal(1L, await db.CountOutboxAsync(Topics.PaymentsFinalized, Ct));   // the history has it all the same
         Assert.Equal(0L, await db.CountPendingAsync(Ct));
         Assert.Null(await db.GetFeeAsync(payment.Id, Ct));
 
@@ -145,7 +149,7 @@ public sealed class PaymentSagaTests(PostgresFixture db) : IAsyncLifetime
         var result = await Saga(failOpenBelowAmount).RunAsync(payment, Ct);
 
         Assert.Equal(expected, result.Status);
-        Assert.Equal(expected == PaymentStatus.Captured ? 1L : 0L, await db.CountOutboxAsync(Ct));
+        Assert.Equal(expected == PaymentStatus.Captured ? 1L : 0L, await db.CountOutboxAsync(Topics.PaymentsCaptured, Ct));
         Assert.Equal(expected == PaymentStatus.Captured ? 0L : 1L, await db.CountPendingAsync(Ct));
         Assert.Equal(0, bank.VoidsFor(payment.Id));                 // no decision is not a deny
 

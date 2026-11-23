@@ -20,7 +20,14 @@ public static class KafkaTopics
     /// The same through an admin client that already exists, such as one that shares a producer's connections
     /// (DependentAdminClientBuilder).
     /// </summary>
-    public static async Task EnsureCreatedAsync(IAdminClient admin, string topic, int partitions, ILogger logger)
+    public static async Task EnsureCreatedAsync(IAdminClient admin, string topic, int partitions, ILogger logger) =>
+        await EnsureCreatedAsync(admin, [(topic, partitions)], logger);
+
+    /// <summary>
+    /// Several topics in one request: one wait, not one per topic, when the controller does not answer.
+    /// </summary>
+    public static async Task EnsureCreatedAsync(
+        IAdminClient admin, IReadOnlyCollection<(string Topic, int Partitions)> topics, ILogger logger)
     {
         try
         {
@@ -29,13 +36,21 @@ public static class KafkaTopics
             // ReplicationFactor -1: the broker's default.replication.factor, 3 in the cluster (deploy/k8s/kafka.yaml),
             // 1 with the single broker of docker-compose and the tests.
             await admin.CreateTopicsAsync(
-                [new TopicSpecification { Name = topic, NumPartitions = partitions, ReplicationFactor = -1 }],
+                topics.Select(t => new TopicSpecification { Name = t.Topic, NumPartitions = t.Partitions, ReplicationFactor = -1 }),
                 new CreateTopicsOptions { RequestTimeout = TimeSpan.FromSeconds(5) });
-            logger.LogInformation("Created Kafka topic {Topic} with {Partitions} partitions", topic, partitions);
+            foreach (var (topic, partitions) in topics)
+                logger.LogInformation("Created Kafka topic {Topic} with {Partitions} partitions", topic, partitions);
         }
-        catch (CreateTopicsException e) when (e.Results.All(r => r.Error.Code == ErrorCode.TopicAlreadyExists))
+        catch (CreateTopicsException e) when (e.Results.All(r => r.Error.Code is ErrorCode.NoError or ErrorCode.TopicAlreadyExists))
         {
-            logger.LogDebug("Kafka topic {Topic} already exists", topic);
+            // Some of them existed already: the exception carries the outcome of each.
+            foreach (var result in e.Results)
+            {
+                if (result.Error.Code == ErrorCode.NoError)
+                    logger.LogInformation("Created Kafka topic {Topic}", result.Topic);
+                else
+                    logger.LogDebug("Kafka topic {Topic} already exists", result.Topic);
+            }
         }
     }
 }

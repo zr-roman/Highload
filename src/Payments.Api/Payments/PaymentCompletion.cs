@@ -14,10 +14,7 @@ public sealed class PaymentCompletion(
         var fee = feeOptions.Value.Calculate(payment.Amount);
         var captured = new PaymentCaptured(payment.Id, payment.MerchantId, payment.Amount, fee, payment.Currency, DateTimeOffset.UtcNow);
 
-        // A large merchant, one with a quota of its own, has its payments spread over the partitions of the ledger.
-        var key = Topics.PaymentsCapturedKey(payment.MerchantId, payment.Id, spread: quotas.Of(payment.MerchantId).IsOverride);
-
-        if (await store.MarkCapturedAsync(captured, key, cancellationToken))
+        if (await store.MarkCapturedAsync(captured, Key(payment), cancellationToken))
         {
             metrics.Captured(payment.Amount);
             return captured;
@@ -30,12 +27,21 @@ public sealed class PaymentCompletion(
     }
 
     // «Отклонить».
-    public async Task<bool> DeclineOnBankDenialAsync(Guid paymentId, CancellationToken cancellationToken)
+    public async Task<bool> DeclineOnBankDenialAsync(Payment payment, CancellationToken cancellationToken)
     {
-        var statusChanged = await store.MarkDeclinedAsync(paymentId, cancellationToken);
+        var statusChanged = await store.MarkDeclinedAsync(payment.Id, Key(payment), cancellationToken);
         if (statusChanged)
             metrics.Declined();
 
         return statusChanged;
     }
+
+    // «Отменено»: the bank released the hold. The metric of voids is the saga's, by reason (PaymentsMetrics.Voided).
+    public async Task<bool> RecordVoidedAsync(Payment payment, CancellationToken cancellationToken) =>
+        await store.MarkVoidedAsync(payment.Id, Key(payment), cancellationToken);
+
+    // The key of every event of a payment. A large merchant, one with a quota of its own, has its payments spread over
+    // the partitions, of the ledger and of the history alike (Topics.PaymentsFinalized).
+    private string Key(Payment payment) =>
+        Topics.PaymentsCapturedKey(payment.MerchantId, payment.Id, spread: quotas.Of(payment.MerchantId).IsOverride);
 }

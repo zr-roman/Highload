@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using Contracts;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
@@ -34,7 +35,7 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Approved_And_Allowed_Payment_Is_Captured_With_Fee_And_One_Outbox_Event()
+    public async Task Approved_And_Allowed_Payment_Is_Captured_With_Fee_And_One_Event_For_The_Ledger()
     {
         var id = await db.InsertPaymentAsync(Stale, cancellationToken: Ct);
         bank.Answer(id, AcquirerOutcome.Approved);
@@ -45,7 +46,8 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
 
         Assert.Equal("captured", await db.GetStatusAsync(id, Ct));
         Assert.Equal(3000L, await db.GetFeeAsync(id, Ct));          // 2 % of 150000 by default FeeOptions
-        Assert.Equal(1L, await db.CountOutboxAsync(Ct));            // the event Ledger books
+        Assert.Equal(1L, await db.CountOutboxAsync(Topics.PaymentsCaptured, Ct));    // the event Ledger books
+        Assert.Equal(1L, await db.CountOutboxAsync(Topics.PaymentsFinalized, Ct));   // and the history's, as in the request
         Assert.Equal(0L, await db.CountPendingAsync(Ct));           // out of the queue of recovery, in the same statement
         Assert.Single(host.Captured.GetMeasurementSnapshot());      // the same metric the endpoint feeds
 
@@ -67,7 +69,8 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
 
         Assert.Equal("declined", await db.GetStatusAsync(id, Ct));
         Assert.Null(await db.GetFeeAsync(id, Ct));
-        Assert.Equal(0L, await db.CountOutboxAsync(Ct));            // nothing for Ledger to book
+        Assert.Equal(0L, await db.CountOutboxAsync(Topics.PaymentsCaptured, Ct));    // nothing for Ledger to book
+        Assert.Equal(1L, await db.CountOutboxAsync(Topics.PaymentsFinalized, Ct));
         Assert.Equal(0L, await db.CountPendingAsync(Ct));
         Assert.Single(host.Declined.GetMeasurementSnapshot());
 
@@ -231,7 +234,7 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
         Assert.Equal(0, bank.LookupsFor(authorized));
         Assert.Equal(1, antifraud.ChecksFor(authorized));
         Assert.Equal("captured", await db.GetStatusAsync(authorized, Ct));
-        Assert.Equal(1L, await db.CountOutboxAsync(Ct));
+        Assert.Equal(1L, await db.CountOutboxAsync(Topics.PaymentsCaptured, Ct));
         Assert.Equal(0L, await db.CountPendingAsync(Ct));
     }
 
@@ -247,7 +250,8 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
 
         Assert.Equal(1, bank.VoidsFor(authorized));
         Assert.Equal("voided", await db.GetStatusAsync(authorized, Ct));
-        Assert.Equal(0L, await db.CountOutboxAsync(Ct));
+        Assert.Equal(0L, await db.CountOutboxAsync(Topics.PaymentsCaptured, Ct));
+        Assert.Equal(1L, await db.CountOutboxAsync(Topics.PaymentsFinalized, Ct));
         Assert.Equal(0L, await db.CountPendingAsync(Ct));
         Assert.Equal(1, Tag(Assert.Single(host.Passes), "recovery.voided"));
 
@@ -276,7 +280,7 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
         // without a decision holds back that payment alone: the pass goes on with the next one.
         Assert.Equal("authorized", await db.GetStatusAsync(first, Ct));
         Assert.Equal("captured", await db.GetStatusAsync(second, Ct));
-        Assert.Equal(1L, await db.CountOutboxAsync(Ct));            // the event of the second one only
+        Assert.Equal(1L, await db.CountOutboxAsync(Topics.PaymentsCaptured, Ct));    // the event of the second one only
         var pass = Assert.Single(host.Passes);
         Assert.NotEqual(ActivityStatusCode.Error, pass.Status);
         Assert.Equal(1, Tag(pass, "recovery.skipped"));

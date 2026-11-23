@@ -15,6 +15,20 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
     // The same columns of payments joined to pending_payments, which has an id and a created_at of its own.
     private static readonly string SelectPaymentColumns = string.Join(", ", SelectColumns.Split(", ").Select(column => $"p.{column}"));
 
+    // What a final transition returns of the row it wrote: the columns of the PaymentFinalized event.
+    private const string FinalizedColumns = "id, merchant_id, amount, fee, currency, status, created_at, updated_at";
+
+    // The PaymentFinalized event (Contracts), built by the statement from the row it has just written, not by the
+    // caller: amount, created_at and the time of the final status are then exactly what the database holds, and the
+    // history of payments made from the events matches the list from payments to the microsecond. A caller's clock
+    // would not: created_at is now() of the insert, and DateTimeOffset.UtcNow differs from it.
+    // The names are those of ContractsJson (camelCase); PaymentStoreTests read the payload back with it.
+    private const string FinalizedPayload = """
+        json_build_object(
+            'paymentId', id, 'merchantId', merchant_id, 'amount', amount, 'fee', fee, 'currency', currency,
+            'status', status, 'createdAt', created_at, 'finalizedAt', updated_at)::text
+        """;
+
     /// <summary>
     /// Returns false when a payment with the same (merchant_id, idempotency_key) already exists:
     /// the unique constraint, not a SELECT before the INSERT, decides who was first.
@@ -64,8 +78,9 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
     }
 
     /// <summary>
-    /// The status change and the outbox row are written by one statement: they commit together,
-    /// and the outbox row appears only if the payment really moved to 'captured'. The same statement takes
+    /// The status change and the outbox rows are written by one statement: they commit together,
+    /// and the outbox rows appear only if the payment really moved to 'captured'. Two rows: PaymentCaptured for the
+    /// ledger and PaymentFinalized for the history, both with the same key. The same statement takes
     /// the payment out of pending_payments: captured is final. Of the statuses only 'authorized' is not final and
     /// keeps the payment in the queue, for recovery to finish the saga.
     /// Only from 'authorized': a payment is captured after the antifraud allowed it, or it failed open, never straight
@@ -74,18 +89,21 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
     /// </summary>
     public async Task<bool> MarkCapturedAsync(PaymentCaptured captured, string messageKey, CancellationToken cancellationToken)
     {
-        await using var command = dataSource.CreateCommand("""
+        // The UPDATE of a data-modifying CTE runs once, however many times the INSERT reads its rows.
+        await using var command = dataSource.CreateCommand($"""
             WITH captured AS (
                 UPDATE payments
                 SET status = 'captured', fee = $2, updated_at = now()
                 WHERE id = $1 AND status = 'authorized'
-                RETURNING id
+                RETURNING {FinalizedColumns}
             ),
             settled AS (
                 DELETE FROM pending_payments WHERE id IN (SELECT id FROM captured)
             )
             INSERT INTO outbox (topic, message_key, payload)
             SELECT $3, $4, $5 FROM captured
+            UNION ALL
+            SELECT $6, $4, {FinalizedPayload} FROM captured
             """);
 
         command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = captured.PaymentId });
@@ -96,59 +114,71 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
         {
             TypedValue = JsonSerializer.Serialize(captured, ContractsJson.Default.PaymentCaptured),
         });
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = Topics.PaymentsFinalized });
+
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 2;
+    }
+
+    /// <summary>
+    /// The bank declined: a final status, so the payment leaves pending_payments in the same statement, as on capture,
+    /// and its PaymentFinalized goes to the outbox with it. No PaymentCaptured: no money moved.
+    /// </summary>
+    public async Task<bool> MarkDeclinedAsync(Guid paymentId, string messageKey, CancellationToken cancellationToken)
+    {
+        await using var command = dataSource.CreateCommand($"""
+            WITH declined AS (
+                UPDATE payments
+                SET status = 'declined', updated_at = now()
+                WHERE id = $1 AND status = 'created'
+                RETURNING {FinalizedColumns}
+            ),
+            settled AS (
+                DELETE FROM pending_payments WHERE id IN (SELECT id FROM declined)
+            )
+            INSERT INTO outbox (topic, message_key, payload)
+            SELECT $2, $3, {FinalizedPayload} FROM declined
+            """);
+
+        AddFinalizedParameters(command, paymentId, messageKey);
 
         return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 
     /// <summary>
-    /// The bank declined: a final status, so the payment leaves pending_payments in the same statement, as on capture.
-    /// </summary>
-    public async Task<bool> MarkDeclinedAsync(Guid paymentId, CancellationToken cancellationToken)
-    {
-        await using var command = dataSource.CreateCommand("""
-            WITH declined AS (
-                UPDATE payments
-                SET status = 'declined', updated_at = now()
-                WHERE id = $1 AND status = 'created'
-                RETURNING id
-            ),
-            settled AS (
-                DELETE FROM pending_payments WHERE id IN (SELECT id FROM declined)
-            )
-            SELECT count(*) FROM declined
-            """);
-
-        command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = paymentId });
-
-        return (long)(await command.ExecuteScalarAsync(cancellationToken))! == 1;
-    }
-
-    /// <summary>
     /// The authorization is voided at the bank: the hold is gone, no money moves. A final status, so the payment leaves
-    /// pending_payments in the same statement, as on capture and decline. No outbox row: the ledger hears only of
-    /// captured payments, so a voided one never reached it, and there is nothing to undo there.
+    /// pending_payments in the same statement, as on capture and decline, and its PaymentFinalized goes to the outbox
+    /// with it. No PaymentCaptured: the ledger hears only of captured payments, so a voided one never reached it, and
+    /// there is nothing to undo there.
     /// From 'authorized', where the saga voids after a deny of the antifraud, and from 'created': the bank may already
     /// report the authorization of a payment still in 'created' as voided (AcquirerOutcome.Voided), and a voided
     /// authorization holds no money, whatever the row says.
     /// </summary>
-    public async Task<bool> MarkVoidedAsync(Guid paymentId, CancellationToken cancellationToken)
+    public async Task<bool> MarkVoidedAsync(Guid paymentId, string messageKey, CancellationToken cancellationToken)
     {
-        await using var command = dataSource.CreateCommand("""
+        await using var command = dataSource.CreateCommand($"""
             WITH voided AS (
                 UPDATE payments
                 SET status = 'voided', updated_at = now()
                 WHERE id = $1 AND status IN ('created', 'authorized')
-                RETURNING id
+                RETURNING {FinalizedColumns}
             ),
             settled AS (
                 DELETE FROM pending_payments WHERE id IN (SELECT id FROM voided)
             )
-            SELECT count(*) FROM voided
+            INSERT INTO outbox (topic, message_key, payload)
+            SELECT $2, $3, {FinalizedPayload} FROM voided
             """);
 
-        command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = paymentId });
+        AddFinalizedParameters(command, paymentId, messageKey);
 
-        return (long)(await command.ExecuteScalarAsync(cancellationToken))! == 1;
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
+    private static void AddFinalizedParameters(NpgsqlCommand command, Guid paymentId, string messageKey)
+    {
+        command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = paymentId });
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = Topics.PaymentsFinalized });
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = messageKey });
     }
 
     public async Task<Payment?> FindByIdAsync(Guid id, CancellationToken cancellationToken)

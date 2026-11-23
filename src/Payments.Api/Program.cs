@@ -121,7 +121,7 @@ if (corsOrigins.Length > 0)
 // both services in one process, that is the tests' folder, and both services' schema.sql would land on one path there.
 // Postgres may be out of reach for a moment while a pod starts: see StartupRetry.
 // No Kafka here: payments are taken without it and wait in the outbox, so a pod must start while Kafka is down.
-// The topic is created by the OutboxRelay before its first message.
+// The topics are created by the OutboxRelay before its first message.
 // schema-after.sql, which may scan all of payments, runs after the start (SchemaAfterStart), not here.
 await StartupRetry.RunAsync("Database schema", ct => DatabaseSchema.ApplyAsync(
     app.Services.GetRequiredService<NpgsqlDataSource>(),

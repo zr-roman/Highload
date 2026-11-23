@@ -25,6 +25,14 @@ public sealed class OutboxRelay(
 {
     private sealed record OutboxMessage(long Id, string Topic, string Key, string Payload, DateTimeOffset CreatedAt);
 
+    // Every topic the outbox has rows for. One relay and one batch for both: a batch holds the rows of both topics in
+    // id order, and the producer sends them in the same requests to the brokers, a partition of each topic per leader.
+    private static readonly (string Topic, int Partitions)[] PublishedTopics =
+    [
+        (Topics.PaymentsCaptured, Topics.PaymentsCapturedPartitions),
+        (Topics.PaymentsFinalized, Topics.PaymentsFinalizedPartitions),
+    ];
+
     private bool _topicReady;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -86,7 +94,7 @@ public sealed class OutboxRelay(
         if (batch.Count == 0)
             return 0;
 
-        // The topic before the first message, or Kafka creates it on its own with a single partition. Here and not at
+        // The topics before the first message, or Kafka creates them on its own with a single partition. Here and not at
         // startup: a pod has to start while Kafka is down, and the relay waits for Kafka anyway.
         // One try, and the batch goes out whatever its outcome. CreateTopics goes to the controller the client last
         // heard of, and when that broker's node has just died the request times out again and again until the
@@ -100,12 +108,12 @@ public sealed class OutboxRelay(
             try
             {
                 using var admin = new DependentAdminClientBuilder(producer.Handle).Build();
-                await KafkaTopics.EnsureCreatedAsync(admin, Topics.PaymentsCaptured, Topics.PaymentsCapturedPartitions, logger);
+                await KafkaTopics.EnsureCreatedAsync(admin, PublishedTopics, logger);
             }
             catch (KafkaException e)
             {
-                logger.LogWarning("Could not check the Kafka topic {Topic} ({Reason}): publishing anyway",
-                    Topics.PaymentsCaptured, e.Error.Reason);
+                logger.LogWarning("Could not check the Kafka topics {Topics} ({Reason}): publishing anyway",
+                    string.Join(", ", PublishedTopics.Select(t => t.Topic)), e.Error.Reason);
             }
         }
 
