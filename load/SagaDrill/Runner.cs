@@ -34,6 +34,8 @@ public static class Runner
         {
             (Part.Deny, "Фаза «отказы»", async () => await DenyPhase.RunAsync(options, prometheus, reports, ct)),
             (Part.Outage, "Фаза «антифрод лежит»", async () => await OutagePhase.RunAsync(options, prometheus, reports, ct)),
+            (Part.Redis, "Фаза «Redis лежит»", async () => await RedisPhase.RunAsync(options, prometheus, reports, ct)),
+            (Part.Kill, "Фаза «всё отклоняется, Payments.Api убит»", async () => await KillPhase.RunAsync(options, prometheus, reports, ct)),
         };
         string? notRun = preflight.Checks.All(c => c.Ok) ? null : "предпроверка не прошла";
         foreach (var (part, title, run) in phase.Where(p => options.Runs(p.Part)))

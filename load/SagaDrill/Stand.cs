@@ -70,11 +70,68 @@ public static class Stand
                 $"application {Application}: {result.Errors}");
     }
 
-    public static async Task ScaleAsync(string deployment, int replicas)
+    public static async Task ScaleAsync(string deployment, int replicas, string kind = "deployment")
     {
-        var result = await Shell.Kubectl(ProbeTimeout, "-n", Namespace, "scale", $"deployment/{deployment}", $"--replicas={replicas}");
+        var result = await Shell.Kubectl(ProbeTimeout, "-n", Namespace, "scale", $"{kind}/{deployment}", $"--replicas={replicas}");
         if (!result.Ok)
-            throw new DrillException($"kubectl scale deployment/{deployment} --replicas={replicas} failed: {result.Errors}");
+            throw new DrillException($"kubectl scale {kind}/{deployment} --replicas={replicas} failed: {result.Errors}");
+    }
+
+    /// <summary>A StatefulSet as <see cref="DeploymentAsync"/> reads a Deployment.</summary>
+    public static async Task<(Replicas? Replicas, string Error)> StatefulSetAsync(string name)
+    {
+        var result = await Shell.Kubectl(ProbeTimeout, "-n", Namespace, "get", "statefulset", name, "-o", "json");
+        if (!result.Ok)
+            return (null, result.Errors);
+
+        using var json = JsonDocument.Parse(result.Output);
+        var root = json.RootElement;
+        var ready = root.GetProperty("status").TryGetProperty("readyReplicas", out var count) ? count.GetInt32() : 0;
+        return (new Replicas(root.GetProperty("spec").GetProperty("replicas").GetInt32(), ready), "");
+    }
+
+    /// <summary>
+    /// An environment variable of a Deployment set (NAME=value) or removed (NAME-), as kubectl set env takes it. Its
+    /// pods are replaced: <see cref="RolloutAsync"/> waits for them.
+    /// </summary>
+    public static async Task SetEnvAsync(string deployment, string variable)
+    {
+        var result = await Shell.Kubectl(ProbeTimeout, "-n", Namespace, "set", "env", $"deployment/{deployment}", variable);
+        if (!result.Ok)
+            throw new DrillException($"kubectl set env deployment/{deployment} {variable} failed: {result.Errors}");
+    }
+
+    /// <summary>The value of an environment variable in the pod template of a Deployment; null if it has none.</summary>
+    public static async Task<string?> EnvAsync(string deployment, string variable)
+    {
+        var result = await Shell.Kubectl(ProbeTimeout, "-n", Namespace, "get", "deployment", deployment, "-o", "json");
+        if (!result.Ok)
+            throw new DrillException($"Cannot read deployment/{deployment}: {result.Errors}");
+        var containers = JsonNode.Parse(result.Output)?["spec"]?["template"]?["spec"]?["containers"]?.AsArray() ?? [];
+        return containers
+            .SelectMany(c => c?["env"]?.AsArray() ?? [])
+            .FirstOrDefault(e => e?["name"]?.GetValue<string>() == variable)?["value"]?.GetValue<string>();
+    }
+
+    /// <summary>Waits until the rollout of a Deployment is over: every pod of the new template ready.</summary>
+    public static async Task RolloutAsync(string deployment, TimeSpan limit)
+    {
+        var result = await Shell.Kubectl(limit + ProbeTimeout,
+            "-n", Namespace, "rollout", "status", $"deployment/{deployment}", $"--timeout={(int)limit.TotalSeconds}s");
+        if (!result.Ok)
+            throw new DrillException($"The rollout of deployment/{deployment} is not over in {limit.TotalSeconds:0} s: {result.Errors}");
+    }
+
+    /// <summary>
+    /// Every pod of the label at once, without the grace period: the process gets SIGKILL and finishes nothing, as on a
+    /// node that lost power. A delete, not an eviction: the PodDisruptionBudget does not hold it back.
+    /// </summary>
+    public static async Task KillPodsAsync(string name)
+    {
+        var result = await Shell.Kubectl(ProbeTimeout, "-n", Namespace, "delete", "pod", "-l", $"app.kubernetes.io/name={name}",
+            "--grace-period=0", "--force", "--wait=false");
+        if (!result.Ok)
+            throw new DrillException($"kubectl delete pod -l app.kubernetes.io/name={name} failed: {result.Errors}");
     }
 
     private static string Text(JsonElement status, string section, string field) =>

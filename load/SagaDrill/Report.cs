@@ -37,6 +37,10 @@ public static class Report
                 Deny(text, options, deny);
             else if (phase.Result is OutageResult outage)
                 Outage(text, options, outage);
+            else if (phase.Result is RedisResult redis)
+                Redis(text, options, redis);
+            else if (phase.Result is KillResult kill)
+                Kill(text, options, kill);
         }
         return text.ToString();
     }
@@ -114,6 +118,76 @@ public static class Report
             $"{(outage.Carried is { } carried ? $"создан в {OutagePhase.At(carried)}" : "такого не было")} |\n");
         text.Append($"| Все платежи завершены | {(outage.Settled is { } s ? $"через {s.TotalSeconds:0} с после нагрузки" : $"нет, и через {options.SettleSeconds} с")} |\n\n");
         Drain(text, outage);
+    }
+
+    private static void Redis(StringBuilder text, DrillOptions options, RedisResult redis)
+    {
+        var c = redis.Counts;
+        var times = redis.Times;
+        double From(double moment) => moment - times.Stop;
+
+        text.Append("## Фаза «Redis лежит»\n\n");
+        text.Append($"{options.Rate} платежей в секунду, обычная смесь k6, {options.BeforeSeconds + options.RedisDownSeconds + options.AfterSeconds} с. " +
+            $"Через {options.BeforeSeconds} с все {redis.Replicas} копии Redis остановлены вместе с Sentinel — `kubectl scale statefulset/redis --replicas=0`, " +
+            $"авто-синхронизация Argo CD на это время выключена, — через {options.RedisDownSeconds} с возвращены. Лимитер Payments.Api без Redis " +
+            "переходит на локальный лимит пода, антифрод отвечает 503: платёж меньше " +
+            $"{OutagePhase.Roubles(redis.FailOpenBelow)} проводится без проверки, остальные ждут в `authorized`. Время — от остановки, по часам " +
+            "кластера. Метрики — разница счётчиков до и после фазы.\n\n");
+        text.Append($"k6: запросов {N(redis.K6.Requests)}, ошибок {N(redis.K6.Failed)}, пропущенных итераций {N(redis.K6.Dropped)}, " +
+            $"медиана {Ms(redis.K6.Median)}, p99 {Ms(redis.K6.P99)}.\n\n");
+
+        text.Append("| Событие | Время |\n|---|---|\n");
+        text.Append($"| Нагрузка началась | {OutagePhase.At(From(times.LoadStart))} |\n");
+        text.Append("| Redis остановлен | 0 с |\n");
+        text.Append($"| Redis возвращён | {OutagePhase.At(From(times.Back))} |\n");
+        text.Append($"| Копии Redis готовы | {(times.Ready is { } ready ? OutagePhase.At(From(ready)) : "не дождались")} |\n");
+        text.Append($"| Нагрузка закончилась | {OutagePhase.At(From(times.LoadEnd))} |\n\n");
+
+        var large = redis.Large;
+        text.Append("| | |\n|---|---|\n");
+        text.Append($"| Платежи фазы в базе | {string.Join(", ", redis.Statuses.OrderByDescending(s => s.Value).Select(s => $"`{s.Key}` — {N(s.Value)}"))} |\n");
+        text.Append($"| Создано, пока Redis не было (с +{OutagePhase.ShutDown.TotalSeconds:0} с) | {N(redis.MadeWhileDown)} |\n");
+        text.Append($"| Решения антифрода | разрешил {N(c.Allow)}, отказал {N(c.Deny)}; нет решения: в запросе {N(c.UnknownInRequest)}, " +
+            $"в восстановлении {N(c.UnknownInRecovery)} |\n");
+        text.Append($"| Без проверки (fail open) | {N(c.FailOpen)} |\n");
+        text.Append($"| Ждали антифрод в `authorized` | {N(c.WaitedInRequest)} платежей; восстановление застало антифрод молчащим {N(c.WaitedInRecovery)} раз |\n");
+        text.Append($"| Отмены | после отказа: void {N(c.VoidedOnDeny)}, void ответил 404 — {N(c.VoidNotFound)}, 409 — {N(c.VoidConflict)}; " +
+            $"банк уже отменил — {N(c.BankVoided)} |\n");
+        text.Append($"| Платежи от {OutagePhase.Roubles(redis.FailOpenBelow)}, созданные без Redis | " +
+            $"{N(large.Made)}: проведены после его возвращения — {N(large.Captured - large.CapturedBeforeBack)}, отменены — {N(large.Voided)}, " +
+            $"банк отклонил — {N(large.Declined)}, в работе — {N(large.InProgress)}, проведены до возвращения — {N(large.CapturedBeforeBack)} |\n");
+        text.Append($"| Все платежи завершены | {(redis.Settled is { } s ? $"через {s.TotalSeconds:0} с после нагрузки" : $"нет, и через {options.SettleSeconds} с")} |\n\n");
+    }
+
+    private static void Kill(StringBuilder text, DrillOptions options, KillResult kill)
+    {
+        var times = kill.Times;
+        var p = kill.Payments;
+        double From(double moment) => moment - times.Killed;
+
+        text.Append("## Фаза «всё отклоняется, Payments.Api убит»\n\n");
+        text.Append($"{options.Rate} платежей в секунду, обычная смесь k6, {options.KillLoadSeconds} с. Антифроду задан `ANTIFRAUD_VELOCITY_LIMIT=0` " +
+            "(`kubectl set env`, авто-синхронизация Argo CD на это время выключена): он отклоняет каждый платёж, и каждый одобренный банком " +
+            $"должен быть отменён. Через {options.KillLoadSeconds / 2} с все {kill.ApiReplicas} пода Payments.Api убиты разом, без grace period " +
+            "(`kubectl delete pod --grace-period=0 --force`): саги, которые они вели, обрываются на любом шаге, и брошенные платежи доводит " +
+            "восстановление. Счётчики убитых подов теряются вместе с ними, поэтому фаза судит по базе и банку, а не по метрикам. " +
+            "Время — от убийства, по часам кластера.\n\n");
+        text.Append($"k6: запросов {N(kill.K6.Requests)}, ошибок {N(kill.K6.Failed)}, пропущенных итераций {N(kill.K6.Dropped)}, " +
+            $"медиана {Ms(kill.K6.Median)}, p99 {Ms(kill.K6.P99)}. Ошибки — запросы, оборванные убийством, и ответы Traefik, пока новых подов не было.\n\n");
+
+        text.Append("| Событие | Время |\n|---|---|\n");
+        text.Append($"| Нагрузка началась | {OutagePhase.At(From(times.LoadStart))} |\n");
+        text.Append("| Поды Payments.Api убиты | 0 с |\n");
+        text.Append($"| Новые поды готовы | {(times.ApiReady is { } ready ? OutagePhase.At(From(ready)) : "не дождались")} |\n");
+        text.Append($"| Нагрузка закончилась | {OutagePhase.At(From(times.LoadEnd))} |\n\n");
+
+        text.Append("| | |\n|---|---|\n");
+        text.Append($"| Платежи фазы в базе | {string.Join(", ", kill.Statuses.OrderByDescending(s => s.Value).Select(s => $"`{s.Key}` — {N(s.Value)}"))} |\n");
+        text.Append($"| Проведены | от {OutagePhase.Roubles(kill.FailOpenBelow)} — {N(p.CapturedLarge)}, мельче без проверки — {N(p.CapturedSmall)} |\n");
+        text.Append($"| Отменены | {N(p.Voided)}, из них восстановлением (через {OutagePhase.Recovery("StaleAfter").TotalSeconds:0} с и позже после создания) — " +
+            $"{N(p.VoidedByRecovery)}; `payments.voided` восстановления по счётчикам — {Whole(kill.RecoveryVoided)} |\n");
+        text.Append($"| Банк о случайных отменённых | {(kill.Bank is { } bank ? $"спрошено {N(bank.Asked)}: {string.Join(", ", bank.ByStatus.OrderByDescending(s => s.Value).Select(s => $"`{s.Key}` — {N(s.Value)}"))}" : "не спрашивали: отменённых нет")} |\n");
+        text.Append($"| Все платежи завершены | {(kill.Settled is { } s ? $"через {s.TotalSeconds:0} с после нагрузки" : $"нет, и через {options.SettleSeconds} с")} |\n\n");
     }
 
     private static void Drain(StringBuilder text, OutageResult outage)

@@ -188,13 +188,13 @@ public static partial class OutagePhase
     }
 
     // A wait during the load. If k6 ends first, its error is the one to report, not a phase cut short.
-    private static async Task DuringLoadAsync(Task<K6Result> load, TimeSpan time, CancellationToken ct)
+    internal static async Task DuringLoadAsync(Task<K6Result> load, TimeSpan time, CancellationToken ct)
     {
         var wait = Task.Delay(time > TimeSpan.Zero ? time : TimeSpan.Zero, ct);
         if (await Task.WhenAny(load, wait) == load)
         {
             await load;
-            throw new DrillException("k6 ended before the outage was over: see outage-k6.txt");
+            throw new DrillException("k6 ended before the phase was over: see the k6 output of the phase in the report folder");
         }
         await wait;
     }
@@ -253,7 +253,7 @@ public static partial class OutagePhase
         }
     }
 
-    private static async Task<(ArgoApp? App, string Error)> ArgoBackAsync(TimeSpan limit, CancellationToken ct)
+    internal static async Task<(ArgoApp? App, string Error)> ArgoBackAsync(TimeSpan limit, CancellationToken ct)
     {
         var clock = Stopwatch.StartNew();
         while (true)
@@ -343,7 +343,7 @@ public static partial class OutagePhase
         return (longest.Value, longest.Time - times.Stop);
     }
 
-    private static async Task<LargePayments> LargeAsync(OutageTimes times, long failOpenBelow)
+    internal static async Task<LargePayments> LargeAsync(OutageTimes times, long failOpenBelow)
     {
         var made = Phase.Window(times.Stop + ShutDown.TotalSeconds, times.Back);
         var back = Postgres.Time(times.Back);
@@ -451,7 +451,7 @@ public static partial class OutagePhase
     }
 
     // As the stand runs it: appsettings.json of Payments.Api, unless the manifest sets the variable.
-    private static long FailOpenBelow()
+    internal static long FailOpenBelow()
     {
         var env = FailOpenVariable().Match(File.ReadAllText(Files[1]));
         if (env.Success)
@@ -465,13 +465,14 @@ public static partial class OutagePhase
     // How long before the stop a payment may be made and still wait out the outage: recovery takes it up once it is
     // StaleAfter old, in a pass every Interval (src/Payments.Api/Recovery/RecoveryOptions.cs). From the settings: the
     // manifest sets neither.
-    private static double RecoveryReach()
+    private static double RecoveryReach() => (Recovery("StaleAfter") + Recovery("Interval")).TotalSeconds;
+
+    /// <summary>A setting of the Recovery section of appsettings.json; the manifest sets none of them.</summary>
+    internal static TimeSpan Recovery(string name)
     {
         using var json = JsonDocument.Parse(File.ReadAllText(Files[0]),
             new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
-        var recovery = json.RootElement.GetProperty("Recovery");
-        TimeSpan Setting(string name) => TimeSpan.Parse(recovery.GetProperty(name).GetString()!, CultureInfo.InvariantCulture);
-        return (Setting("StaleAfter") + Setting("Interval")).TotalSeconds;
+        return TimeSpan.Parse(json.RootElement.GetProperty("Recovery").GetProperty(name).GetString()!, CultureInfo.InvariantCulture);
     }
 
     public static string Roubles(long kopecks) => $"{(kopecks / 100m).ToString("0.##", CultureInfo.InvariantCulture)} ₽";
