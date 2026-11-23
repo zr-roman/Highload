@@ -19,9 +19,11 @@ public static class FreshStart
     public static async Task EmptyAsync(StandSettings settings, IAdminClient kafka, CancellationToken ct)
     {
         // Kafka first: a message left in the topic would reach an empty ledger and break its balances, and if Kafka
-        // fails here, the databases are still whole.
+        // fails here, the databases are still whole. payments.finalized has no consumer on the local stand yet, but
+        // it grows with every run as payments.captured does.
         await DeleteGroupAsync(kafka, settings.LedgerGroup, ct);
         await DeleteTopicAsync(kafka, Topics.PaymentsCaptured, ct);
+        await DeleteTopicAsync(kafka, Topics.PaymentsFinalized, ct);
 
         foreach (var database in new[] { settings.PaymentsDatabase, settings.LedgerDatabase })
             await TruncateAsync(database, ct);

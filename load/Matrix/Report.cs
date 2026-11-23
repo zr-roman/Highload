@@ -29,7 +29,7 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         text.Append($"Прогоны: {string.Join(", ", options.Runs.Order())}; повторов — {options.Repeats}, по {options.DurationSeconds} с нагрузки; ");
         text.Append(options.WarmupSeconds > 0 ? $"прогрев — {options.WarmupSeconds} с после каждого запуска Payments.Api.\n\n" : "без прогрева.\n\n");
         text.Append(options.Fresh
-            ? "Перед матрицей базы payments и ledger очищены, топик payments.captured и группа Ledger удалены (`--fresh`).\n\n"
+            ? "Перед матрицей базы payments и ledger очищены, топики payments.captured и payments.finalized и группа Ledger удалены (`--fresh`).\n\n"
             : "Базы — с прошлых прогонов (без `--fresh`): сколько в журнале платежей, видно в «Окнах повторов».\n\n");
         text.Append("Стенд запущен матрицей: сервисы в Release, выборка трейсов 1 %, метрики раз в секунду; ");
         text.Append(options.BankFailsHot

@@ -76,7 +76,7 @@ public static class Phase
     }
 
     /// <summary>
-    /// A voided payment moved no money: it has no outbox row, so the Ledger never hears of it. Then the Ledger has
+    /// A voided payment moved no money: it has no PaymentCaptured, so the Ledger never hears of it. Then the Ledger has
     /// exactly the captured payments, and the balance of <paramref name="merchant"/>, the one the velocity rule
     /// denies, is the sum of his captured ones alone. The Ledger catches up with the outbox in a moment, so the
     /// comparison is repeated until it holds.

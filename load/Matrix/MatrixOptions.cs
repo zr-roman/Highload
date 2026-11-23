@@ -45,8 +45,9 @@ public sealed record MatrixOptions(
           --repeats N     how many times each run is repeated (default: 2)
           --duration S    seconds of load in a run (default: 120)
           --warmup S      seconds of unmeasured load after each start of Payments.Api (default: 60; 0: none)
-          --fresh         empty the databases payments and ledger, delete the topic payments.captured and
-                          the consumer group of the ledger first: every matrix then starts from the same stand
+          --fresh         empty the databases payments and ledger, delete the topics payments.captured and
+                          payments.finalized and the consumer group of the ledger first: every matrix then starts
+                          from the same stand
           --instances N   instances of Payments.Api, on ports 5100, 5101, ...; k6 sends to them in turn (default: 1)
           --redis-pause S hold every command to Redis for S seconds in the middle of each repeat, as a Redis
                           that hangs (default: 0, no pause)
