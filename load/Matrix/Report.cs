@@ -20,7 +20,7 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
 
     public void Write(IReadOnlyList<RunResult> results)
     {
-        var columns = Columns(settings);
+        var columns = Columns(settings, options);
         var text = new StringBuilder();
 
         text.Append("# Матрица этапа 3\n\n");
@@ -35,6 +35,12 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         text.Append(options.BankFailsHot
             ? "эмулятор банка отвечает 500 на каждую авторизацию горячего продавца, остальных обслуживает с настройками по умолчанию (`--bank-fails-hot`). "
             : "эмулятор банка с настройками по умолчанию. ");
+        text.Append(options.Antifraud
+            ? $"Антифрод — сервис из `src/antifraud-service` в Linux-контейнере рядом с Redis из docker compose, процессов uvicorn — {options.Workers}, " +
+              $"на 127.0.0.1:5400 и базе 1 Redis (`--antifraud`). Правило частоты пропускает продавцу без своей квоты {Count(options.Velocity)} платежей в минуту " +
+              "(`--antifraud-velocity`): горячий продавец тоже без квоты, и сверх этого его платежи антифрод отклоняет, а сага отменяет. Payments.Api ждёт его с бюджетом стенда в кластере, 150 мс на попытку и 400 мс всего (`deploy/k8s/payments-api.yaml`), а не 50 и 150 из `appsettings.json`; без решения платёж ниже порога fail open " +
+              "проводится без проверки, остальные ждут восстановления в `authorized`. "
+            : "Антифрод — `FakeAntifraud` в процессе Payments.Api: разрешает каждый платёж. ");
         text.Append($"{K6.Merchants} продавцов, горячий — продавец {K6.HotMerchant}. Лимит продавца — {settings.TokensPerSecond} в секунду, всплеск {settings.Burst}. ");
         if (options.HotQuota > 0)
             text.Append($"Квота горячего продавца — {options.HotQuota} в секунду, всплеск {options.HotBurst} (`--hot-quota`). ");
@@ -86,6 +92,17 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         text.Append("Одна строка — один сбой: лимит на это время у каждого экземпляра Payments.Api свой, в памяти, пока пробный запрос не получит ответ Redis. ");
         text.Append("До шага 4а этапа 3 лимит в такие моменты не действовал совсем, а breaker мерцал, и строк на один сбой было много. Сколько платежей прошло сверх лимита, видно по «Сверх лимита».\n");
         text.Append("- **Не отправлено** — `dropped_iterations` от числа запланированных платежей.\n");
+        text.Append("- **Через восстановление** — доля платежей повтора, которым итоговый статус дало восстановление: последнее изменение пришло через `Recovery:StaleAfter` ");
+        text.Append($"({Count(settings.StaleAfter.TotalSeconds)} с) или позже после создания. Без антифрода это платежи без ответа банка (те же 202), с ним — ещё и без решения антифрода от порога fail open. ");
+        text.Append("**Отменено у other** — сколько платежей остальных продавцов `voided`, **у hot** — доля `voided` от платежей горячего продавца в базе (без 429). **Очередь пуста через** — когда после нагрузки опустела очередь восстановления `pending_payments`; ");
+        text.Append("следующий повтор начинается только после этого, и итоги платежей читаются тоже после.\n");
+        if (options.Antifraud)
+        {
+            text.Append("- **Без решения антифрода** — предупреждений HttpAntifraud в логах Payments.Api за прогон, в секунду: 5xx или таймаут, в запросе и в восстановлении. ");
+            text.Append("Пока circuit breaker разомкнут, проверка в лог не пишется, поэтому рядом — **размыканий breaker** (`OnCircuitOpened` конвейера `IAntifraud-standard`). ");
+            text.Append("**Fail open** — платежи, проведённые без проверки, от всех платежей повтора; **пауз восстановления** — строк `Antifraud unavailable, recovery paused`.\n");
+            text.Append("- **Антифрод, ядер** — медиана `docker stats` контейнера антифрода за нагрузку, раз в секунду; 1 — одно ядро.\n");
+        }
         text.Append("- **Outbox** — возраст самой старой строки outbox, **lag** — сообщения партиции, ещё не закоммиченные Ledger; максимум замеров раз в секунду. ");
         text.Append("Горячая партиция — та, в которую за прогон пришло больше всего сообщений.\n");
         text.Append("- **Догнал за** — сколько после конца нагрузки outbox пустел, а lag всех партиций становился 0. Замер раз в секунду, поэтому «≤ 1» — догнал сразу.\n");
@@ -127,7 +144,7 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
     /// <summary>A number of the tables: its header, its value in a repeat (null: does not apply to the run), how to print it.</summary>
     private sealed record Column(string Header, Func<RunResult, double?> Value, Func<double?, string> Format);
 
-    private static Column[] Columns(StandSettings settings) =>
+    private static Column[] Columns(StandSettings settings, MatrixOptions options) =>
     [
         new("p99 other, мс", r => r.K6.P99Other, Milliseconds),
         new("p99 hot, мс", r => r.Run.HasHotMerchant ? r.K6.P99Hot : null, Milliseconds),
@@ -147,7 +164,23 @@ public sealed class Report(string path, StandInfo stand, StandSettings settings,
         new("Догнал за, с", r => r.Backlog.CaughtUpSeconds, CatchUp),
         new("HOT-обновлений", r => r.HotShare, share => share is { } v ? $"{(v * 100).ToString("0.#", Numbers)} %" : "—"),
         new("Поиск зависших, мс", r => r.StaleSearch.Milliseconds, Milliseconds),
+        new("Через восстановление", r => Share(r.Outcomes.Recovered, r.Outcomes.Made), Percent),
+        new("Отменено у other", r => r.Outcomes.VoidedOther, Count),
+        new("Отменено у hot", r => r.Run.HasHotMerchant ? Share(r.Outcomes.VoidedHot, r.Outcomes.MadeHot) : null, Percent),
+        new("Очередь пуста через, с", r => r.QueueEmptySeconds, CatchUp),
+        .. options.Antifraud
+            ? (Column[])
+            [
+                new("Без решения антифрода, /с", r => r.Antifraud is { } a ? (double)a.Unknown / r.DurationSeconds : null, Count),
+                new("Размыканий breaker", r => r.Antifraud?.CircuitOpened, Count),
+                new("Fail open", r => r.Antifraud is { } a ? Share(a.FailOpen, r.Outcomes.Made) : null, Percent),
+                new("Пауз восстановления", r => r.Antifraud?.RecoveryPaused, Count),
+                new("Антифрод, ядер", r => r.AntifraudCores, cores => cores is { } v ? v.ToString("0.00", Numbers) : "—"),
+            ]
+            : [],
     ];
+
+    private static double? Share(long part, long whole) => whole > 0 ? (double)part / whole : null;
 
     private static string[] RunCells(MatrixRun run) =>
         [Count(run.Rate), run.HotShare.ToString("0.##", Numbers), run.Limiter ? "вкл." : "выкл."];

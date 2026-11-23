@@ -13,10 +13,11 @@ public static class Preflight
 {
     public static async Task<StandInfo> CheckAsync(
         string repository, StandSettings settings, NpgsqlDataSource payments, IAdminClient kafka, IReadOnlyList<string> paymentsApiUrls,
-        IReadOnlyList<string> ledgerUrls, CancellationToken ct)
+        IReadOnlyList<string> ledgerUrls, bool antifraud, CancellationToken ct)
     {
         // A service left from a manual run, maybe a Debug build, would take the load instead of the matrix's own.
-        foreach (var url in (string[])[.. paymentsApiUrls, .. ledgerUrls, Stand.BankUrl])
+        // With --antifraud that is also an antifraud started by hand on its port, uv run or a container of the bench.
+        foreach (var url in (string[])[.. paymentsApiUrls, .. ledgerUrls, Stand.BankUrl, .. antifraud ? [AntifraudContainer.Url] : (string[])[]])
         {
             var uri = new Uri(url);
             if (await ListensAsync(uri.Host, uri.Port, ct))

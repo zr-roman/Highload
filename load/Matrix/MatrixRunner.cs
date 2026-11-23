@@ -7,6 +7,10 @@ namespace Matrix;
 /// <summary>The matrix from start to end: checks, the build, the stand, then the repeats one by one, with the table after each.</summary>
 public static class MatrixRunner
 {
+    // Recovery takes a payment after StaleAfter, in a pass every 10 s, 100 at a time: a queue a repeat left behind is
+    // gone within a minute or two unless the bank or the antifraud keeps failing it.
+    private static readonly TimeSpan QueueTimeout = TimeSpan.FromMinutes(5);
+
     public static async Task RunAsync(MatrixOptions options, CancellationToken ct)
     {
         var repository = FindRepository();
@@ -37,12 +41,17 @@ public static class MatrixRunner
 
         await using var payments = NpgsqlDataSource.Create(settings.PaymentsDatabase);
 
+        // A container of the antifraud left by a matrix that was killed would hold its port for the checks.
+        if (options.Antifraud)
+            await AntifraudContainer.RemoveAsync();
+
         Console.WriteLine("Checking the stand");
         StandInfo info;
         using (var checks = KafkaClient(settings))
         {
             info = await Preflight.CheckAsync(
-                repository, settings, payments, checks, Stand.PaymentsApiUrlsOf(options.Instances), Stand.LedgerUrlsOf(options.Ledgers), ct);
+                repository, settings, payments, checks, Stand.PaymentsApiUrlsOf(options.Instances), Stand.LedgerUrlsOf(options.Ledgers),
+                options.Antifraud, ct);
 
             // After the checks: the services are not running, so nothing holds the tables, the topic or the group.
             if (options.Fresh)
@@ -60,7 +69,7 @@ public static class MatrixRunner
         if (options.RedisPauseSeconds > 0)
             await stand.EnsureRedisCanPauseAsync(ct);
 
-        Console.WriteLine("Building the services in Release");
+        Console.WriteLine(options.Antifraud ? "Building the services in Release and the image of the antifraud" : "Building the services in Release");
         await stand.BuildAsync(ct);
 
         var backlog = new Backlog(payments, kafka, settings.LedgerGroup, stand.EnsureRunning);
@@ -75,7 +84,8 @@ public static class MatrixRunner
         {
             Console.WriteLine($"{(group == groups[0] ? "Starting the stand" : "Restarting Payments.Api")}, limiter {(group.Key ? "on" : "off")}" +
                 (options.Instances > 1 ? $", {options.Instances} instances of Payments.Api" : "") +
-                (options.Ledgers > 1 ? $", {options.Ledgers} instances of Ledger" : ""));
+                (options.Ledgers > 1 ? $", {options.Ledgers} instances of Ledger" : "") +
+                (options.Antifraud ? $", the antifraud in a container with {options.Workers} processes" : ""));
             await stand.StartAsync(limiter: group.Key, ct);
             await backlog.WaitLedgerAssignedAsync(options.Ledgers, ct);
 
@@ -112,6 +122,11 @@ public static class MatrixRunner
             var start = await backlog.WaitCaughtUpAsync(ct);
             var ledgerMembers = await backlog.ReadLedgerAssignmentAsync(ct);
             var updatesBefore = await table.ReadUpdatesAsync(ct);
+            if (stand.Antifraud is { } antifraud)
+            {
+                await antifraud.FlushAsync();
+                antifraud.StartSampling(label);
+            }
 
             Console.WriteLine($"Run {label}: {run.Rate}/s, hot share {run.HotShare}, limiter {(run.Limiter ? "on" : "off")}, {options.DurationSeconds} s");
 
@@ -127,12 +142,14 @@ public static class MatrixRunner
                 : Task.CompletedTask;
 
             IReadOnlyList<BacklogSample> samples;
+            double? antifraudCores;
             try
             {
                 samples = await backlog.RecordAsync(load, Path.Combine(reports, $"run-{label}-backlog.csv"), start, ct);
             }
             catch
             {
+                stand.Antifraud?.StopSampling(DateTimeOffset.Now);
                 // A process of the stand died, or the stand never caught up: k6 is killed, and waited for, so that it
                 // does not go on loading a broken stand after the matrix has exited.
                 stopLoad.Cancel();
@@ -148,6 +165,18 @@ public static class MatrixRunner
             }
             var k6Result = await load;
             await pause;
+            antifraudCores = stand.Antifraud?.StopSampling(until: k6Result.Finished);
+            if (stand.Antifraud is not null)
+                await stand.Antifraud.EnsureRunningAsync();
+
+            // The payments the repeat left in progress get their final status before the outcomes are read and the next
+            // repeat starts. Those recovery finishes write the outbox once more: the stand catches up with them too.
+            var queueEmpty = await table.WaitQueueEmptyAsync(QueueTimeout, ct);
+            if (queueEmpty is null)
+                Console.WriteLine($"  The queue of recovery is not empty {QueueTimeout.TotalMinutes:0} min after the load: the outcomes count the payments in it as in progress");
+            await backlog.WaitCaughtUpAsync(ct);
+            var outcomes = await table.ReadOutcomesAsync(k6Result.Started, k6Result.Finished, settings.StaleAfter, K6.HotMerchant, ct);
+
             var check = await CheckLedgerAsync(label);
             var updatesAfter = await table.ReadUpdatesAsync(ct);
             var staleSearch = await table.ExplainStaleSearchAsync(ct);
@@ -162,7 +191,11 @@ public static class MatrixRunner
                 Ledger: check,
                 LedgerMembers: ledgerMembers,
                 HotShare: UpdateCounts.HotShare(updatesBefore, updatesAfter),
-                StaleSearch: staleSearch);
+                StaleSearch: staleSearch,
+                Outcomes: outcomes,
+                QueueEmptySeconds: queueEmpty is { } empty ? Math.Max(0, (empty - k6Result.Finished).TotalSeconds) : null,
+                Antifraud: stand.Antifraud is null ? null : stand.AntifraudEvents(k6Result.Started, k6Result.Finished),
+                AntifraudCores: antifraudCores);
             Console.WriteLine(Describe(result, settings));
             return result;
         }
@@ -200,6 +233,14 @@ public static class MatrixRunner
         line += $"; HOT updates {(result.HotShare is { } hot ? $"{hot:0.#%}" : "none")}, stale search {result.StaleSearch.Milliseconds:0} ms ({result.StaleSearch.Scan})";
         if (result.HotPartitionPeakWrite is { } hotWrite)
             line += $", {hotWrite:0}/s to the hot partition";
+
+        var made = Math.Max(1, result.Outcomes.Made);
+        line += $"; recovered {(double)result.Outcomes.Recovered / made:0.##%}, voided: other {result.Outcomes.VoidedOther}, hot {result.Outcomes.VoidedHot}" +
+            $", queue empty {(result.QueueEmptySeconds is { } empty ? $"{empty:0} s" : "NOT")} after the load";
+        if (result.Antifraud is { } antifraud)
+            line += $"; antifraud: no decision {(double)antifraud.Unknown / result.DurationSeconds:0.#}/s, fail open {(double)antifraud.FailOpen / made:0.##%}" +
+                $", circuit opened {antifraud.CircuitOpened}, recovery paused {antifraud.RecoveryPaused}" +
+                $", {(result.AntifraudCores is { } cores ? $"{cores:0.00} cores" : "cpu unknown")}";
 
         return line +
             $"; dropped {result.K6.Dropped}; outbox max {result.Backlog.OutboxMaxAgeSeconds:0.0} s; lag max {result.Backlog.LagMax.Max()}" +

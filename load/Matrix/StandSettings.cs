@@ -7,7 +7,8 @@ namespace Matrix;
 /// and holds the hot merchant against the same limit.
 /// </summary>
 public sealed record StandSettings(
-    string PaymentsDatabase, string LedgerDatabase, string Kafka, string Redis, string LedgerGroup, int TokensPerSecond, int Burst)
+    string PaymentsDatabase, string LedgerDatabase, string Kafka, string Redis, string LedgerGroup, int TokensPerSecond, int Burst,
+    TimeSpan StaleAfter)
 {
     /// <summary>The limit the hot merchant is held against: the default one, or its own quota (--hot-quota).</summary>
     public int HotTokensPerSecond { get; init; } = TokensPerSecond;
@@ -28,7 +29,9 @@ public sealed record StandSettings(
             Redis: connections.GetProperty("Redis").GetString()!,
             LedgerGroup: ledger.GetProperty("Consumer").GetProperty("GroupId").GetString()!,
             TokensPerSecond: limit.GetProperty("TokensPerSecond").GetInt32(),
-            Burst: limit.GetProperty("Burst").GetInt32());
+            Burst: limit.GetProperty("Burst").GetInt32(),
+            // Recovery takes a payment once it is this old: a payment finished later than that after it went through recovery.
+            StaleAfter: TimeSpan.Parse(paymentsApi.GetProperty("Recovery").GetProperty("StaleAfter").GetString()!, System.Globalization.CultureInfo.InvariantCulture));
     }
 
     /// <summary>The port of Kafka: its bootstrap server is host:port.</summary>

@@ -5,7 +5,7 @@ namespace Matrix;
 /// <summary>
 /// The processes of the stand, started as README, step 8, says for load runs: the bank emulator with its defaults
 /// (or failing the hot merchant, --bank-fails-hot) and both services from the Release build with 1% of traces,
-/// each in one instance or several.
+/// each in one instance or several; with --antifraud also the antifraud service in a container (AntifraudContainer).
 /// Kafka, Redis, the dashboard and Postgres it only uses.
 /// </summary>
 public sealed class Stand(string repository, string reports, MatrixOptions options) : IDisposable
@@ -36,11 +36,19 @@ public sealed class Stand(string repository, string reports, MatrixOptions optio
     };
 
     private readonly List<DateTimeOffset> redisTimeouts = [];
+    private readonly List<DateTimeOffset> unknownChecks = [];
+    private readonly List<DateTimeOffset> failOpen = [];
+    private readonly List<DateTimeOffset> circuitOpened = [];
+    private readonly List<DateTimeOffset> recoveryPaused = [];
     private LoggedProcess? bank;
     private List<LoggedProcess> ledgers = [];
     private List<LoggedProcess> paymentsApis = [];
 
     public IReadOnlyList<string> PaymentsApiUrls { get; } = PaymentsApiUrlsOf(options.Instances);
+
+    /// <summary>The antifraud container with --antifraud; null without it.</summary>
+    public AntifraudContainer? Antifraud { get; } =
+        options.Antifraud ? new AntifraudContainer(repository, reports, options.Workers, options.Velocity) : null;
 
     public IReadOnlyList<string> LedgerUrls { get; } = LedgerUrlsOf(options.Ledgers);
 
@@ -69,6 +77,9 @@ public sealed class Stand(string repository, string reports, MatrixOptions optio
             if (await Processes.RunAsync(build, log, ct) != 0)
                 throw new MatrixException($"The build of {project} failed, see {log}");
         }
+
+        if (Antifraud is not null)
+            await Antifraud.BuildAsync(ct);
     }
 
     /// <summary>
@@ -84,6 +95,11 @@ public sealed class Stand(string repository, string reports, MatrixOptions optio
 
         if (ledgers.Count == 0)
             ledgers = LedgerUrls.Select(StartLedger).ToList();
+
+        // Before Payments.Api: its first payments already go to the antifraud. It stays up across the restarts of
+        // Payments.Api, as the ledgers do.
+        if (Antifraud is { Started: false })
+            await Antifraud.StartAsync(ct);
 
         foreach (var instance in paymentsApis)
             instance.Dispose();
@@ -134,6 +150,22 @@ public sealed class Stand(string repository, string reports, MatrixOptions optio
             return redisTimeouts.Count(at => at >= from && at <= to);
     }
 
+    /// <summary>
+    /// What the logs of Payments.Api, all its instances, tell of the checks of the antifraud in the window. A check
+    /// without a decision because of a 5xx or a timeout is a warning of HttpAntifraud; one while the circuit is open is
+    /// logged at Debug, so not at all, and the openings of the circuit are counted instead.
+    /// </summary>
+    public AntifraudEvents AntifraudEvents(DateTimeOffset from, DateTimeOffset to)
+    {
+        int Count(List<DateTimeOffset> events)
+        {
+            lock (events)
+                return events.Count(at => at >= from && at <= to);
+        }
+
+        return new AntifraudEvents(Count(unknownChecks), Count(failOpen), Count(circuitOpened), Count(recoveryPaused));
+    }
+
     /// <summary>A process of the stand that has died would leave every run after it meaningless.</summary>
     public void EnsureRunning()
     {
@@ -152,6 +184,7 @@ public sealed class Stand(string repository, string reports, MatrixOptions optio
             instance.Dispose();
 
         bank?.Dispose();
+        Antifraud?.Dispose();
     }
 
     private LoggedProcess StartPaymentsApi(bool limiter, int instance, string url)
@@ -160,10 +193,22 @@ public sealed class Stand(string repository, string reports, MatrixOptions optio
         var settings = new Dictionary<string, string>(ServiceSettings)
         {
             ["RateLimiting__Merchant__Enabled"] = limiter ? "true" : "false",
-            // The antifraud decides in the process: the matrix measures the way of a payment and stays comparable with
-            // the matrices before the saga. The antifraud service has a bench of its own (load/AntifraudBench).
-            ["Antifraud__Mode"] = "Fake",
+            // Without --antifraud it decides in the process: the matrix measures the way of a payment and stays comparable
+            // with the matrices before the saga. With it, the service of the container: the cost of the check in the way.
+            ["Antifraud__Mode"] = Antifraud is null ? "Fake" : "Http",
         };
+
+        if (Antifraud is not null)
+        {
+            settings["Antifraud__BaseAddress"] = $"{AntifraudContainer.Url}/";
+            // The budget of the stand in the cluster, not the 50 and 150 ms of appsettings.json, for the same reason
+            // (deploy/k8s/payments-api.yaml): on a laptop busy with the whole stand an attempt of 50 ms is often cut
+            // off, a cut-off closes its HTTP/1.1 connection, and the next attempt waits for a new one. Through the port
+            // of Docker Desktop a new connection took 7 ms at the median and 44 ms at p99 with the stand idle, against
+            // 4 and 12 ms on a kept one; in the trial matrix of 23.11 with 50 ms the circuit was open most of the time.
+            settings["Antifraud__Resilience__AttemptTimeout__Timeout"] = "00:00:00.150";
+            settings["Antifraud__Resilience__TotalRequestTimeout__Timeout"] = "00:00:00.400";
+        }
 
         // --hot-quota: the override of RateLimiting:Merchant:Overrides, as appsettings.json would carry it.
         if (options.HotQuota > 0)
@@ -180,9 +225,23 @@ public sealed class Stand(string repository, string reports, MatrixOptions optio
         return DotnetRun("Payments.Api", settings, log, line =>
         {
             if (line.Contains("Redis did not answer", StringComparison.Ordinal))
-                lock (redisTimeouts)
-                    redisTimeouts.Add(DateTimeOffset.Now);
+                Add(redisTimeouts);
+            // The lines of HttpAntifraud, PaymentSaga, Polly and PaymentRecovery; without --antifraud none comes.
+            else if (line.Contains(", outcome unknown", StringComparison.Ordinal))
+                Add(unknownChecks);
+            else if (line.Contains("Antifraud gave no decision on payment", StringComparison.Ordinal))
+                Add(failOpen);
+            else if (line.Contains("EventName: 'OnCircuitOpened', Source: 'IAntifraud-standard", StringComparison.Ordinal))
+                Add(circuitOpened);
+            else if (line.Contains("Antifraud unavailable, recovery paused", StringComparison.Ordinal))
+                Add(recoveryPaused);
         }, name: $"Payments.Api{number}", arguments: ["--urls", url]);
+
+        static void Add(List<DateTimeOffset> events)
+        {
+            lock (events)
+                events.Add(DateTimeOffset.Now);
+        }
     }
 
     private LoggedProcess StartLedger(string url, int instance)
@@ -244,3 +303,9 @@ public sealed class Stand(string repository, string reports, MatrixOptions optio
         }
     }
 }
+
+/// <summary>
+/// The checks of the antifraud in a window, from the logs of Payments.Api: without a decision for a 5xx or a timeout,
+/// captured unchecked (fail open), openings of its circuit breaker, pauses of recovery for it.
+/// </summary>
+public sealed record AntifraudEvents(int Unknown, int FailOpen, int CircuitOpened, int RecoveryPaused);

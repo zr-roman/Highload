@@ -27,7 +27,9 @@ public sealed record MatrixRun(int Id, int Rate, double HotShare, bool Limiter)
 /// What one repeat of a run measured. The label is the run and the repeat: 3a, 3b. Ledger is null if /invariants did not answer.
 /// LedgerMembers are the partitions of each instance of Ledger when the repeat began; null if Kafka did not tell.
 /// HotShare is the share of HOT updates of payments in the repeat, null if there were none; StaleSearch is the search
-/// of PaymentRecovery after it (PaymentsTable).
+/// of PaymentRecovery after it (PaymentsTable). Outcomes are the payments of the repeat from the database, once recovery
+/// has finished them (QueueEmptySeconds after the load; null: not within the wait); Antifraud is what the logs of
+/// Payments.Api tell of its checks, and AntifraudCores the processor of its container, both with --antifraud alone.
 /// </summary>
 public sealed record RunResult(
     MatrixRun Run,
@@ -39,7 +41,11 @@ public sealed record RunResult(
     LedgerCheck? Ledger,
     IReadOnlyList<IReadOnlyList<int>>? LedgerMembers,
     double? HotShare,
-    StaleSearchPlan StaleSearch)
+    StaleSearchPlan StaleSearch,
+    PaymentOutcomes Outcomes,
+    double? QueueEmptySeconds,
+    AntifraudEvents? Antifraud,
+    double? AntifraudCores)
 {
     /// <summary>Payments of the hot merchant the service took, 201 and 202: all its requests but 429 and failures.</summary>
     public long HotAccepted => K6.HotRequests - K6.HotRateLimited - K6.HotFailed;

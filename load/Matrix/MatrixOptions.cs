@@ -3,8 +3,26 @@
 /// <summary>The command line of the matrix.</summary>
 public sealed record MatrixOptions(
     IReadOnlyList<int> Runs, int Repeats, int DurationSeconds, int WarmupSeconds, bool Fresh, int Instances, int RedisPauseSeconds,
-    int HotQuota, bool BankFailsHot, int Ledgers, int LedgerBatch, int PrefillRows, bool? StaleIndex)
+    int HotQuota, bool BankFailsHot, int Ledgers, int LedgerBatch, int PrefillRows, bool? StaleIndex,
+    bool Antifraud = false, int? AntifraudWorkers = null, int? AntifraudVelocity = null)
 {
+    /// <summary>uvicorn processes of the antifraud container: four, as the second measurement of the antifraud held 1000 a second with.</summary>
+    public int Workers => AntifraudWorkers ?? 4;
+
+    /// <summary>
+    /// Payments a minute the velocity rule lets a standard merchant, ANTIFRAUD_VELOCITY_LIMIT. 100 by default in the
+    /// service; the plan of stage 4 (task 7) puts it above the profile of run 3, where each of the 49 other merchants
+    /// gets about 120 a minute: 300. The hot merchant, with no quota of its own, is held to it as well, and what the
+    /// limiter lets through of it above that is denied and voided.
+    /// </summary>
+    public int Velocity => AntifraudVelocity ?? 300;
+
+    /// <summary>
+    /// Payments a minute each of the other merchants gets in a run: the velocity rule denies those of a merchant above
+    /// <see cref="Velocity"/>, and in the runs without a hot merchant every merchant gets several times 300.
+    /// </summary>
+    public static double OtherMerchantPerMinute(MatrixRun run) => run.Rate * (1 - run.HotShare) / (K6.Merchants - 1) * 60;
+
     /// <summary>The burst of the hot merchant's quota: twice its rate, as the default limit has it (200 and 400).</summary>
     public int HotBurst => 2 * HotQuota;
 
@@ -21,6 +39,7 @@ public sealed record MatrixOptions(
           dotnet run --project load\Matrix -c Release -- --fresh --runs 3 --repeats 1 --hot-quota 1000 --bank-fails-hot
           dotnet run --project load\Matrix -c Release -- --fresh --runs 1,3 --repeats 1 --duration 60 --hot-quota 1000 --ledger-batch 1 --ledgers 2
           dotnet run --project load\Matrix -c Release -- --fresh --prefill 5000000 --stale-index off --runs 1,4 --repeats 3
+          dotnet run --project load\Matrix -c Release -- --fresh --runs 1,4 --repeats 3 --antifraud
 
           --runs 1,2,...  the runs of the matrix to do (default: all six)
           --repeats N     how many times each run is repeated (default: 2)
@@ -43,6 +62,14 @@ public sealed record MatrixOptions(
                           that has worked for days; needs --fresh (default: 0)
           --stale-index on|off  put the partial index of the first measurement of the search for stale payments
                           into payments, or drop the one it left (default: leave payments as it is)
+          --antifraud     the antifraud service in the way of a payment: its container from
+                          src/antifraud-service/Dockerfile on 127.0.0.1:5400, on database 1 of Redis of docker compose;
+                          Payments.Api calls it (Antifraud:Mode Http). Without it FakeAntifraud decides in the
+                          process and allows every payment
+          --antifraud-workers N  uvicorn processes of the antifraud container (default: 4); needs --antifraud
+          --antifraud-velocity N  payments a minute the velocity rule lets a merchant without a quota (default: 300,
+                          above the 120 a minute of the other merchants of run 3); 1000000 for runs 1 and 4, where
+                          each merchant gets about 1200 and 1800 a minute; needs --antifraud
         """;
 
     public static MatrixOptions Parse(string[] args)
@@ -82,6 +109,9 @@ public sealed record MatrixOptions(
                 "--ledgers" => options with { Ledgers = ParseNumber(name, Value(), min: 1) },
                 "--ledger-batch" => options with { LedgerBatch = ParseNumber(name, Value(), min: 1) },
                 "--prefill" => options with { PrefillRows = ParseNumber(name, Value(), min: 1) },
+                "--antifraud" => options with { Antifraud = true },
+                "--antifraud-workers" => options with { AntifraudWorkers = ParseNumber(name, Value(), min: 1) },
+                "--antifraud-velocity" => options with { AntifraudVelocity = ParseNumber(name, Value(), min: 1) },
                 "--stale-index" => options with
                 {
                     StaleIndex = Value() switch { "on" => true, "off" => false, var other => throw Error($"--stale-index takes on or off, got {other}") },
@@ -93,6 +123,14 @@ public sealed record MatrixOptions(
         // The pause sits in the middle of the load, with load before and after it.
         if (options.RedisPauseSeconds >= options.DurationSeconds)
             throw Error($"--redis-pause {options.RedisPauseSeconds} must be shorter than --duration {options.DurationSeconds}");
+
+        if ((options.AntifraudWorkers is not null || options.AntifraudVelocity is not null) && !options.Antifraud)
+            throw Error("--antifraud-workers and --antifraud-velocity need --antifraud: without it the antifraud decides in Payments.Api");
+
+        // Half an hour of load that measures voids instead of the check is better stopped before it starts.
+        if (options.Antifraud && MatrixRun.All.Where(run => options.Runs.Contains(run.Id)).FirstOrDefault(run => OtherMerchantPerMinute(run) >= options.Velocity) is { } denied)
+            throw Error($"--antifraud-velocity {options.Velocity}: in run {denied.Id} each of the other merchants gets about " +
+                $"{OtherMerchantPerMinute(denied):0} payments a minute, and the antifraud would deny most of them; raise it above that");
 
         // The prefilled ids are the row numbers: a second fill would collide with the first.
         if (options.PrefillRows > 0 && !options.Fresh)

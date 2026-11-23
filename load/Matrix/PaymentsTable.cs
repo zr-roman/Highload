@@ -98,6 +98,60 @@ public sealed class PaymentsTable(NpgsqlDataSource payments)
         return await reader.ReadAsync(ct) ? new UpdateCounts(reader.GetInt64(0), reader.GetInt64(1)) : new UpdateCounts(0, 0);
     }
 
+    /// <summary>
+    /// Waits until the queue of recovery, pending_payments, is empty: a payment a repeat left in progress, in 'created'
+    /// (no decision of the bank) or in 'authorized' (none of the antifraud), gets its final status before the next
+    /// repeat, which would otherwise pay for its recovery. Returns when the queue was empty; null if it was not within
+    /// <paramref name="timeout"/>.
+    /// </summary>
+    public async Task<DateTimeOffset?> WaitQueueEmptyAsync(TimeSpan timeout, CancellationToken ct)
+    {
+        var waited = Stopwatch.StartNew();
+        await using var connection = await OpenAsync(ct);
+        await using var command = new NpgsqlCommand("SELECT count(*) FROM pending_payments", connection);
+
+        while ((long)(await command.ExecuteScalarAsync(ct))! > 0)
+        {
+            if (waited.Elapsed > timeout)
+                return null;
+
+            await Task.Delay(TimeSpan.FromSeconds(1), ct);
+        }
+
+        return DateTimeOffset.Now;
+    }
+
+    /// <summary>
+    /// What became of the payments made from <paramref name="from"/> to <paramref name="to"/>, by status, and how many
+    /// recovery finished: their last update came <paramref name="staleAfter"/> or later after them, and recovery takes a
+    /// payment only then. The request path ends well within it: every call has a total timeout of its pipeline.
+    /// </summary>
+    public async Task<PaymentOutcomes> ReadOutcomesAsync(DateTimeOffset from, DateTimeOffset to, TimeSpan staleAfter, long hotMerchant, CancellationToken ct)
+    {
+        await using var connection = await OpenAsync(ct);
+        await using var command = new NpgsqlCommand("""
+            SELECT count(*),
+                   count(*) FILTER (WHERE merchant_id = $4),
+                   count(*) FILTER (WHERE status = 'captured'),
+                   count(*) FILTER (WHERE status = 'voided'),
+                   count(*) FILTER (WHERE status = 'voided' AND merchant_id = $4),
+                   count(*) FILTER (WHERE status = 'declined'),
+                   count(*) FILTER (WHERE status IN ('created', 'authorized')),
+                   count(*) FILTER (WHERE status IN ('captured', 'voided', 'declined') AND updated_at - created_at >= $3)
+            FROM payments WHERE created_at >= $1 AND created_at < $2
+            """, connection) { CommandTimeout = 0 }; // a scan of payments, which --prefill makes millions of rows
+        // timestamptz takes a UTC time: Npgsql refuses a DateTimeOffset with an offset of its own.
+        command.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = from.UtcDateTime });
+        command.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = to.UtcDateTime });
+        command.Parameters.Add(new NpgsqlParameter<TimeSpan> { TypedValue = staleAfter });
+        command.Parameters.Add(new NpgsqlParameter<long> { TypedValue = hotMerchant });
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        await reader.ReadAsync(ct);
+
+        return new PaymentOutcomes(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3), reader.GetInt64(4),
+            reader.GetInt64(5), reader.GetInt64(6), reader.GetInt64(7));
+    }
+
     /// <summary>The search of PaymentRecovery once, with EXPLAIN ANALYZE: how long it took and how it read payments.</summary>
     public async Task<StaleSearchPlan> ExplainStaleSearchAsync(CancellationToken ct)
     {
@@ -143,6 +197,18 @@ public readonly record struct UpdateCounts(long Updates, long Hot)
     /// <summary>The share of HOT updates between two readings; null if there were no updates.</summary>
     public static double? HotShare(UpdateCounts before, UpdateCounts after) =>
         after.Updates > before.Updates ? (double)(after.Hot - before.Hot) / (after.Updates - before.Updates) : null;
+}
+
+/// <summary>
+/// The payments of a repeat by what became of them, of all merchants and of the hot one; Recovered — those recovery
+/// finished, whatever their status.
+/// </summary>
+public sealed record PaymentOutcomes(
+    long Made, long MadeHot, long Captured, long Voided, long VoidedHot, long Declined, long InProgress, long Recovered)
+{
+    public long MadeOther => Made - MadeHot;
+
+    public long VoidedOther => Voided - VoidedHot;
 }
 
 /// <summary>One search of stale payments: its time, the node that read payments, the pages it touched (8 KB each).</summary>
