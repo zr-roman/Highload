@@ -1,4 +1,4 @@
-# Only what has to run in containers: Kafka, Redis and the telemetry dashboard.
+# Only what has to run in containers: Kafka, Redis, MongoDB and the telemetry dashboard.
 # Postgres runs natively on the host (port 5433), the .NET services run with `dotnet run`.
 name: payments-platform
 
@@ -50,3 +50,32 @@ services:
     ports:
       - "127.0.0.1:6379:6379"
     command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  mongo:
+    # The history of payments (stage 5): History.Service writes it from the events in Kafka and serves
+    # GET /merchants/{id}/payments from it. Nothing of a payment depends on it: lost, it is filled again from
+    # PostgreSQL. One node and no replica set: replication is not a task of stage 5. No user and no password, like
+    # Kafka and Redis here: the port is on 127.0.0.1 alone; the cluster gets them from a Secret.
+    image: mongo:8.0
+    container_name: payments-mongo
+    ports:
+      - "127.0.0.1:27017:27017"
+    # WiredTiger takes half of the memory less 1 GB by default, here of the VM of Docker that Kafka and the rest
+    # share; half a gigabyte holds the indexes of the stand's history and leaves the rest to the stand.
+    command: ["mongod", "--wiredTigerCacheSizeGB", "0.5"]
+    volumes:
+      # Named, so that every up reuses it: the image declares /data/db a volume, and an anonymous one would be
+      # left behind on the tight disk by each down. docker compose down -v deletes it.
+      - mongo-data:/data/db
+    # Every check starts mongosh, a Node.js process: a burst of processor each time. Often only while it starts,
+    # then twice a minute, so that the checks do not take the processor the measurements of the stand need.
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      start_period: 60s
+      start_interval: 2s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  mongo-data:
