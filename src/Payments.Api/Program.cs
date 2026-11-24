@@ -83,6 +83,7 @@ builder.Services.Configure<AcquirerOptions>(builder.Configuration.GetSection("Ac
 builder.Services.Configure<OutboxOptions>(builder.Configuration.GetSection("Outbox"));
 
 builder.Services.AddSingleton<PaymentStore>();
+builder.Services.AddSingleton<PaymentList>();
 builder.Services.AddSingleton<PaymentCompletion>();
 // Transient, like the typed HTTP clients of the bank and the antifraud it takes (see PaymentSaga).
 builder.Services.AddTransient<PaymentSaga>();
@@ -95,7 +96,7 @@ builder.Services.AddSingleton(TimeProvider.System);
 
 builder.Services.AddHostedService<OutboxRelay>();
 builder.Services.AddHostedService<PaymentRecovery>();
-// VALIDATE CONSTRAINT of the stage 4 migration, after the start: see SchemaAfterStart.
+// VALIDATE CONSTRAINT of the stage 4 migration and the indexes built CONCURRENTLY, after the start: see SchemaAfterStart.
 builder.Services.AddHostedService<SchemaAfterStart>();
 
 var acquirer = builder.Configuration.GetSection("Acquirer").Get<AcquirerOptions>() ?? new AcquirerOptions();

@@ -10,6 +10,7 @@ public static class PaymentEndpoints
     {
         app.MapPost("/payments", CreatePaymentAsync).AddEndpointFilter<MerchantRateLimitFilter>();
         app.MapGet("/payments/{id:guid}", GetPaymentAsync);
+        app.MapGet("/merchants/{merchantId:long}/payments", ListPaymentsAsync);
         return app;
     }
 
@@ -86,5 +87,25 @@ public static class PaymentEndpoints
     {
         var payment = await store.FindByIdAsync(id, cancellationToken);
         return payment is null ? Results.NotFound() : Results.Ok(PaymentResponse.From(payment));
+    }
+
+    /// <summary>
+    /// A page of the merchant's payments, newest first (PaymentList). A merchant with no payments gets an empty page,
+    /// not 404: the API has no list of merchants to tell an unknown one from one that has not paid yet.
+    /// </summary>
+    private static async Task<IResult> ListPaymentsAsync(
+        long merchantId,
+        DateTimeOffset? from,
+        DateTimeOffset? to,
+        string? status,
+        string? cursor,
+        int? limit,
+        PaymentList list,
+        CancellationToken cancellationToken)
+    {
+        var query = PaymentListQuery.TryParse(merchantId, from, to, status, cursor, limit, out var errors);
+        return query is null
+            ? Results.ValidationProblem(errors)
+            : Results.Ok(await list.PageAsync(query, cancellationToken));
     }
 }

@@ -1,4 +1,5 @@
 ﻿using Npgsql;
+using Payments.Api.Database;
 using Platform;
 
 namespace Payments.Api.Tests.Infrastructure;
@@ -231,6 +232,106 @@ public sealed class DatabaseSchemaTests(PostgresFixture db)
         });
     }
 
+    [Fact]
+    public async Task Index_Built_Concurrently_Is_Valid_And_A_Rerun_Leaves_It_Alone()
+    {
+        await WithDatabaseAsync(async connectionString =>
+        {
+            await using var dataSource = NpgsqlDataSource.Create(connectionString);
+            await DatabaseSchema.ApplyAsync(dataSource, SchemaPath, SchemaAfterPath, Ct);
+            await InsertAsync(dataSource, "captured");
+
+            var (name, definition) = Assert.Single(SchemaAfterStart.Indexes);
+            await DatabaseSchema.CreateIndexConcurrentlyAsync(dataSource, name, definition, Ct);
+            var first = await ReadIndexAsync(dataSource, name);
+            await DatabaseSchema.CreateIndexConcurrentlyAsync(dataSource, name, definition, Ct);
+
+            Assert.True(first.Valid);
+            Assert.Equal(first, await ReadIndexAsync(dataSource, name));     // the same index: not dropped and built anew
+            Assert.Contains("(merchant_id, created_at DESC, id DESC)", first.Definition);
+        });
+    }
+
+    [Fact]
+    public async Task Invalid_Index_Left_By_A_Failed_Build_Is_Built_Again()
+    {
+        await WithDatabaseAsync(async connectionString =>
+        {
+            await using var dataSource = NpgsqlDataSource.Create(connectionString);
+            await DatabaseSchema.ApplyAsync(dataSource, SchemaPath, SchemaAfterPath, Ct);
+            await InsertAsync(dataSource, "captured");
+            await InsertAsync(dataSource, "captured");
+
+            // A build that fails midway, as a pod killed during it would: two payments of merchant 42 break UNIQUE,
+            // and the index stays behind, INVALID. IF NOT EXISTS would take it for done.
+            var (name, definition) = Assert.Single(SchemaAfterStart.Indexes);
+            await Assert.ThrowsAsync<PostgresException>(
+                () => ExecuteAsync(dataSource, $"CREATE UNIQUE INDEX CONCURRENTLY {name} ON payments (merchant_id)"));
+            Assert.False((await ReadIndexAsync(dataSource, name)).Valid);
+
+            await DatabaseSchema.CreateIndexConcurrentlyAsync(dataSource, name, definition, Ct);
+
+            var index = await ReadIndexAsync(dataSource, name);
+            Assert.True(index.Valid);
+            Assert.Contains("(merchant_id, created_at DESC, id DESC)", index.Definition);
+        });
+    }
+
+    [Fact]
+    public async Task Instances_Building_The_Index_Together_All_End_With_One_Valid_Index()
+    {
+        await WithDatabaseAsync(async connectionString =>
+        {
+            await using var dataSource = NpgsqlDataSource.Create(connectionString);
+            await DatabaseSchema.ApplyAsync(dataSource, SchemaPath, SchemaAfterPath, Ct);
+            await InsertAsync(dataSource, "captured");
+
+            var (name, definition) = Assert.Single(SchemaAfterStart.Indexes);
+            var instances = Enumerable.Range(0, Instances).Select(async _ =>
+            {
+                await using var instance = NpgsqlDataSource.Create(connectionString);
+                await DatabaseSchema.CreateIndexConcurrentlyAsync(instance, name, definition, Ct);
+            });
+            await Task.WhenAll(instances);
+
+            Assert.True((await ReadIndexAsync(dataSource, name)).Valid);
+        });
+    }
+
+    [Fact]
+    public async Task Index_Build_Restores_The_Statement_Timeout_Of_The_Connection_String()
+    {
+        await WithDatabaseAsync(async connectionString =>
+        {
+            var builder = new NpgsqlConnectionStringBuilder(connectionString)
+            {
+                MaxPoolSize = 1,
+                Options = "-c statement_timeout=5s",
+            };
+            await using var dataSource = NpgsqlDataSource.Create(builder.ConnectionString);
+            await DatabaseSchema.ApplyAsync(dataSource, SchemaPath, SchemaAfterPath, Ct);
+
+            var (name, definition) = Assert.Single(SchemaAfterStart.Indexes);
+            await DatabaseSchema.CreateIndexConcurrentlyAsync(dataSource, name, definition, Ct);
+
+            await using var show = dataSource.CreateCommand("SHOW statement_timeout");
+            Assert.Equal("5s", await show.ExecuteScalarAsync(Ct));
+        });
+    }
+
+    private static async Task<IndexState> ReadIndexAsync(NpgsqlDataSource dataSource, string name)
+    {
+        await using var command = dataSource.CreateCommand("""
+            SELECT c.oid, pg_get_indexdef(c.oid), i.indisvalid
+            FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+            WHERE c.relname = $1
+            """);
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = name });
+        await using var reader = await command.ExecuteReaderAsync(Ct);
+        Assert.True(await reader.ReadAsync(Ct));
+        return new IndexState(reader.GetFieldValue<uint>(0), reader.GetString(1), reader.GetBoolean(2));
+    }
+
     // A database of its own: the fixture's one has the schema already.
     private async Task WithDatabaseAsync(Func<string, Task> test)
     {
@@ -285,4 +386,6 @@ public sealed class DatabaseSchemaTests(PostgresFixture db)
     }
 
     private sealed record StatusCheck(uint Oid, string Definition, bool Validated);
+
+    private sealed record IndexState(uint Oid, string Definition, bool Valid);
 }

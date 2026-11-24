@@ -8,6 +8,11 @@ public static class DatabaseSchema
     // (Payments.Api keeps them in AdvisoryLockKeys).
     private const long SchemaLockKey = 7_300_001;
 
+    // The builds of CreateIndexConcurrentlyAsync, one at a time per database: a session-level lock, taken by tries.
+    private const long IndexLockKey = 7_300_002;
+
+    private static readonly TimeSpan IndexLockRetry = TimeSpan.FromSeconds(2);
+
     /// <summary>
     /// Applies an idempotent schema script (CREATE ... IF NOT EXISTS) at startup.
     /// Deliberately simple; a real project would use migrations.
@@ -82,5 +87,86 @@ public static class DatabaseSchema
             await command.ExecuteNonQueryAsync(cancellationToken);
 
         await transaction.CommitAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// An index on a table that takes writes all the time: CREATE INDEX CONCURRENTLY, which takes no lock that stops
+    /// inserts or updates, so it runs after the start, like <see cref="ApplyAfterStartAsync"/>. A no-op if the index
+    /// is there and valid. <paramref name="definition"/> is what follows ON, such as <c>payments (merchant_id)</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// CONCURRENTLY cannot run in a transaction, nor in a script of several statements (one implicit transaction),
+    /// so it is a statement of its own on its own connection; with no transaction, statement_timeout is lifted by a
+    /// session SET and reset afterwards, back to what the connection string gave.
+    /// </para>
+    /// <para>
+    /// A build that fails or is killed midway, a pod stopped by Kubernetes for one, leaves the index behind INVALID:
+    /// not used by queries, yet kept up by every write, and CREATE ... IF NOT EXISTS would see it and do nothing,
+    /// for ever. So the state of the index is read rather than trusted to IF NOT EXISTS, and an invalid one is
+    /// dropped and built again. To tell an invalid index from one that another instance is building right now, the
+    /// builds take turns under an advisory lock of the session. It is taken by tries, pg_try_advisory_lock every
+    /// <see cref="IndexLockRetry"/>, not by a waiting pg_advisory_lock: CONCURRENTLY waits for every transaction that
+    /// is open when it starts, and a session waiting for the lock is in one, so each would wait for the other.
+    /// </para>
+    /// </remarks>
+    public static async Task CreateIndexConcurrentlyAsync(
+        NpgsqlDataSource dataSource, string name, string definition, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+
+        while (!await TryLockIndexBuildsAsync(connection, cancellationToken))
+            await Task.Delay(IndexLockRetry, cancellationToken);
+
+        try
+        {
+            await ExecuteAsync(connection, "SET statement_timeout = 0", cancellationToken);
+
+            var valid = await IndexIsValidAsync(connection, name, cancellationToken);
+            if (valid == true)
+                return;
+
+            if (valid == false)
+                await ExecuteAsync(connection, $"DROP INDEX CONCURRENTLY IF EXISTS {name}", cancellationToken);
+
+            await ExecuteAsync(connection, $"CREATE INDEX CONCURRENTLY {name} ON {definition}", cancellationToken);
+        }
+        finally
+        {
+            // A broken connection is not given back to the pool, and the server has dropped its lock with it.
+            if (connection.State == System.Data.ConnectionState.Open)
+            {
+                await ExecuteAsync(connection, "RESET statement_timeout", CancellationToken.None);
+                await using var unlock = new NpgsqlCommand("SELECT pg_advisory_unlock($1)", connection);
+                unlock.Parameters.Add(new NpgsqlParameter<long> { TypedValue = IndexLockKey });
+                await unlock.ExecuteNonQueryAsync(CancellationToken.None);
+            }
+        }
+    }
+
+    private static async Task<bool> TryLockIndexBuildsAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("SELECT pg_try_advisory_lock($1)", connection);
+        command.Parameters.Add(new NpgsqlParameter<long> { TypedValue = IndexLockKey });
+        return (bool)(await command.ExecuteScalarAsync(cancellationToken))!;
+    }
+
+    // true: there and valid; false: there and invalid; null: not there. In the schema of the search path, as the
+    // CREATE INDEX that made it.
+    private static async Task<bool?> IndexIsValidAsync(NpgsqlConnection connection, string name, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("""
+            SELECT i.indisvalid
+            FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+            WHERE c.relname = $1 AND c.relnamespace = current_schema()::regnamespace
+            """, connection);
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = name });
+        return await command.ExecuteScalarAsync(cancellationToken) is bool valid ? valid : null;
+    }
+
+    private static async Task ExecuteAsync(NpgsqlConnection connection, string sql, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(sql, connection) { CommandTimeout = 0 };
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 }
