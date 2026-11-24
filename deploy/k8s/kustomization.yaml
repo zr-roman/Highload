@@ -54,10 +54,10 @@ configMapGenerator:
 # look unchanged. The tag is the commit the image was built from; newName appears with the first release to ghcr.io.
 images:
   - name: payments-api
-    newTag: 63e75fca6a79
+    newTag: eff24ecbb5e8
     newName: ghcr.io/zr-roman/payments-api
   - name: ledger-service
-    newTag: 63e75fca6a79
+    newTag: eff24ecbb5e8
     newName: ghcr.io/zr-roman/ledger-service
   - name: bank-emulator
     newTag: 17fb5be5f485
