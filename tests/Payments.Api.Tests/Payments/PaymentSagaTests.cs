@@ -15,8 +15,8 @@ namespace Payments.Api.Tests.Payments;
 
 /// <summary>
 /// The saga of the request path on a real Postgres, with the bank and the antifraud scripted: every answer they can
-/// give leads to its own status, every final status gets its PaymentFinalized, and only a captured payment gets an
-/// event for the ledger as well. Every outcome is also counted
+/// give leads to its own status, every final status gets its event: a captured payment its PaymentCaptured, for the
+/// ledger and the history, a declined or voided one its PaymentFinalized. Every outcome is also counted
 /// in the metrics of the saga, with path = request.
 /// </summary>
 [Collection("Postgres")]
@@ -65,7 +65,7 @@ public sealed class PaymentSagaTests(PostgresFixture db) : IAsyncLifetime
         Assert.Equal(3000L, result.Fee);                            // 2 % of 150000, what the response shows
         Assert.Equal("captured", await db.GetStatusAsync(payment.Id, Ct));
         Assert.Equal(1L, await db.CountOutboxAsync(Topics.PaymentsCaptured, Ct));    // the event the ledger books
-        Assert.Equal(1L, await db.CountOutboxAsync(Topics.PaymentsFinalized, Ct));   // and the one of the history
+        Assert.Equal(0L, await db.CountOutboxAsync(Topics.PaymentsFinalized, Ct));   // and the history reads
         Assert.Equal(0L, await db.CountPendingAsync(Ct));
         Assert.Equal(0, bank.VoidsFor(payment.Id));
 

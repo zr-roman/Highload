@@ -12,9 +12,8 @@ public sealed class PaymentCompletion(
     public async Task<PaymentCaptured?> CaptureAsync(Payment payment, CancellationToken cancellationToken)
     {
         var fee = feeOptions.Value.Calculate(payment.Amount);
-        var captured = new PaymentCaptured(payment.Id, payment.MerchantId, payment.Amount, fee, payment.Currency, DateTimeOffset.UtcNow);
 
-        if (await store.MarkCapturedAsync(captured, Key(payment), cancellationToken))
+        if (await store.MarkCapturedAsync(payment.Id, fee, Key(payment), cancellationToken) is { } captured)
         {
             metrics.Captured(payment.Amount);
             return captured;
@@ -41,7 +40,7 @@ public sealed class PaymentCompletion(
         await store.MarkVoidedAsync(payment.Id, Key(payment), cancellationToken);
 
     // The key of every event of a payment. A large merchant, one with a quota of its own, has its payments spread over
-    // the partitions, of the ledger and of the history alike (Topics.PaymentsFinalized).
+    // the partitions, of payments.captured and payments.finalized alike.
     private string Key(Payment payment) =>
         Topics.PaymentsCapturedKey(payment.MerchantId, payment.Id, spread: quotas.Of(payment.MerchantId).IsOverride);
 }

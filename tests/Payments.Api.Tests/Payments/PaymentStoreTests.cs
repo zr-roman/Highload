@@ -8,7 +8,7 @@ namespace Payments.Api.Tests.Payments;
 /// <summary>
 /// The transitions of the saga in PaymentStore, on a real Postgres: each one moves a payment only out of its own
 /// source statuses, and the queue of recovery and the outbox change in the same statement. Every final status writes
-/// one PaymentFinalized, and only a capture writes a PaymentCaptured for the ledger as well.
+/// one event, built from the row: a capture its PaymentCaptured, a decline or a void its PaymentFinalized.
 /// </summary>
 [Collection("Postgres")]
 public sealed class PaymentStoreTests(PostgresFixture db) : IAsyncLifetime
@@ -55,19 +55,24 @@ public sealed class PaymentStoreTests(PostgresFixture db) : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Captured_Payment_Gets_Its_Fee_An_Event_For_The_Ledger_And_One_Finalized_Event()
+    public async Task Captured_Payment_Gets_Its_Fee_And_One_Event_Built_From_Its_Row()
     {
         var id = await db.InsertPaymentAsync(Age, "authorized", Ct);
 
-        Assert.True(await store.MarkCapturedAsync(Captured(id), "42:3", Ct));
+        var returned = await store.MarkCapturedAsync(id, 3_000, "42:3", Ct);
 
         Assert.Equal("captured", await db.GetStatusAsync(id, Ct));
         Assert.Equal(3_000L, await db.GetFeeAsync(id, Ct));
         Assert.Equal(0L, await db.CountPendingAsync(Ct));
+        Assert.Equal(0L, await db.CountOutboxAsync(Topics.PaymentsFinalized, Ct));   // the history reads this one too
 
-        var (key, _) = Assert.Single(await db.OutboxAsync(Topics.PaymentsCaptured, Ct));
+        // The event the ledger books, read back with the serializer it uses: what the row says, created_at included,
+        // and the same as the caller got back.
+        var (key, payload) = Assert.Single(await db.OutboxAsync(Topics.PaymentsCaptured, Ct));
         Assert.Equal("42:3", key);
-        await AssertFinalizedEventAsync(id, "42:3", PaymentFinalStatus.Captured);
+        var captured = JsonSerializer.Deserialize(payload, ContractsJson.Default.PaymentCaptured);
+        Assert.Equal(await db.CapturedFromRowAsync(id, Ct), captured);
+        Assert.Equal(captured, returned);
     }
 
     [Theory]
@@ -79,7 +84,7 @@ public sealed class PaymentStoreTests(PostgresFixture db) : IAsyncLifetime
     {
         var id = await db.InsertPaymentAsync(Age, status, Ct);
 
-        Assert.False(await store.MarkCapturedAsync(Captured(id), "42", Ct));
+        Assert.Null(await store.MarkCapturedAsync(id, 3_000, "42", Ct));
 
         Assert.Equal(status, await db.GetStatusAsync(id, Ct));
         Assert.Equal(0L, await db.CountOutboxAsync(Ct));            // no event of either kind without the capture
@@ -157,7 +162,6 @@ public sealed class PaymentStoreTests(PostgresFixture db) : IAsyncLifetime
         Assert.Equal(1L, await db.CountOutboxAsync(Topics.PaymentsFinalized, Ct));
     }
 
-    private static PaymentCaptured Captured(Guid id) => new(id, 42, 150_000, 3_000, "RUB", DateTimeOffset.UtcNow);
 
     // The one PaymentFinalized of the payment, read back with the serializer its consumers use, says what the row says.
     private async Task AssertFinalizedEventAsync(Guid id, string key, string status)

@@ -10,7 +10,7 @@ public static class LedgerData
     /// with the 2 % fee.
     /// </summary>
     public static PaymentCaptured Payment(long merchantId, long amount = 150_000, long fee = 3_000) =>
-        new(Guid.CreateVersion7(), merchantId, amount, fee, "RUB", DateTimeOffset.UtcNow);
+        new(Guid.CreateVersion7(), merchantId, amount, fee, "RUB", CapturedAt: DateTimeOffset.UtcNow, CreatedAt: DateTimeOffset.UtcNow);
 
     /// <summary>Expected balances, in the form <see cref="PostgresFixture.AccountsAsync"/> reads them.</summary>
     public static SortedDictionary<string, long> Balances(params (string Account, long Balance)[] accounts)

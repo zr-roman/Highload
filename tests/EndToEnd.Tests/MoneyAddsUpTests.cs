@@ -12,8 +12,8 @@ namespace EndToEnd.Tests;
 
 /// <summary>
 /// The README's guarantees, checked through the whole platform under concurrent load: no payment is charged twice,
-/// no captured payment is lost or booked twice on its way through the outbox and Kafka, every final payment has its
-/// one PaymentFinalized, and the money in Payments.Api and in Ledger.Service adds up. Also when the ledger stops in the middle of the load,
+/// no captured payment is lost or booked twice on its way through the outbox and Kafka, every declined or voided
+/// payment has its one PaymentFinalized, and the money in Payments.Api and in Ledger.Service adds up. Also when the ledger stops in the middle of the load,
 /// when it reads again the payments it has already booked, and when one merchant gets most of the payments.
 /// </summary>
 /// <remarks>
@@ -206,13 +206,14 @@ public sealed class MoneyAddsUpTests(PlatformFixture platform, ITestOutputHelper
         Assert.Equal(0, await ScalarAsync(platform.PaymentsDb, "SELECT count(*) FROM payments WHERE status IN ('created', 'authorized')"));
         Assert.Equal(0, await ScalarAsync(platform.PaymentsDb, "SELECT count(*) FROM pending_payments"));
 
-        // 3. The history hears of every final payment, once, with the status the row has: one PaymentFinalized each,
-        //    of every status. Once here because nothing in these tests stops the relay between its publish and its
-        //    delete; delivery itself is at least once, and the history writes a payment by its id.
+        // 3. The history hears of every declined and voided payment, once, with the status the row has: one
+        //    PaymentFinalized each; of the captured ones it hears through payments.captured, checked in 1. Once here
+        //    because nothing in these tests stops the relay between its publish and its delete; delivery itself is at
+        //    least once, and the history writes a payment by its id.
         var finalized = await platform.FinalizedEventsAsync();
-        var finalStatuses = await FinalStatusesAsync();
-        Assert.Equal(finalStatuses.Count, finalized.Count);
-        Assert.Equal(finalStatuses, new SortedDictionary<Guid, string>(finalized.ToDictionary(e => e.PaymentId, e => e.Status)));
+        var notCaptured = await NotCapturedStatusesAsync();
+        Assert.Equal(notCaptured.Count, finalized.Count);
+        Assert.Equal(notCaptured, new SortedDictionary<Guid, string>(finalized.ToDictionary(e => e.PaymentId, e => e.Status)));
 
         // 4. Money adds up across the services: what Payments.Api captured is what the ledger booked, once.
         //    The ledger keeps a merchant's money in sub-accounts, merchant:{id}:p{partition}: they are added up by merchant.
@@ -261,13 +262,13 @@ public sealed class MoneyAddsUpTests(PlatformFixture platform, ITestOutputHelper
         return new Answer(order, response.StatusCode, payment!);
     }
 
-    /// <summary>The status of every payment that has a final one, by id.</summary>
-    private async Task<SortedDictionary<Guid, string>> FinalStatusesAsync()
+    /// <summary>The status of every declined or voided payment, by id.</summary>
+    private async Task<SortedDictionary<Guid, string>> NotCapturedStatusesAsync()
     {
         var statuses = new SortedDictionary<Guid, string>();
 
         await using var command = platform.PaymentsDb.CreateCommand(
-            "SELECT id, status FROM payments WHERE status IN ('captured', 'declined', 'voided')");
+            "SELECT id, status FROM payments WHERE status IN ('declined', 'voided')");
         await using var reader = await command.ExecuteReaderAsync(Ct);
 
         while (await reader.ReadAsync(Ct))

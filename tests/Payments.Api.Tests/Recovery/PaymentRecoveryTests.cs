@@ -47,7 +47,7 @@ public sealed class PaymentRecoveryTests(PostgresFixture db) : IAsyncLifetime
         Assert.Equal("captured", await db.GetStatusAsync(id, Ct));
         Assert.Equal(3000L, await db.GetFeeAsync(id, Ct));          // 2 % of 150000 by default FeeOptions
         Assert.Equal(1L, await db.CountOutboxAsync(Topics.PaymentsCaptured, Ct));    // the event Ledger books
-        Assert.Equal(1L, await db.CountOutboxAsync(Topics.PaymentsFinalized, Ct));   // and the history's, as in the request
+        Assert.Equal(0L, await db.CountOutboxAsync(Topics.PaymentsFinalized, Ct));   // and the history reads, as in the request
         Assert.Equal(0L, await db.CountPendingAsync(Ct));           // out of the queue of recovery, in the same statement
         Assert.Single(host.Captured.GetMeasurementSnapshot());      // the same metric the endpoint feeds
 

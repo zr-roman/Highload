@@ -124,9 +124,24 @@ public sealed class PostgresFixture : IAsyncLifetime
     }
 
     /// <summary>
-    /// The PaymentFinalized the payment's row stands for: what its event in the outbox has to say, to the microsecond.
+    /// The PaymentFinalized the row of a declined or voided payment stands for: what its event in the outbox has to
+    /// say, to the microsecond.
     /// </summary>
     public async Task<PaymentFinalized> FinalizedFromRowAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var row = await RowAsync(id, cancellationToken);
+        return new PaymentFinalized(id, row.MerchantId, row.Amount, row.Currency, row.Status, row.CreatedAt, row.UpdatedAt);
+    }
+
+    /// <summary>The PaymentCaptured the row of a captured payment stands for, to the microsecond.</summary>
+    public async Task<PaymentCaptured> CapturedFromRowAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var row = await RowAsync(id, cancellationToken);
+        return new PaymentCaptured(id, row.MerchantId, row.Amount, row.Fee!.Value, row.Currency, row.UpdatedAt, row.CreatedAt);
+    }
+
+    private async Task<(long MerchantId, long Amount, long? Fee, string Currency, string Status, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt)>
+        RowAsync(Guid id, CancellationToken cancellationToken)
     {
         await using var command = DataSource.CreateCommand(
             "SELECT merchant_id, amount, fee, currency, status, created_at, updated_at FROM payments WHERE id = $1");
@@ -135,8 +150,7 @@ public sealed class PostgresFixture : IAsyncLifetime
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         Assert.True(await reader.ReadAsync(cancellationToken));
 
-        return new PaymentFinalized(
-            id, reader.GetInt64(0), reader.GetInt64(1), reader.IsDBNull(2) ? null : reader.GetInt64(2), reader.GetString(3),
+        return (reader.GetInt64(0), reader.GetInt64(1), reader.IsDBNull(2) ? null : reader.GetInt64(2), reader.GetString(3),
             reader.GetString(4), reader.GetFieldValue<DateTimeOffset>(5), reader.GetFieldValue<DateTimeOffset>(6));
     }
 }

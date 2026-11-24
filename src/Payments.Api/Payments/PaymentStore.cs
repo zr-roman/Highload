@@ -15,17 +15,23 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
     // The same columns of payments joined to pending_payments, which has an id and a created_at of its own.
     private static readonly string SelectPaymentColumns = string.Join(", ", SelectColumns.Split(", ").Select(column => $"p.{column}"));
 
-    // What a final transition returns of the row it wrote: the columns of the PaymentFinalized event.
-    private const string FinalizedColumns = "id, merchant_id, amount, fee, currency, status, created_at, updated_at";
+    // What a final transition returns of the row it wrote: the columns of its event.
+    private const string FinalColumns = "id, merchant_id, amount, fee, currency, status, created_at, updated_at";
 
-    // The PaymentFinalized event (Contracts), built by the statement from the row it has just written, not by the
-    // caller: amount, created_at and the time of the final status are then exactly what the database holds, and the
-    // history of payments made from the events matches the list from payments to the microsecond. A caller's clock
-    // would not: created_at is now() of the insert, and DateTimeOffset.UtcNow differs from it.
-    // The names are those of ContractsJson (camelCase); PaymentStoreTests read the payload back with it.
-    private const string FinalizedPayload = """
+    // The events of the final statuses (Contracts), built by the statement from the row it has just written, not by
+    // the caller: amount, created_at and the time of the final status are then exactly what the database holds, and
+    // the history of payments made from the events matches the list from payments to the microsecond. A caller's
+    // clock would not: created_at is now() of the insert, and DateTimeOffset.UtcNow differs from it.
+    // The names are those of ContractsJson (camelCase); PaymentStoreTests read the payloads back with it.
+    private const string CapturedPayload = """
         json_build_object(
             'paymentId', id, 'merchantId', merchant_id, 'amount', amount, 'fee', fee, 'currency', currency,
+            'capturedAt', updated_at, 'createdAt', created_at)::text
+        """;
+
+    private const string FinalizedPayload = """
+        json_build_object(
+            'paymentId', id, 'merchantId', merchant_id, 'amount', amount, 'currency', currency,
             'status', status, 'createdAt', created_at, 'finalizedAt', updated_at)::text
         """;
 
@@ -78,45 +84,41 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
     }
 
     /// <summary>
-    /// The status change and the outbox rows are written by one statement: they commit together,
-    /// and the outbox rows appear only if the payment really moved to 'captured'. Two rows: PaymentCaptured for the
-    /// ledger and PaymentFinalized for the history, both with the same key. The same statement takes
+    /// The status change and the outbox row are written by one statement: they commit together,
+    /// and the outbox row appears only if the payment really moved to 'captured'. One row, PaymentCaptured, for the
+    /// ledger and the history alike. The same statement takes
     /// the payment out of pending_payments: captured is final. Of the statuses only 'authorized' is not final and
     /// keeps the payment in the queue, for recovery to finish the saga.
     /// Only from 'authorized': a payment is captured after the antifraud allowed it, or it failed open, never straight
     /// after the bank.
     /// The message key decides the partition, and so the Ledger consumer (Topics.PaymentsCapturedKey).
     /// </summary>
-    public async Task<bool> MarkCapturedAsync(PaymentCaptured captured, string messageKey, CancellationToken cancellationToken)
+    /// <returns>The event as it went to the outbox; null if the payment had moved on and nothing was written.</returns>
+    public async Task<PaymentCaptured?> MarkCapturedAsync(Guid paymentId, long fee, string messageKey, CancellationToken cancellationToken)
     {
-        // The UPDATE of a data-modifying CTE runs once, however many times the INSERT reads its rows.
         await using var command = dataSource.CreateCommand($"""
             WITH captured AS (
                 UPDATE payments
                 SET status = 'captured', fee = $2, updated_at = now()
                 WHERE id = $1 AND status = 'authorized'
-                RETURNING {FinalizedColumns}
+                RETURNING {FinalColumns}
             ),
             settled AS (
                 DELETE FROM pending_payments WHERE id IN (SELECT id FROM captured)
             )
             INSERT INTO outbox (topic, message_key, payload)
-            SELECT $3, $4, $5 FROM captured
-            UNION ALL
-            SELECT $6, $4, {FinalizedPayload} FROM captured
+            SELECT $3, $4, {CapturedPayload} FROM captured
+            RETURNING payload
             """);
 
-        command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = captured.PaymentId });
-        command.Parameters.Add(new NpgsqlParameter<long> { TypedValue = captured.Fee });
+        command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = paymentId });
+        command.Parameters.Add(new NpgsqlParameter<long> { TypedValue = fee });
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = Topics.PaymentsCaptured });
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = messageKey });
-        command.Parameters.Add(new NpgsqlParameter<string>
-        {
-            TypedValue = JsonSerializer.Serialize(captured, ContractsJson.Default.PaymentCaptured),
-        });
-        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = Topics.PaymentsFinalized });
 
-        return await command.ExecuteNonQueryAsync(cancellationToken) == 2;
+        return await command.ExecuteScalarAsync(cancellationToken) is string payload
+            ? JsonSerializer.Deserialize(payload, ContractsJson.Default.PaymentCaptured)
+            : null;
     }
 
     /// <summary>
@@ -130,7 +132,7 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
                 UPDATE payments
                 SET status = 'declined', updated_at = now()
                 WHERE id = $1 AND status = 'created'
-                RETURNING {FinalizedColumns}
+                RETURNING {FinalColumns}
             ),
             settled AS (
                 DELETE FROM pending_payments WHERE id IN (SELECT id FROM declined)
@@ -160,7 +162,7 @@ public sealed class PaymentStore(NpgsqlDataSource dataSource)
                 UPDATE payments
                 SET status = 'voided', updated_at = now()
                 WHERE id = $1 AND status IN ('created', 'authorized')
-                RETURNING {FinalizedColumns}
+                RETURNING {FinalColumns}
             ),
             settled AS (
                 DELETE FROM pending_payments WHERE id IN (SELECT id FROM voided)

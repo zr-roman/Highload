@@ -18,11 +18,11 @@ public static class Topics
     public const int PaymentsCapturedPartitions = 8;
 
     /// <summary>
-    /// Every payment that reached its final status, captured, declined or voided (<see cref="PaymentFinalized"/>), for
-    /// the history of payments and the webhooks. A topic of its own and not a second type of message in
-    /// <see cref="PaymentsCaptured"/>: the ledger reads that one, and a consumer of a topic gets all of its messages.
-    /// The key is that of <see cref="PaymentsCapturedKey"/>, with the same spread of a large merchant: the history
-    /// writes a payment by its id and needs no order, and one partition would hold back a large merchant here too.
+    /// The payments that were declined or voided (<see cref="PaymentFinalized"/>), for the history of payments and the
+    /// webhooks, which read <see cref="PaymentsCaptured"/> as well for the captured ones. A topic of its own and not a
+    /// second type of message in <see cref="PaymentsCaptured"/>: the ledger reads that one, and a consumer of a topic
+    /// gets all of its messages. The key is that of <see cref="PaymentsCapturedKey"/>, with the same spread of a large
+    /// merchant: the history writes a payment by its id and needs no order.
     /// </summary>
     public const string PaymentsFinalized = "payments.finalized";
 

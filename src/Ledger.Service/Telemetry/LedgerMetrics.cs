@@ -62,7 +62,8 @@ public sealed class LedgerMetrics
 
     /// <summary>
     /// The whole way of each payment in one number: the outbox, the relay, Kafka and the batch. CapturedAt comes from
-    /// the clock of Payments.Api: on one machine the clocks agree, across machines their difference is part of the delay.
+    /// the clock of the database of Payments.Api: on one machine the clocks agree, across machines their difference is
+    /// part of the delay.
     /// </summary>
     public void PaymentsWritten(int partition, IReadOnlyList<PaymentCaptured> payments, DateTimeOffset writtenAt)
     {
