@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Testcontainers.Kafka" />
+    <PackageReference Include="Testcontainers.MongoDb" />
+    <PackageReference Include="xunit.v3.mtp-v2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\History.Service\History.Service.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The same waiting helper as in the service tests. -->
+    <Compile Include="..\Payments.Api.Tests\Infrastructure\Eventually.cs" Link="Infrastructure\Eventually.cs" />
+  </ItemGroup>
+
+</Project>

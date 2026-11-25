@@ -10,10 +10,15 @@ public static class KafkaTopics
     /// Creates the topic if it does not exist yet. Both services call this at startup,
     /// so it does not matter which one starts first.
     /// </summary>
-    public static async Task EnsureCreatedAsync(string bootstrapServers, string topic, int partitions, ILogger logger)
+    public static async Task EnsureCreatedAsync(string bootstrapServers, string topic, int partitions, ILogger logger) =>
+        await EnsureCreatedAsync(bootstrapServers, [(topic, partitions)], logger);
+
+    /// <summary>The same for several topics, in one request: for a consumer of more than one topic.</summary>
+    public static async Task EnsureCreatedAsync(
+        string bootstrapServers, IReadOnlyCollection<(string Topic, int Partitions)> topics, ILogger logger)
     {
         using var admin = new AdminClientBuilder(new AdminClientConfig { BootstrapServers = bootstrapServers }).Build();
-        await EnsureCreatedAsync(admin, topic, partitions, logger);
+        await EnsureCreatedAsync(admin, topics, logger);
     }
 
     /// <summary>

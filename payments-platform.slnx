@@ -7,11 +7,13 @@
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/Contracts/Contracts.csproj" />
+    <Project Path="src/History.Service/History.Service.csproj" />
     <Project Path="src/Ledger.Service/Ledger.Service.csproj" />
     <Project Path="src/Payments.Api/Payments.Api.csproj" />
     <Project Path="src/Platform/Platform.csproj" />
   </Folder>
   <Project Path="tests/EndToEnd.Tests/EndToEnd.Tests.csproj" />
+  <Project Path="tests/History.Service.Tests/History.Service.Tests.csproj" />
   <Project Path="tests/Ledger.Service.Tests/Ledger.Service.Tests.csproj" />
   <Project Path="tests/Payments.Api.Tests/Payments.Api.Tests.csproj" />
 </Solution>
