@@ -38,11 +38,13 @@ public static class Stand
     public static async Task<(Replicas? Replicas, string Error)> DeploymentAsync(string name)
     {
         var result = await Shell.Kubectl(ProbeTimeout, "-n", Namespace, "get", "deployment", name, "-o", "json");
+
         if (!result.Ok)
             return (null, result.Errors);
 
         using var json = JsonDocument.Parse(result.Output);
         var root = json.RootElement;
+
         // A Deployment with no ready replica has no readyReplicas at all.
         var ready = root.GetProperty("status").TryGetProperty("readyReplicas", out var count) ? count.GetInt32() : 0;
         return (new Replicas(root.GetProperty("spec").GetProperty("replicas").GetInt32(), ready), "");
@@ -55,8 +57,10 @@ public static class Stand
     public static async Task<string?> AutoSyncAsync()
     {
         var result = await Shell.Kubectl(ProbeTimeout, "-n", "argocd", "get", "application", Application, "-o", "json");
+
         if (!result.Ok)
             throw new DrillException($"Cannot read the Argo CD application {Application}: {result.Errors}");
+
         return JsonNode.Parse(result.Output)?["spec"]?["syncPolicy"]?["automated"]?.ToJsonString();
     }
 
@@ -65,6 +69,7 @@ public static class Stand
     {
         var patch = """{"spec":{"syncPolicy":{"automated":""" + (automated ?? "null") + "}}}";
         var result = await Shell.Kubectl(ProbeTimeout, "-n", "argocd", "patch", "application", Application, "--type", "merge", "-p", patch);
+
         if (!result.Ok)
             throw new DrillException($"Cannot {(automated is null ? "switch off" : "switch back on")} the auto-sync of the Argo CD " +
                 $"application {Application}: {result.Errors}");
@@ -73,6 +78,7 @@ public static class Stand
     public static async Task ScaleAsync(string deployment, int replicas, string kind = "deployment")
     {
         var result = await Shell.Kubectl(ProbeTimeout, "-n", Namespace, "scale", $"{kind}/{deployment}", $"--replicas={replicas}");
+
         if (!result.Ok)
             throw new DrillException($"kubectl scale {kind}/{deployment} --replicas={replicas} failed: {result.Errors}");
     }
@@ -81,12 +87,14 @@ public static class Stand
     public static async Task<(Replicas? Replicas, string Error)> StatefulSetAsync(string name)
     {
         var result = await Shell.Kubectl(ProbeTimeout, "-n", Namespace, "get", "statefulset", name, "-o", "json");
+
         if (!result.Ok)
             return (null, result.Errors);
 
         using var json = JsonDocument.Parse(result.Output);
         var root = json.RootElement;
         var ready = root.GetProperty("status").TryGetProperty("readyReplicas", out var count) ? count.GetInt32() : 0;
+
         return (new Replicas(root.GetProperty("spec").GetProperty("replicas").GetInt32(), ready), "");
     }
 
@@ -97,6 +105,7 @@ public static class Stand
     public static async Task SetEnvAsync(string deployment, string variable)
     {
         var result = await Shell.Kubectl(ProbeTimeout, "-n", Namespace, "set", "env", $"deployment/{deployment}", variable);
+
         if (!result.Ok)
             throw new DrillException($"kubectl set env deployment/{deployment} {variable} failed: {result.Errors}");
     }
@@ -105,9 +114,12 @@ public static class Stand
     public static async Task<string?> EnvAsync(string deployment, string variable)
     {
         var result = await Shell.Kubectl(ProbeTimeout, "-n", Namespace, "get", "deployment", deployment, "-o", "json");
+
         if (!result.Ok)
             throw new DrillException($"Cannot read deployment/{deployment}: {result.Errors}");
+
         var containers = JsonNode.Parse(result.Output)?["spec"]?["template"]?["spec"]?["containers"]?.AsArray() ?? [];
+
         return containers
             .SelectMany(c => c?["env"]?.AsArray() ?? [])
             .FirstOrDefault(e => e?["name"]?.GetValue<string>() == variable)?["value"]?.GetValue<string>();
@@ -118,6 +130,7 @@ public static class Stand
     {
         var result = await Shell.Kubectl(limit + ProbeTimeout,
             "-n", Namespace, "rollout", "status", $"deployment/{deployment}", $"--timeout={(int)limit.TotalSeconds}s");
+
         if (!result.Ok)
             throw new DrillException($"The rollout of deployment/{deployment} is not over in {limit.TotalSeconds:0} s: {result.Errors}");
     }
@@ -130,6 +143,7 @@ public static class Stand
     {
         var result = await Shell.Kubectl(ProbeTimeout, "-n", Namespace, "delete", "pod", "-l", $"app.kubernetes.io/name={name}",
             "--grace-period=0", "--force", "--wait=false");
+
         if (!result.Ok)
             throw new DrillException($"kubectl delete pod -l app.kubernetes.io/name={name} failed: {result.Errors}");
     }

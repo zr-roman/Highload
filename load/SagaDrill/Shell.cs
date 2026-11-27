@@ -92,11 +92,13 @@ public sealed class LongProcess : IDisposable
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
         };
+
         foreach (var argument in arguments)
             info.ArgumentList.Add(argument);
 
         log = new StreamWriter(logPath) { AutoFlush = true };
         process = new Process { StartInfo = info };
+
         try
         {
             process.Start();
@@ -107,6 +109,7 @@ public sealed class LongProcess : IDisposable
             process.Dispose();
             throw new DrillException($"Cannot start {file} ({e.Message}): is it installed and on PATH?");
         }
+
         readers = [Read(process.StandardOutput), Read(process.StandardError)];
     }
 
@@ -120,10 +123,13 @@ public sealed class LongProcess : IDisposable
     {
         Shell.Kill(process);
         process.WaitForExit(TimeSpan.FromSeconds(10));
+
         foreach (var reader in readers)
             reader.Join(TimeSpan.FromSeconds(5));
+
         lock (log)
             log.Dispose();
+
         process.Dispose();
     }
 

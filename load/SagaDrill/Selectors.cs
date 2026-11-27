@@ -18,6 +18,7 @@ public static partial class Selectors
         {
             var by = selector.Labels.Count > 0 ? $" by ({string.Join(", ", selector.Labels)})" : "";
             var result = await prometheus.QueryAsync($"count{by} ({selector.Metric})", ct);
+
             if (result.Error is { } error)
                 found.Add($"`{selector.Metric}`: {error}");
             else if (result.Series.Count == 0)
@@ -30,6 +31,7 @@ public static partial class Selectors
                 found.Add($"`{selector.Metric}` есть: {string.Join(", ", sets)}{(result.Series.Count > 5 ? ", …" : "")}");
             }
         }
+
         return found.Count > 0 ? string.Join("; ", found) : "в запросе не найдено ни одной метрики";
     }
 
@@ -44,10 +46,13 @@ public static partial class Selectors
         {
             var labels = LabelName().Matches(match.Groups["matchers"].Value).Select(l => l.Groups["label"].Value)
                 .Distinct().Order(StringComparer.Ordinal).ToList();
+
             var selector = new Selector(match.Groups["metric"].Value, labels);
+
             if (!selectors.Any(s => s.Metric == selector.Metric && s.Labels.SequenceEqual(selector.Labels)))
                 selectors.Add(selector);
         }
+
         return selectors;
     }
 

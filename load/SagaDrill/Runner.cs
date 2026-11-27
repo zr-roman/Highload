@@ -14,6 +14,7 @@ public static class Runner
     public static async Task RunAsync(DrillOptions options, CancellationToken ct)
     {
         string[] files = ["load/payments.js", Dashboard.File, Alerts.File, Preflight.SmokeScript, .. OutagePhase.Files];
+
         foreach (var file in files)
             if (!File.Exists(file))
                 throw new DrillException($"Run it from the root of the repository: {file} is not here");
@@ -37,7 +38,9 @@ public static class Runner
             (Part.Redis, "Фаза «Redis лежит»", async () => await RedisPhase.RunAsync(options, prometheus, reports, ct)),
             (Part.Kill, "Фаза «всё отклоняется, Payments.Api убит»", async () => await KillPhase.RunAsync(options, prometheus, reports, ct)),
         };
+
         string? notRun = preflight.Checks.All(c => c.Ok) ? null : "предпроверка не прошла";
+
         foreach (var (part, title, run) in phase.Where(p => options.Runs(p.Part)))
         {
             if (notRun is not null)
@@ -53,9 +56,11 @@ public static class Runner
             {
                 phases.Add(new PhaseRun(title, null, new Check($"{title.ToLowerInvariant()} дошла до конца", false, e.Message), null));
             }
+
             if (!phases[^1].Ok)
                 notRun = $"{title.ToLowerInvariant()} не прошла";
         }
+
         if (phases.Any(p => p.NotRun is not null))
             Console.WriteLine($"Not run: {string.Join(", ", phases.Where(p => p.NotRun is not null).Select(p => p.Title))}");
 
@@ -69,10 +74,14 @@ public static class Runner
             Console.WriteLine($"no series  {query.What}: {query.Expression}");
             Console.WriteLine($"           {query.Result.Error ?? query.Found}");
         }
+
         var checks = preflight.Checks.Concat(phases.SelectMany(p => p.Checks)).ToList();
+
         foreach (var check in checks)
             Console.WriteLine($"{(check.Ok ? "ok  " : "FAIL")}  {check.Name}: {check.Detail}");
+
         Console.WriteLine($"Report: {path}");
+
         if (checks.Any(c => !c.Ok))
             throw new DrillException("Some checks failed, see the report");
     }

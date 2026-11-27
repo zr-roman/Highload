@@ -29,6 +29,7 @@ public sealed class PaymentCompletion(
     public async Task<bool> DeclineOnBankDenialAsync(Payment payment, CancellationToken cancellationToken)
     {
         var statusChanged = await store.MarkDeclinedAsync(payment.Id, Key(payment), cancellationToken);
+
         if (statusChanged)
             metrics.Declined();
 

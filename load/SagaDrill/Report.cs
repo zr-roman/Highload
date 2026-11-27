@@ -48,8 +48,10 @@ public static class Report
     private static void Checks(StringBuilder text, string title, IReadOnlyList<Check> checks)
     {
         text.Append($"{title}:\n\n");
+
         foreach (var check in checks)
             text.Append($"- {(check.Ok ? "✓" : "✗")} **{check.Name}**: {check.Detail}\n");
+
         text.Append('\n');
     }
 
@@ -97,8 +99,10 @@ public static class Report
 
         text.Append("Алерты — по сэмплам `ALERTS`: первое вычисление в pending, первое в firing; погас — на вычислении после последнего в firing.\n\n");
         text.Append("| Алерт | Pending | Firing | Погас |\n|---|---|---|---|\n");
+
         foreach (var alert in outage.Alerts)
             text.Append($"| `{alert.Name}` | {At(alert.Pending)} | {At(alert.Firing)} | {(alert.FiringAtEnd ? "горит" : At(alert.Resolved))} |\n");
+        
         text.Append('\n');
 
         var large = outage.Large;
@@ -117,6 +121,7 @@ public static class Report
         text.Append($"| Самый старый платёж, созданный до остановки и переждавший аварию | " +
             $"{(outage.Carried is { } carried ? $"создан в {OutagePhase.At(carried)}" : "такого не было")} |\n");
         text.Append($"| Все платежи завершены | {(outage.Settled is { } s ? $"через {s.TotalSeconds:0} с после нагрузки" : $"нет, и через {options.SettleSeconds} с")} |\n\n");
+
         Drain(text, outage);
     }
 
@@ -124,6 +129,7 @@ public static class Report
     {
         var c = redis.Counts;
         var times = redis.Times;
+
         double From(double moment) => moment - times.Stop;
 
         text.Append("## Фаза «Redis лежит»\n\n");
@@ -193,6 +199,7 @@ public static class Report
     private static void Drain(StringBuilder text, OutageResult outage)
     {
         text.Append("### Как восстановление разобрало очередь\n\n");
+
         if (outage.Drain is not { } drain)
         {
             text.Append("Prometheus не дал рядов восстановления за время после возвращения антифрода.\n\n");
@@ -207,8 +214,10 @@ public static class Report
             "платёж. Если тормозят паузы, решения идут пачками с провалами по 10 с; если свой темп восстановления — ровно.\n\n");
         text.Append("| Время | Решений восстановления в секунду | Без решения в секунду | Старейший в `authorized`, с | Антифрод p50 / p99, мс |\n");
         text.Append("|---|---|---|---|---|\n");
+
         foreach (var (at, decisions, unknown, oldest, p50, p99) in drain.Points)
             text.Append($"| {OutagePhase.At(at)} | {Value(decisions)} | {Value(unknown)} | {Whole(oldest)} | {Whole(p50)} / {Whole(p99)} |\n");
+
         text.Append('\n');
     }
 
@@ -236,8 +245,10 @@ public static class Report
             text.Append("Запрос панели — как его отправляет Grafana, `$__rate_interval` = `1m`. Запрос алерта — его выражение без порога: " +
                 "целиком у него нет серий, пока алерт не сработал.\n\n");
             text.Append("| | Что | Серий | Значения | Запрос |\n|---|---|---|---|---|\n");
+
             foreach (var query in preflight.Queries)
                 text.Append($"| {(query.Ok ? "✓" : "✗")} | {Cell(query.What)} | {query.Result.Series.Count} | {Cell(Values(query))} | `{Cell(query.Expression)}` |\n");
+
             text.Append('\n');
         }
     }
@@ -247,6 +258,7 @@ public static class Report
     {
         if (query.Result.Error is { } error)
             return error;
+
         if (query.Result.Series.Count == 0)
             return query.Found is { } found ? $"— ({found})" : "—";
 
@@ -255,6 +267,7 @@ public static class Report
             var labels = string.Join(", ", s.Labels.Where(l => l.Key != "__name__").Select(l => $"{l.Key}={l.Value}"));
             return labels.Length > 0 ? $"{Value(s.Value)} ({labels})" : Value(s.Value);
         });
+
         var values = string.Join("; ", shown) + (query.Result.Series.Count > 4 ? "; …" : "");
         return query.Threshold is { } threshold ? $"{values}, порог {threshold}" : values;
     }

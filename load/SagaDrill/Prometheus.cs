@@ -79,6 +79,7 @@ public sealed class Prometheus : IDisposable
     public async Task<QueryResult> QueryAsync(string expression, CancellationToken ct)
     {
         var (data, error) = await QueryDataAsync("query=" + Uri.EscapeDataString(expression), ct);
+
         if (data is not { } result)
             return new QueryResult([], error);
 
@@ -86,8 +87,10 @@ public sealed class Prometheus : IDisposable
             return new QueryResult([new Series(new Dictionary<string, string>(), Value(result.GetProperty("result")[1]))], null);
 
         var series = new List<Series>();
+
         foreach (var item in result.GetProperty("result").EnumerateArray())
             series.Add(new Series(Labels(item), Value(item.GetProperty("value")[1])));
+
         return new QueryResult(series, null);
     }
 
@@ -101,14 +104,17 @@ public sealed class Prometheus : IDisposable
         var window = Math.Max(1, (int)Math.Ceiling(to - from));
         var (data, error) = await QueryDataAsync(
             $"query={Uri.EscapeDataString($"{selector}[{window}s]")}&time={to.ToString("0.###", CultureInfo.InvariantCulture)}", ct);
+
         if (data is not { } result)
             return new SamplesResult([], error);
 
         var series = new List<Samples>();
+
         foreach (var item in result.GetProperty("result").EnumerateArray())
             series.Add(new Samples(Labels(item), item.GetProperty("values").EnumerateArray()
                 .Select(point => (point[0].GetDouble(), Value(point[1])))
                 .ToList()));
+
         return new SamplesResult(series, null);
     }
 
@@ -163,8 +169,10 @@ public sealed class Prometheus : IDisposable
             try
             {
                 using var response = await http.GetAsync("-/ready", ct);
+
                 if (response.IsSuccessStatusCode)
                     return;
+
                 why = $"{(int)response.StatusCode} {response.ReasonPhrase}";
             }
             catch (Exception e) when (e is HttpRequestException || (e is TaskCanceledException && !ct.IsCancellationRequested))
@@ -187,8 +195,10 @@ public sealed class Prometheus : IDisposable
         string expression, double from, double to, double step, CancellationToken ct)
     {
         string Time(double seconds) => seconds.ToString("0.###", CultureInfo.InvariantCulture);
+
         var (data, error) = await QueryDataAsync(
             $"query={Uri.EscapeDataString(expression)}&start={Time(from)}&end={Time(to)}&step={Time(step)}", ct, "query_range");
+
         if (data is not { } result)
             return ([], error);
 

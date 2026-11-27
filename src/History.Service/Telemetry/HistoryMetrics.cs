@@ -39,6 +39,7 @@ public sealed class HistoryMetrics
     {
         foreach (var status in new[] { PaymentDocument.Captured, "declined", "voided" })
             _written.Add(0, new KeyValuePair<string, object?>("status", status));
+
         _malformed.Add(0);
     }
 
