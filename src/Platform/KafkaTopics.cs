@@ -43,6 +43,7 @@ public static class KafkaTopics
             await admin.CreateTopicsAsync(
                 topics.Select(t => new TopicSpecification { Name = t.Topic, NumPartitions = t.Partitions, ReplicationFactor = -1 }),
                 new CreateTopicsOptions { RequestTimeout = TimeSpan.FromSeconds(5) });
+
             foreach (var (topic, partitions) in topics)
                 logger.LogInformation("Created Kafka topic {Topic} with {Partitions} partitions", topic, partitions);
         }

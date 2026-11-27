@@ -123,10 +123,11 @@ public static class DatabaseSchema
             await ExecuteAsync(connection, "SET statement_timeout = 0", cancellationToken);
 
             var valid = await IndexIsValidAsync(connection, name, cancellationToken);
-            if (valid == true)
+
+            if (valid is true)
                 return;
 
-            if (valid == false)
+            if (valid is false)
                 await ExecuteAsync(connection, $"DROP INDEX CONCURRENTLY IF EXISTS {name}", cancellationToken);
 
             await ExecuteAsync(connection, $"CREATE INDEX CONCURRENTLY {name} ON {definition}", cancellationToken);
@@ -160,7 +161,9 @@ public static class DatabaseSchema
             FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
             WHERE c.relname = $1 AND c.relnamespace = current_schema()::regnamespace
             """, connection);
+
         command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = name });
+
         return await command.ExecuteScalarAsync(cancellationToken) is bool valid ? valid : null;
     }
 
